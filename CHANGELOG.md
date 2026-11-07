@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Your HP in the player window, inventory, HP bar and group/target windows now includes the HP from your gear, as `#mystats` and the original client show it. EQEmu leaves item HP out of your own HP updates, so a character with a lot of item HP showed far too little
+- Luclin characters in a robe: the arms and forearms wear the robe's material and colour instead of bare skin
 
 ## 0.5.0-beta (2026-11-05)
 

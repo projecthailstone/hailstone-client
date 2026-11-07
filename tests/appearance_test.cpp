@@ -78,6 +78,20 @@ TEST_CASE("OP_WearChange follows the client's slot rules") {
     CHECK_FALSE(game::is_robe(17));
 }
 
+TEST_CASE("tint_slot: under a robe the arms and wrists take the chest's tint, as their material") {
+    game::Appearance robe;
+    robe.material[game::kSlotChest] = 12;
+    CHECK(game::tint_slot(robe, game::kSlotArms) == game::kSlotChest);
+    CHECK(game::tint_slot(robe, game::kSlotWrists) == game::kSlotChest);
+    CHECK(game::tint_slot(robe, game::kSlotChest) == game::kSlotChest);
+    CHECK(game::tint_slot(robe, game::kSlotLegs) == game::kSlotLegs);
+    CHECK(game::tint_slot(robe, game::kSlotHands) == game::kSlotHands);
+    game::Appearance plain;
+    plain.material[game::kSlotChest] = 1; // not a robe
+    CHECK(game::tint_slot(plain, game::kSlotArms) == game::kSlotArms);
+    CHECK(game::tint_slot(plain, game::kSlotWrists) == game::kSlotWrists);
+}
+
 TEST_CASE("OP_WearChange round trip") {
     net::WearChange w;
     w.spawn_id = 0x1234;

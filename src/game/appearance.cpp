@@ -45,6 +45,11 @@ std::uint32_t effective_material(const Appearance& a, int slot) {
     return a.material[s];
 }
 
+int tint_slot(const Appearance& a, int slot) {
+    if ((slot == kSlotArms || slot == kSlotWrists) && is_robe(a.material[kSlotChest])) return kSlotChest;
+    return slot;
+}
+
 std::uint32_t map_head_material(std::uint32_t race, std::uint8_t gender, std::uint32_t id) {
     const bool female = gender != 0;
     if (id == 0xf0) {

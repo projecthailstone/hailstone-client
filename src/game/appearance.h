@@ -56,6 +56,10 @@ inline bool is_robe(std::uint32_t chest_material) { return chest_material >= 10 
 // The head is bare unless show_helm (SwapHead @00594210).
 std::uint32_t effective_material(const Appearance& a, int slot);
 
+// The tint slot a body slot (0-6) is drawn with: a robe's chest tint for the arms and wrists under it, as their material
+// is (the Luclin path, character_parts.cpp), else the slot's own.
+int tint_slot(const Appearance& a, int slot);
+
 // FUN_0040a5b0 (ActorBase, @0x40a5b0): the head material ids 0xf0 / 0xf1 of
 // the old models by the actor's race and gender (female: gender 1): 0xf0 is a
 // per-race helm item, 0xf1 the head 3 (Ogres a helm, Barbarians the 0xf0 one);
