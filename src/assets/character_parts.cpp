@@ -557,7 +557,16 @@ void CharacterLibrary::dress_luclin(const CharacterModel& model, const game::App
     if (a.texture == game::kNoTexture)
         for (std::int32_t slot = 1; slot <= 6; ++slot) {
             auto s = static_cast<std::size_t>(slot);
-            game::swap_body_material(look, env, slot, 0, static_cast<std::int32_t>(a.material[s]), a.tint[s], 0,
+            // A robe's chest material also dresses the upper arms and forearms.
+            // The classic WLD path already uses effective_material(), but the
+            // Luclin path used each slot's raw value and left exposed skin.
+            const auto material = game::effective_material(a, slot);
+            const auto tint_slot =
+                ((slot == game::kSlotArms || slot == game::kSlotWrists) &&
+                 game::is_robe(a.material[game::kSlotChest]))
+                    ? game::kSlotChest : slot;
+            game::swap_body_material(look, env, slot, 0, static_cast<std::int32_t>(material),
+                                     a.tint[static_cast<std::size_t>(tint_slot)], 0,
                                      a.class_id, a.hero_forge[s] != 0 ? 1u : 0u);
         }
     // PlayerClient_DressSpawn @0x595c70: SwapFace(face, 0, class) on the fresh
