@@ -14,6 +14,12 @@ and on pull requests to `main`:
 One workflow builds: `.github/workflows/macos.yml` ("macOS arm64" below), the one platform the developer's Linux
 machine cannot build. It runs only when started by hand or on a push to a `macos/**` branch.
 
+`.github/workflows/release.yml` builds and publishes a release: on a pushed tag `v<version>` or by hand, it builds
+Windows x64 (MSVC), Linux x64, Linux arm64 and macOS arm64, runs each platform's `hailstone_tests`, makes every
+platform's zip and `hailstone-update.txt` with `tools/make_update.py`, signs the manifest with the repository secret
+`HAILSTONE_UPDATE_KEY` (the secret key file's 128 hex digits), checks it against `update-key.pub` and uploads it all to
+the GitHub release. Without the secret it stops before publishing.
+
 Builds and tests run on the developer's machine, to save Actions minutes. The build legs (linux-gcc and
 windows-msvc, and before them Linux Clang, macOS arm64, Linux arm64, a sanitizer leg and clang-tidy) were dropped
 on 2026-11-02; they are in the workflow's history. Before a merge to `main`:

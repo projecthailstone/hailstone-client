@@ -1,0 +1,199 @@
+name: Release
+
+# Builds every platform's client on GitHub, makes each platform's download and the update manifest
+# (tools/make_update.py), signs the manifest with the release key and publishes it all on one GitHub Release
+# (docs/updater.md "Making a release"). Started by pushing a tag v<version> (the tag must match project(VERSION) and
+# HAILSTONE_VERSION_LABEL) or by hand. The secret HAILSTONE_UPDATE_KEY holds the secret key file's contents; without
+# it nothing is published.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          v=$(sed -nE 's/^project\(hailstone VERSION ([0-9.]+).*/\1/p' CMakeLists.txt | head -n1)
+          l=$(sed -nE 's/^set\(HAILSTONE_VERSION_LABEL "([^"]*)"\).*/\1/p' CMakeLists.txt | head -n1)
+          [ -n "$l" ] && v="$v-$l"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "release version: $v"
+          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "${GITHUB_REF_NAME}" != "v$v" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match the version v$v in CMakeLists.txt"; exit 1
+          fi
+
+  build:
+    name: ${{ matrix.platform }}
+    needs: version
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: windows-x64
+            os: windows-2022
+          - platform: linux-x64
+            os: ubuntu-24.04
+          - platform: linux-arm64
+            os: ubuntu-24.04-arm
+          - platform: macos-arm64
+            os: macos-15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache fetched dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/_deps/*-src
+          key: deps-release-${{ matrix.platform }}-${{ hashFiles('cmake/Dependencies.cmake') }}
+
+      - name: Install tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build glslang-tools zlib1g-dev libx11-dev libxext-dev libxrandr-dev \
+            libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxkbcommon-dev libwayland-dev wayland-protocols \
+            libdrm-dev libgbm-dev libasound2-dev libpulse-dev libudev-dev libdbus-1-dev file \
+            libnss3 libnspr4 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libxcomposite1 libxdamage1 libcairo2 \
+            libpango-1.0-0 libxrandr2 libxkbcommon0 libgbm1 libdrm2 libasound2t64 libdbus-1-3 libexpat1 \
+            libxshmfence1 libglib2.0-0t64 libx11-xcb1
+
+      - name: Install tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja glslang
+
+      - name: Install tools (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://github.com/KhronosGroup/glslang/releases/download/main-tot/glslang-main-windows-x86_64-release.zip -OutFile glslang.zip
+          Expand-Archive glslang.zip -DestinationPath "$env:RUNNER_TEMP/glslang"
+          # This release ships glslang.exe only; cmake/Shaders.cmake accepts it in place of glslangValidator.
+          "$env:RUNNER_TEMP/glslang/bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # The browser helper follows CMakeLists.txt's default: on for Windows and Linux, off on macOS.
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel -- -k 0
+
+      # No game folder here: the tests that need one pass without checking anything (docs/ci.md).
+      - name: Test
+        run: |
+          if [ -f build/hailstone_tests.exe ]; then build/hailstone_tests.exe; else build/hailstone_tests; fi
+
+      # Without the server plugins: they are released as add-ons by their own repositories.
+      - name: Install
+        run: |
+          cmake --install build --prefix dist/hailstone
+          # The default Windows install also writes zlib's bin/, include/ and lib/ (docs/updater.md step 2).
+          rm -rf dist/hailstone/bin dist/hailstone/include dist/hailstone/lib
+
+      # Apple Silicon runs no unsigned code; the install's rpath edits can leave the linker's ad hoc signature stale.
+      - name: Sign ad hoc (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          find dist/hailstone -type f -print0 | while IFS= read -r -d '' f; do
+            if file -b "$f" | grep -q 'Mach-O'; then
+              codesign --force --sign - "$f"
+              codesign --verify --strict "$f"
+            fi
+          done
+          if otool -L dist/hailstone/hailstone | tail -n +2 | awk '{print $1}' | grep -vE '^(/usr/lib/|/System/|@rpath/|@executable_path/)'; then
+            echo "a library outside the system and the folder"; exit 1
+          fi
+
+      # A tar, since an artifact's zip drops the files' Unix permissions (the executable bit).
+      - name: Pack
+        run: tar -C dist -cf hailstone-${{ matrix.platform }}.tar hailstone
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.platform }}
+          path: hailstone-${{ matrix.platform }}.tar
+          retention-days: 7
+
+      # The signing tool, built for the publish job's runner.
+      - uses: actions/upload-artifact@v4
+        if: matrix.platform == 'linux-x64'
+        with:
+          name: hailstone-sign
+          path: build/hailstone_sign
+          retention-days: 7
+
+  publish:
+    name: sign and publish
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Make the downloads and the manifest
+        run: |
+          notes="https://github.com/${GITHUB_REPOSITORY}/releases/tag/v${VERSION}"
+          for p in windows-x64 linux-x64 linux-arm64 macos-arm64; do
+            mkdir -p "unpack/$p"
+            tar -C "unpack/$p" -xf "artifacts/dist-$p/hailstone-$p.tar"
+            python3 tools/make_update.py --version "$VERSION" --platform "$p" --dist "unpack/$p/hailstone" \
+              --notes "$notes" --out release/
+          done
+          ls -l release
+
+      - name: Sign the manifest
+        env:
+          HAILSTONE_UPDATE_KEY: ${{ secrets.HAILSTONE_UPDATE_KEY }}
+        run: |
+          if [ -z "$HAILSTONE_UPDATE_KEY" ]; then
+            echo "the secret HAILSTONE_UPDATE_KEY is not set: nothing is published"; exit 1
+          fi
+          sign=artifacts/hailstone-sign/hailstone_sign
+          chmod +x "$sign"
+          key="$RUNNER_TEMP/update.key"
+          (umask 077; printf '%s\n' "$HAILSTONE_UPDATE_KEY" > "$key")
+          "$sign" sign "$key" release/hailstone-update.txt
+          rm -f "$key"
+          "$sign" verify update-key.pub release/hailstone-update.txt
+
+      # Not a pre-release: the updater's feed is the newest release that is not one (docs/updater.md step 6).
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: Hailstone v${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          prerelease: false
+          body: Windows x64, Linux x64, Linux arm64 and macOS arm64 builds of ${{ github.sha }}, with the signed update manifest (workflow run ${{ github.run_number }}).
+          files: release/*
+          fail_on_unmatched_files: true

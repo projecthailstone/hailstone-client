@@ -170,6 +170,10 @@ The install waits while the box set's other windows run (they use the same files
 
 ## Making a release
 
+The release workflow (`.github/workflows/release.yml`, docs/ci.md) does steps 1-4 and 6 on GitHub: set the version, commit,
+and push the tag `v<version>`. It needs the secret key file's contents in the repository secret `HAILSTONE_UPDATE_KEY`.
+The steps below are the same release made by hand.
+
 1. Set the version (`project(VERSION)`, `HAILSTONE_VERSION_LABEL`) and build each platform's Release, with
    `-DHAILSTONE_BROWSER=ON`, on a clean checkout of the release commit (docs/ci.md):
    - Linux x64 in the `hailstone-linux-build:24.04` container (`tools/docker/linux.Dockerfile`), so it runs on
@@ -255,5 +259,5 @@ file already there.
   package already downloaded whole is kept.
 - **Other Hailstone windows.** Windows the client did not start itself (not the box set's) are not seen; on Linux they
   run on, while on Windows the files they have open are moved like the quitting client's.
-- **The CI job.** Publishing a release (packaging, signing, uploading) is done by hand. A tag-triggered CI job would
-  need the signing key in CI.
+- **The CI job.** The release workflow keeps the signing key as the repository secret `HAILSTONE_UPDATE_KEY`; anyone who
+  can change the workflows on `main` or push a tag can have a release signed.
