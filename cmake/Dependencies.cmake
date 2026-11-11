@@ -194,6 +194,9 @@ if(HAILSTONE_BROWSER)
   elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
     set(hailstone_cef_platform linuxarm64)
     set(hailstone_cef_sha1 7907f1d0319a8d920be9b3ba54c0c60e2d22a7fb)
+    # CEF's cmake/cef_variables.cmake takes the architecture from CMAKE_HOST_SYSTEM_PROCESSOR, which Linux reports as
+    # aarch64, not arm64, and then compiles libcef_dll_wrapper with -m64 -march=x86-64.
+    set(PROJECT_ARCH arm64)
   elseif(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64)$")
     set(hailstone_cef_platform windows64)
     set(hailstone_cef_sha1 72dc1dd1636acc2391609fa6f410aa09f09168d4)

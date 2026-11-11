@@ -43,7 +43,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 150
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - platform: windows-x64
