@@ -179,6 +179,8 @@ jobs:
             echo "the secret HAILSTONE_UPDATE_KEY is not set: nothing is published"; exit 1
           fi
           sign=artifacts/hailstone-sign/hailstone_sign
+          # It is linked against the client's libraries (libSDL3.so.0), which the unpacked Linux client holds.
+          export LD_LIBRARY_PATH="$PWD/unpack/linux-x64/hailstone${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           chmod +x "$sign"
           key="$RUNNER_TEMP/update.key"
           (umask 077; printf '%s\n' "$HAILSTONE_UPDATE_KEY" > "$key")
