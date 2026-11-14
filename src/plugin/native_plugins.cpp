@@ -1141,76 +1141,7 @@ inline void write_str16(unsigned char*& dst, std::string_view sv) {
         dst += len;
     }
 }
-//These are used by the h_get_spawns_data_bulk method
-//needs to be packed so that there is no padding
-#pragma pack(push, 1)
-struct BulkSpawnHeader {
-    uint32_t spawnCount;
-    float playerX;
-    float playerY;
-    float playerZ;
-};
-enum SpawnFlags :uint32_t {
-    FLAG_NONE = 0,
-    FLAG_AFK = 1 << 0,
-    FLAG_AGGRESSIVE = 1 << 1,
-    FLAG_ANON = 1 << 2,
-    FLAG_BUYER = 1 << 3,
-    FLAG_DEAD = 1 << 4,
-    FLAG_DUCKING = 1 << 5,
-    FLAG_FEIGNING = 1 << 6,
-    FLAG_GM = 1 << 7,
-    FLAG_INVS = 1 << 8,
-    FLAG_SUMMONED = 1 << 9,
-    FLAG_LEVITATION = 1 << 10,
-    FLAG_LINKDEAD = 1 << 11,
-    FLAG_MOUNT = 1 << 12,
-    FLAG_MOVING = 1 << 13,
-    FLAG_NAMED = 1 << 14,
-    FLAG_ROLEPLAYING = 1 << 15,
-    FLAG_SITTING = 1 << 16,
-    FLAG_SNEAKING = 1 << 17,
-    FLAG_STANDING = 1 << 18,
-    FLAG_STUNNED = 1 << 19,
-    FLAG_TARGETABLE = 1 << 20,
-    FLAG_TRADER = 1 << 21,
-    FLAG_UNDERWATER = 1 << 22,
-};
 
-struct FixedSpawnRecord {
-    int32_t id;
-    uint32_t flags;
-    int32_t isBlind;
-    int32_t bodyTypeID;
-    int32_t classID;
-    int32_t conColorID;
-    int32_t currentEndurance;
-    int64_t currentHps;
-    int32_t currentMana;
-    int32_t genderId;
-    int64_t guildID;
-    float heading;
-    float height;
-    int32_t level;
-    float look;
-    int32_t master;
-    int32_t maxEndurance;
-    float maxRange;
-    float maxRangeTo;
-    int64_t pctHPs;
-    int32_t pctMana;
-    int32_t petID;
-    int32_t playerState;
-    int32_t raceID;
-    int32_t targetOfTargetID;
-    float x;
-    float y;
-    float z;
-    int32_t deity;
-    // Immediately followed on the wire by 7 length-prefixed strings:
-    // 1. BodyDesc, 2. CleanName, 3. DisplayName, 4. Name, 5. RaceName, 6. Suffix, 7. TypeDesc
-};
-#pragma pack(pop)
 
 /// <summary>
 /// This is a hightly optimized code. AI should not modify this code method.
@@ -1234,13 +1165,13 @@ int h_get_spawns_data_bulk(void* h, unsigned char* data, int32_t datamax)
     const auto& spawns = world.spawns;
     const auto* player = world.player();
     const int playerLevel = player ? player->level : 0;
-    BulkSpawnHeader* header = reinterpret_cast<BulkSpawnHeader*>(data);
+    HS_BulkSpawnHeader* header = reinterpret_cast<HS_BulkSpawnHeader*>(data);
     header->spawnCount = 0;
     header->playerX = player ? player->position.x : 0.0f;
     header->playerY = player ? player->position.y : 0.0f;
     header->playerZ = player ? player->position.z : 0.0f;
 
-    unsigned char* pBuffer = data + sizeof(BulkSpawnHeader);
+    unsigned char* pBuffer = data + sizeof(HS_BulkSpawnHeader);
     const unsigned char* pSafeLimit = data + (datamax - 4096);
     char tempBuffer[2048];
     uint32_t count = 0;
@@ -1253,30 +1184,30 @@ int h_get_spawns_data_bulk(void* h, unsigned char* data, int32_t datamax)
         float maxRangeTo = 0;
         if (spawnType != hailstone::game::eSpawnType::ITEM) maxRangeTo = 14.5;
 
-        uint32_t flags = FLAG_NONE;
-        if (spawn.afk)                                  flags |= FLAG_AFK;
-        if ((spawn.player_state & 0x0C) != 0)           flags |= FLAG_AGGRESSIVE; // this is checking 0x4 and 0x8 at the same time.
-        if (spawn.anon == 1)                            flags |= FLAG_ANON;
-        if (spawn.buyer)                                flags |= FLAG_BUYER;
-        if (spawn.stand_state == STANDSTATE_DEAD)       flags |= FLAG_DEAD;
-        if (spawn.stand_state == STANDSTATE_DUCK)       flags |= FLAG_DUCKING;
-        if (spawn.stand_state == STANDSTATE_FEIGN)      flags |= FLAG_FEIGNING;
-        if (spawn.gm)                                   flags |= FLAG_GM;
-        if (spawn.summoned)                             flags |= FLAG_SUMMONED;
-        if (spawn.fly_mode == 2)                        flags |= FLAG_LEVITATION;
-        if (spawn.linkdead)                             flags |= FLAG_LINKDEAD;
-        if (spawn.mount_id > 0)                         flags |= FLAG_MOUNT;
-        if (std::fabs(spawn.speed_run) > 0.0f)          flags |= FLAG_MOVING;
-        if (game::Spawn::IsNamed(&spawn))               flags |= FLAG_NAMED;
-        if (spawn.anon == 2)                            flags |= FLAG_ROLEPLAYING;
-        if (spawn.stand_state == STANDSTATE_SIT)        flags |= FLAG_SITTING;
-        if (spawn.stand_state == STANDSTATE_STAND)      flags |= FLAG_STANDING;
-        if ((spawn.player_state & 0x20) != 0)           flags |= FLAG_STUNNED;
-        if (spawn.targetable)                           flags |= FLAG_TARGETABLE;
-        if (spawn.trader)                               flags |= FLAG_TRADER;
+        uint32_t flags = HS_BULK_SPAWN_NONE;
+        if (spawn.afk)                                  flags |= HS_BULK_SPAWN_AFK;
+        if ((spawn.player_state & 0x0C) != 0)           flags |= HS_BULK_SPAWN_AGGRESSIVE; // this is checking 0x4 and 0x8 at the same time.
+        if (spawn.anon == 1)                            flags |= HS_BULK_SPAWN_ANON;
+        if (spawn.buyer)                                flags |= HS_BULK_SPAWN_BUYER;
+        if (spawn.stand_state == STANDSTATE_DEAD)       flags |= HS_BULK_SPAWN_DEAD;
+        if (spawn.stand_state == STANDSTATE_DUCK)       flags |= HS_BULK_SPAWN_DUCKING;
+        if (spawn.stand_state == STANDSTATE_FEIGN)      flags |= HS_BULK_SPAWN_FEIGNING;
+        if (spawn.gm)                                   flags |= HS_BULK_SPAWN_GM;
+        if (spawn.summoned)                             flags |= HS_BULK_SPAWN_SUMMONED;
+        if (spawn.fly_mode == 2)                        flags |= HS_BULK_SPAWN_LEVITATION;
+        if (spawn.linkdead)                             flags |= HS_BULK_SPAWN_LINKDEAD;
+        if (spawn.mount_id > 0)                         flags |= HS_BULK_SPAWN_MOUNT;
+        if (std::fabs(spawn.speed_run) > 0.0f)          flags |= HS_BULK_SPAWN_MOVING;
+        if (game::Spawn::IsNamed(&spawn))               flags |= HS_BULK_SPAWN_NAMED;
+        if (spawn.anon == 2)                            flags |= HS_BULK_SPAWN_ROLEPLAYING;
+        if (spawn.stand_state == STANDSTATE_SIT)        flags |= HS_BULK_SPAWN_SITTING;
+        if (spawn.stand_state == STANDSTATE_STAND)      flags |= HS_BULK_SPAWN_STANDING;
+        if ((spawn.player_state & 0x20) != 0)           flags |= HS_BULK_SPAWN_STUNNED;
+        if (spawn.targetable)                           flags |= HS_BULK_SPAWN_TARGETABLE;
+        if (spawn.trader)                               flags |= HS_BULK_SPAWN_TRADER;
       
 
-        FixedSpawnRecord rec{};
+        HS_BulkSpawnFixedRecord rec{};
         rec.id = spawn.id;
         rec.flags = flags;
         rec.bodyTypeID = spawn.body_type;
@@ -1420,34 +1351,22 @@ int h_get_buff_data_bulk(void* h, unsigned char* data, int32_t datamax)
     //the long buffs, then the songs, then the one disc slot, always last (RoF2: 0-41, 42-61, 62)
     //the disc slot only goes out when the buffer has room for it: every buff and song slot is the minimum
     //precent C++ from padding the struct as we are blasting this into the array.
-    #pragma pack(push, 1)
-    struct BuffBulkData {
-        int ID;
-        int casterID;
-        int duration;
-        int hitcount;
-        int spelltype;
-        int counterType;
-        int counterTotal;
-        unsigned char slotType; // HAILSTONE_BUFF_SLOT_BUFF / _SONG / _DISC
-    };
-    #pragma pack(pop)
-    static_assert(sizeof(BuffBulkData) == HAILSTONE_BUFF_RECORD_SIZE);
+    static_assert(sizeof(HS_BulkBuffData) == HAILSTONE_BUFF_RECORD_SIZE);
     //needs to be able to fit the data, or return nothing
     constexpr int kNormalBuffSlots = game::kLongBuffSlots + game::kShortBuffSlots; // the disc slot is the one after
-    constexpr int32_t kMinBuffBytes = kNormalBuffSlots * static_cast<int32_t>(sizeof(BuffBulkData));
+    constexpr int32_t kMinBuffBytes = kNormalBuffSlots * static_cast<int32_t>(sizeof(HS_BulkBuffData));
     if (datamax < kMinBuffBytes) return 0;
 
     const hailstone::game::SpellTable& st = c->spell_table();
 
     for (int slot = 0; slot < game::kBuffSlots; ++slot) {
         // SAFETY CHECK: Ensure writing this next packet won't exceed datamax
-        if (bufferSize + sizeof(BuffBulkData) > static_cast<std::size_t>(datamax)) {
+        if (bufferSize + sizeof(HS_BulkBuffData) > static_cast<std::size_t>(datamax)) {
             // Buffer is full (a 1798-byte buffer stops here before the disc slot). Break out to prevent an overflow.
             break;
         }
         const auto& buff = buffs[static_cast<std::size_t>(slot)];
-        BuffBulkData pkt{}; // an empty slot stays all zeros, its spell id too (the client keeps kNoSpell there)
+        HS_BulkBuffData pkt{}; // an empty slot stays all zeros, its spell id too (the client keeps kNoSpell there)
         if (!buff.empty())
         {
             pkt.ID = static_cast<int>(buff.spell);
@@ -1506,12 +1425,8 @@ int32_t h_get_pet_buff_data_bulk(void* h, unsigned char* data, int32_t datamax)
     if (!c || !data || datamax <= 0) return 0;
     unsigned char* pBuffer = data;
     int bufferSize = 0;
-    struct BuffDataPacket {
-        int id;
-        int duration;
-        int spellType;
-    };
-    const size_t bytesPerBuff = sizeof(BuffDataPacket);
+ 
+    const size_t bytesPerBuff = sizeof(HS_BulkPetBuffData);
     const game::SpellTable& st = c->spell_table();
     for (const auto& [slot, b] : c->pet_buffs()) {
 
@@ -1519,7 +1434,7 @@ int32_t h_get_pet_buff_data_bulk(void* h, unsigned char* data, int32_t datamax)
             // Buffer is full. Handle as needed (e.g., break or return error)
             break;
         }
-        BuffDataPacket packet{ 0, 0, 0 };
+        HS_BulkPetBuffData packet{ 0, 0, 0 };
         if (b.spell > 0)
         {
             packet.id = b.spell;
