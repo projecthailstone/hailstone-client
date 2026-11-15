@@ -674,6 +674,7 @@ int ClientApp::run() {
             lap.mark("objects draw");
             if (flora_renderer_ && grass_) {
                 flora_renderer_->set_reach(flora_reach_);
+                flora_renderer_->set_density(static_cast<float>(grass_density_) / 100.0f);
                 // The grass bends away from the spawns standing in it (Hailstone's own): the nearest to the camera
                 // (in the isometric camera, which stands far off, to the player) within 150 units, by their feet,
                 // round them by their size.

@@ -695,6 +695,30 @@ TEST_CASE("zone flora: the lawn's height wanders smoothly between 0 and 1") {
     CHECK(hi - lo > 0.5f);
 }
 
+TEST_CASE("lawn: Grass Density scales each draw's blades, which keep their width") {
+    for (std::size_t k = 0; k < render::kLawnLods.size(); ++k)
+        CHECK(render::lawn_lod_blades(k) == render::kLawnLods[k].blades);
+    CHECK(render::lawn_lod_blades(0, 2.0f) == 98);
+    CHECK(render::lawn_lod_blades(1, 0.5f) == 8);
+    CHECK(render::lawn_lod_blades(2, 0.25f) == 2);
+    CHECK(render::lawn_lod_blades(0, 10.0f) == 98);  // clamped to kMaxGrassDensity
+    CHECK(render::lawn_lod_blades(2, 0.0f) == 2);    // and kMinGrassDensity
+    CHECK(render::lawn_lod_blades(0, std::numeric_limits<float>::quiet_NaN()) == 49);
+    CHECK(render::lawn_lod_blades(3) == 0);
+    for (float density : {0.25f, 0.5f, 1.0f, 1.5f, 2.0f}) {
+        CHECK(render::lawn_blades(0.0f, density) == static_cast<float>(render::lawn_lod_blades(0, density)));
+        CHECK(render::lawn_blades(5000.0f, density) == static_cast<float>(render::lawn_lod_blades(2, density)));
+        CHECK(render::lawn_blade_width(0.0f, density) == render::kLawnBladeWidth);
+        // Each draw holds the blades that stand anywhere in its range.
+        for (float d = 0.0f; d < 400.0f; d += 5.0f)
+            CHECK(static_cast<float>(render::lawn_lod_blades(render::lawn_lod(d), density)) + 1e-3f >=
+                  render::lawn_blades(d, density));
+    }
+    CHECK(render::grass_density_percent(100) == 100);
+    CHECK(render::grass_density_percent(0) == 25);
+    CHECK(render::grass_density_percent(1000) == 200);
+}
+
 TEST_CASE("lawn: levels of detail and the far patches' stride") {
     CHECK(render::lawn_lod(0.0f) == 0);
     CHECK(render::lawn_lod(render::kLawnNear + 1.0f) == 1);

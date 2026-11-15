@@ -590,9 +590,6 @@ call, since a client older than the call has a shorter table. The structs a plug
 ..., `HailstoneWebState`) carry their size too and the client fills what both know; `HailstoneWebState`'s `size` is a `size_t`
 (as ABI 3 shipped it), the others' a `uint32_t`.
 
-Buff, spawn and extended target records: `get_buff_data_bulk(host, out, out_size)`,
-`get_pet_buff_data_bulk(host, out, out_size)`, `get_spawns_data_bulk(host, out, out_size)` and
-`get_xtarget_data_bulk(host, out, out_size)` (with `read`; added later in ABI 3, so test `HAILSTONE_HOST_HAS(host, <field>)` first;
 The cursor item's origin: `cursor_origin(host)` (with `read`; added later in ABI 3, so test
 `HAILSTONE_HOST_HAS(host, cursor_origin)` first) says how the item on the cursor now got there, for a plugin that
 puts away or destroys what the server hands the player:
@@ -625,11 +622,11 @@ when the cursor no longer holds an item of that id, so an item the player put th
 
 Both need `actions`, as `/destroy` does. The id is a plain decimal number above 0; anything else does nothing.
 
-Buff and spawn records: `get_buff_data_bulk(host, out, out_size)`, `get_pet_buff_data_bulk(host, out, out_size)` and
-`get_spawns_data_bulk(host, out, out_size)` (with `read`; added later in ABI 3, so test `HAILSTONE_HOST_HAS(host, <field>)` first;
+Buff and spawn records: `get_buff_data_bulk(host, out, out_size)`, `get_pet_buff_data_bulk(host, out, out_size)`,
+`get_spawns_data_bulk(host, out, out_size)` and `get_xtarget_data_bulk(host, out, out_size)` (with `read`; added later in ABI 3, so test `HAILSTONE_HOST_HAS(host, <field>)` first;
 `out` is an `unsigned char*` and `out_size` an `int32_t`) write records into `out` and return the bytes written.
 The records are the SDK's packed structs (`HS_Bulk_BuffData`, `HS_Bulk_PetBuffData`, `HS_Bulk_SpawnHeader`,
-`HS_Bulk_SpawnFixedRecord`, all in `#pragma pack(push, 1)`), in the machine's byte order (little-endian on every
+`HS_Bulk_SpawnFixedRecord`, `HS_Bulk_XTargetData`, all in `#pragma pack(push, 1)`), in the machine's byte order (little-endian on every
 platform Hailstone runs on) and unaligned. For speed, the bulk reads are the one place where a struct may be cast
 onto the buffer, by the client writing it and by a plugin reading it: read each field through the packed struct
 (`rec->level`), which the compiler reads unaligned, and never keep a plain pointer or reference to a field (`&rec->x`),

@@ -79,7 +79,7 @@ private:
     VkDevice device_;
     VmaAllocator allocator_;
     VkExtent2D scene_{};
-    Image key_, field_, motion_t_; // fg_scatter.comp's and fg_fill.comp's, kept in GENERAL
+    Image key_, prev_key_, field_, motion_t_; // fg_scatter.comp's and fg_fill.comp's, kept in GENERAL
     bool fresh_ = true;            // made since the last record_motion: their layouts are still UNDEFINED
 
     VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE;

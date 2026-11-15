@@ -28,7 +28,7 @@ struct Push {
     glm::vec4 time; // x seconds (wrapped)
     glm::vec4 lod;    // the lawn's draw: x its blades (LawnLod), y segments, z kLawnCell, w kLawnBladeWidth
     glm::vec4 curve;  // lawn_blades: x kLawnFull, y kLawnNear, z kLawnMid
-    glm::vec4 counts; // lawn_blades: xyz kLawnLods' blades
+    glm::vec4 counts; // lawn_blades: xyz kLawnLods' blades at Grass Density (lawn_lod_blades)
 };
 static_assert(sizeof(Push) <= 128);
 
@@ -82,18 +82,25 @@ float smooth(float a, float b, float x) {
 }
 } // namespace
 
-// lawn.vert's lawn_blades, line for line.
-float lawn_blades(float d) {
-    const auto n0 = static_cast<float>(kLawnLods[0].blades), n1 = static_cast<float>(kLawnLods[1].blades),
-               n2 = static_cast<float>(kLawnLods[2].blades);
+std::uint32_t lawn_lod_blades(std::size_t k, float density) {
+    if (k >= kLawnLods.size()) return 0;
+    const float share = std::isnan(density) ? 1.0f : std::clamp(density, kMinGrassDensity, kMaxGrassDensity);
+    const float n = static_cast<float>(kLawnLods[k].blades) * share;
+    return std::max<std::uint32_t>(1, static_cast<std::uint32_t>(std::lround(n)));
+}
+
+// lawn.vert's lawn_blades, line for line (the push block's counts are lawn_lod_blades').
+float lawn_blades(float d, float density) {
+    const auto n0 = static_cast<float>(lawn_lod_blades(0, density)), n1 = static_cast<float>(lawn_lod_blades(1, density)),
+               n2 = static_cast<float>(lawn_lod_blades(2, density));
     if (!(d > kLawnFull)) return n0;
     if (d <= kLawnNear) return n0 + (n1 - n0) * smooth(kLawnFull, kLawnNear, d);
     if (d <= kLawnMid) return n1 + (n2 - n1) * smooth(kLawnNear, kLawnMid, d);
     return n2;
 }
 
-float lawn_blade_width(float d) {
-    return kLawnBladeWidth * std::sqrt(static_cast<float>(kLawnLods[0].blades) / lawn_blades(d));
+float lawn_blade_width(float d, float density) {
+    return kLawnBladeWidth * std::sqrt(static_cast<float>(lawn_lod_blades(0, density)) / lawn_blades(d, density));
 }
 
 std::size_t lawn_lod(float d) { return d < kLawnNear ? 0 : d < kLawnMid ? 1 : 2; }
@@ -125,6 +132,10 @@ std::uint32_t lawn_patch_stride(glm::vec2 p) {
 }
 
 void FloraRenderer::set_reach(float reach) { reach_ = std::clamp(reach, kFloraReach, kMaxFloraReach); }
+
+void FloraRenderer::set_density(float density) {
+    density_ = std::isnan(density) ? 1.0f : std::clamp(density, kMinGrassDensity, kMaxGrassDensity);
+}
 
 void FloraRenderer::set_pushers(std::span<const glm::vec4> pushers) {
     pushers_.assign(pushers.begin(), pushers.begin() + static_cast<std::ptrdiff_t>(std::min<std::size_t>(pushers.size(), kMaxPushers)));
@@ -428,8 +439,8 @@ std::uint32_t FloraRenderer::draw(const FrameInfo& frame, const glm::mat4& view_
     const double wrapped_before = std::fmod(seconds_before_, 4096.0) <= wrapped ? std::fmod(seconds_before_, 4096.0) : wrapped;
     Push pc{view_proj, glm::vec4(static_cast<float>(wrapped), static_cast<float>(wrapped_before), 0.0f, 0.0f), glm::vec4(0.0f),
             glm::vec4(kLawnFull, kLawnNear, kLawnMid, 0.0f),
-            glm::vec4(static_cast<float>(kLawnLods[0].blades), static_cast<float>(kLawnLods[1].blades),
-                      static_cast<float>(kLawnLods[2].blades), 0.0f)};
+            glm::vec4(static_cast<float>(lawn_lod_blades(0, density_)), static_cast<float>(lawn_lod_blades(1, density_)),
+                      static_cast<float>(lawn_lod_blades(2, density_)), 0.0f)};
     VkDeviceSize offset = 0;
     VkDescriptorSet sets[2] = {sets_[frame.frame_slot], vk_.shadow_set()};
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 2, sets, 0, nullptr);
@@ -443,7 +454,7 @@ std::uint32_t FloraRenderer::draw(const FrameInfo& frame, const glm::mat4& view_
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, lawn_pipeline_);
         for (std::size_t k = 0; k < kLawnLods.size(); ++k) {
             if (lawn_[k].empty()) continue;
-            const LawnLod& lod = kLawnLods[k];
+            const LawnLod lod{lawn_lod_blades(k, density_), kLawnLods[k].segments}; // at Grass Density
             pc.lod = glm::vec4(static_cast<float>(lod.blades), static_cast<float>(lod.segments), assets::kLawnCell,
                                kLawnBladeWidth);
             vkCmdPushConstants(cmd, layout_, kPushStages, 0, sizeof(pc), &pc);

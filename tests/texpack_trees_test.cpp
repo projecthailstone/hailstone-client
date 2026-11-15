@@ -373,6 +373,38 @@ TEST_CASE("trees: a pine's needles keep close in shade when the game's leaves ar
     CHECK(spread < 0.35); // 0.55 with each needle the palette's own shade
 }
 
+TEST_CASE("trees: a pine's needle cards lie along its branches, none standing upright below its top") {
+    const Textures tex(true);
+    auto shape = measure_tree(game_tree(), tex.lookup());
+    REQUIRE(shape);
+    TreeOptions opt;
+    opt.seed = 7;
+    opt.style = TreeStyle::Pine;
+    opt.leaf_size = opt.bark_size = 64;
+    opt.bark_name = "b.dds";
+    opt.leaf_name = "l.dds";
+    opt.far_name = "f.dds";
+    opt.far_width = opt.far_height = 64;
+    const GeneratedTree tree = generate_tree(*shape, opt);
+    const auto& m = tree.mesh;
+    const auto& leaves = m.parts[1];
+    float top = 0.0f;
+    for (const auto& v : m.vertices) top = std::max(top, v.position.z);
+    // An upright card (the clump once at each branch's end) showed as a flat slab from beside the tree; the sprays
+    // along a branch tilt at most about 50 degrees from level. The crown's sprays round the leader stand upright.
+    int cards = 0;
+    for (std::uint32_t k = leaves.first_index; k + 2 < leaves.first_index + leaves.index_count; k += 3) {
+        const glm::vec3 a = m.vertices[m.indices[k]].position, b = m.vertices[m.indices[k + 1]].position,
+                        c = m.vertices[m.indices[k + 2]].position;
+        if (std::max({a.z, b.z, c.z}) > top * 0.8f) continue;
+        const glm::vec3 n = glm::cross(b - a, c - a);
+        if (glm::length(n) < 1e-6f) continue;
+        ++cards;
+        CHECK(std::abs(glm::normalize(n).z) > 0.4f);
+    }
+    CHECK(cards > 0);
+}
+
 TEST_CASE("trees: a written tree is a pack's replacement model for that game mesh") {
     test::ScratchDir dir("trees_write");
     const assets::Mesh mesh = game_tree();

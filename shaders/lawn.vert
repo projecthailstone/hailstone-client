@@ -18,7 +18,7 @@ layout(push_constant) uniform Push {
     vec4 time; // x seconds, y the last frame's (the motion's)
     vec4 lod;    // x this draw's blades, y segments, z kLawnCell, w kLawnBladeWidth
     vec4 curve;  // x kLawnFull, y kLawnNear, z kLawnMid
-    vec4 counts; // xyz kLawnLods' blades
+    vec4 counts; // xyz kLawnLods' blades at Grass Density (render::lawn_lod_blades)
 } pc;
 
 // render/scene_lighting.h SceneLighting.
@@ -150,11 +150,12 @@ void main() {
     if (float(hash(s ^ 0x5bd1e995u) & 0xffffu) / 65535.0 >= float(i_flags & 0xffu) / 255.0) grown = 0.0;
     float height = i_size.y * (0.85 + 0.25 * next(s)) * grown;
     // Combed: the blades lean the way a slowly turning field over the zone points (broad swathes of grass lying
-    // together), each a little off it, and turn their flat side to the way they lean.
+    // together), each a little off it. Each turns its flat side a way of its own, so the blades' wide faces do not all
+    // line up across a swathe (seen from one way all broad, from another all edge-on).
     vec2 g = root.xy * 0.011;
     float comb = sin(g.x + sin(g.y * 1.7) * 1.3) * 1.6 + sin(g.y * 0.8 - g.x * 0.6 + 2.0) * 1.2;
     float lean_turn = comb + (next(s) - 0.5) * 0.9;
-    float facing = lean_turn + 1.5707963 + (next(s) - 0.5) * 0.8;
+    float facing = next(s) * 6.2831853;
     float lean = height * (0.4 + 0.25 * next(s));
     // Wider as fewer stand (render::lawn_blade_width), and as the patch covers more squares far off.
     float width = pc.lod.w * sqrt(pc.counts.x / max(shown, 1.0)) * (i_size.x / pc.lod.z) * (0.8 + 0.4 * next(s));

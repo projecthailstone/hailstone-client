@@ -747,6 +747,7 @@ std::optional<int> ClientApp::display_option(std::string_view name) const {
     if (name == "grass") return grass_ ? 1 : 0;
     // Hailstone: how far the flora is drawn, in units (render::FloraRenderer::set_reach).
     if (name == "flora_distance") return static_cast<int>(std::lround(flora_reach_));
+    if (name == "grass_density") return grass_density_;
     // The Options window's particle density combos (SyncDisplayPage's DensityChoice).
     for (std::string_view kind : {"spell", "environment", "actor"})
         if (name.starts_with(kind) && name.substr(kind.size()) == "_particle_density")
@@ -823,6 +824,12 @@ bool ClientApp::set_display_option(std::string_view name, int value) {
     if (name == "flora_distance") {
         flora_reach_ = std::clamp(static_cast<float>(value), render::kFloraReach, render::kMaxFloraReach);
         config_.set_int("display.flora_distance", static_cast<int>(std::lround(flora_reach_)));
+        config_.save(config_path_);
+        return true;
+    }
+    if (name == "grass_density") {
+        grass_density_ = render::grass_density_percent(value);
+        config_.set_int("display.grass_density", grass_density_);
         config_.save(config_path_);
         return true;
     }

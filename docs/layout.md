@@ -192,9 +192,10 @@ takes `hailstone.ini`'s settings again and applies them.
 Some keys stay in `hailstone.ini` whoever plays (`Config::is_shared_key`): the client's own (`assets.*`, `addons.*`,
 `update.*`, `news.*`, `browser.*`, `plugins.*`, `scripts.*`), the login screen's (`login.*`, `audio.pregame_music`),
 the window's place and mode (`window.*`, `display.window_mode`, `display.resolution`: one window, so it does not jump
-when a character enters), and what is taken only at start (`display.msaa`, `ui.name`, `ui.scale`, `ui.cpp_windows`,
+when a character enters), and what is taken only at start (`display.msaa`, `display.upscaler`, `ui.name`, `ui.scale`, `ui.cpp_windows`,
 `ui.dev_windows`, `ui.perf_*`, `game.fixed_step`, `audio.enabled`, `audio.soundfont`, `audio.mix_ahead`,
-`nav.threads`, `nav.prebuild`). The UI packs' script settings (`ui/settings/<pack>.txt`) stay shared too; the window
+`nav.threads`, `nav.prebuild`). A shared key a character's file still holds from before it was shared (a
+`display.upscaler` saved per character) moves into `hailstone.ini` when the character enters, if that has none. The UI packs' script settings (`ui/settings/<pack>.txt`) stay shared too; the window
 layout was the character's already (`ui-<pack>.txt`).
 
 Scripts and plugins are also looked for in the install's own `scripts/` and `plugins/` when the data folder is

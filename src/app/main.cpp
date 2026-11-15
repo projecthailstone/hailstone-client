@@ -112,6 +112,7 @@ struct Options {
     bool neighbour_tint = false;                  // --neighbour-tint: render::ZoneRenderer::set_debug_tint
     float tree_detail = 1.0f;                     // --tree-detail PCT: display.tree_detail, as a scale
     float flora_distance = 400.0f;                // --flora-distance: how far the viewer draws the flora
+    float grass_density = 100.0f;                 // --grass-density: how thick the lawn is, percent
     std::optional<glm::vec3> flora_push;          // --flora-push: a foot the viewer's flora bends away from
     std::optional<std::string> textures; // --textures DIR: replacement textures (assets/texture_overrides.h)
     bool no_material_maps = false;       // --no-material-maps: a pack's colour without its normal and roughness maps
@@ -256,14 +257,16 @@ void usage() {
         "  --sharpness N      FSR 1's sharpening below a render scale of 100, 0..1 (default 0.5)\n"
         "  --upscaler NAME    fsr1 (spatial, below a render scale of 100), taa (temporal, MSAA off) or fsr3 (AMD FSR 3.1)\n"
         "  --frame-gen        generate a frame between each two (needs --upscaler taa or fsr3; vsync on)\n"
-        "  --screenshot-generated  viewer, with --frame-gen: --screenshot FILE saves the last in-between frame,\n"
-        "                     and the real frames around it as FILE_prev and FILE_real\n"
+        "  --screenshot-generated  with frame generation: --screenshot FILE saves the last in-between frame,\n"
+        "                     and the real frame after it as FILE_real (the viewer: the one before as FILE_prev;\n"
+        "                     the client: every screenshot, the input script's too)\n"
         "  --fire X Y Z H W   viewer: a flame H high and W wide standing at X Y Z (modern; repeatable)\n"
         "  --no-fire          viewer: no flames at all in the modern lighting (to time them)\n"
         "  --no-grass         viewer: no flora (radial flora, and Hailstone's zone flora: flora/<zone>.txt); the\n"
         "                     viewer draws flora with --lighting modern only\n"
         "  --no-smooth-ground viewer: draw the zone's ground as the file's flat triangles (display.smooth_ground off)\n"
         "  --flora-distance U viewer: draw the flora U units round the camera (400 .. 1200; default 400)\n"
+        "  --grass-density P  viewer: the lawn's thickness in percent (25 .. 200; default 100)\n"
         "  --flora-push X Y Z viewer: the flora bends away from a foot standing there, as from a spawn (testing)\n"
         "  --moon P           the moon's phase, 0 new .. 0.5 full .. 1 (--lighting modern; client: instead of the calendar)\n"
         "  --blood-moon B     the blood moon, 0 none .. 1 (--lighting modern; client: instead of the calendar)\n"
@@ -285,6 +288,8 @@ void usage() {
         "                     --anim CODE (default P01), --anim-time T, --size S, --heading H (0..512),\n"
         "                     --upper-anim CODE (played by the upper body's bone group over --anim),\n"
         "                     --model-at X Y Z (with --zone: the first model's origin in the zone);\n"
+        "                     --orbit D: the camera circles the first model at D degrees a second (with\n"
+        "                     --frame-dt and --frame-gen, a still character against a turning world);\n"
         "                     appearance per model as CODE/key=value/..., or for all with --dress key=value/...:\n"
         "                     tex (NPC body texture), helm, face, hair, beard, armor (slots 1-6), head chest\n"
         "                     arms wrists"
@@ -442,6 +447,9 @@ Options parse_args(int argc, char** argv) {
         } else if (arg("--flora-distance")) {
             need(1);
             o.flora_distance = std::strtof(argv[++i], nullptr);
+        } else if (arg("--grass-density")) {
+            need(1);
+            o.grass_density = std::strtof(argv[++i], nullptr);
         } else if (arg("--no-ao")) {
             o.scene.ambient_occlusion = false;
         } else if (arg("--depth-prepass")) {
@@ -590,6 +598,9 @@ Options parse_args(int argc, char** argv) {
         } else if (arg("--frame-dt")) {
             need(1);
             o.frame_dt = std::strtof(argv[++i], nullptr);
+        } else if (arg("--orbit")) {
+            need(1);
+            o.model.orbit = std::strtof(argv[++i], nullptr);
         } else if (arg("--fly")) {
             need(3);
             const float x = std::strtof(argv[++i], nullptr);
@@ -750,6 +761,8 @@ int main(int argc, char** argv) {
             m.frames = opts.frames;
             m.screenshot = opts.screenshot;
             m.scene = opts.scene;
+            m.frame_dt = opts.frame_dt;
+            m.screenshot_generated = opts.screenshot_generated;
             m.modern = opts.modern;
             m.hour = opts.time_hour;
             if (opts.modern && !opts.tonemap_given) m.scene.tonemap = render::Tonemap::AgX;
@@ -780,6 +793,7 @@ int main(int argc, char** argv) {
             c.validation = opts.validation;
             c.frames = opts.frames;
             c.screenshot = opts.screenshot;
+            c.screenshot_generated = opts.screenshot_generated;
             c.ui_scale = opts.ui_scale;
             c.window_width = opts.window_width;
             c.window_height = opts.window_height;
@@ -870,6 +884,7 @@ int main(int argc, char** argv) {
         if (zone && opts.modern && !opts.no_grass && !zone->flora.empty())
             flora_renderer = std::make_unique<render::FloraRenderer>(vk, *zone, shader_dir);
         if (flora_renderer) flora_renderer->set_reach(opts.flora_distance);
+        if (flora_renderer) flora_renderer->set_density(opts.grass_density / 100.0f);
         if (flora_renderer && opts.flora_push) {
             const glm::vec4 push(*opts.flora_push, 6.0f);
             flora_renderer->set_pushers(std::span<const glm::vec4>(&push, 1));
@@ -1146,7 +1161,9 @@ int main(int argc, char** argv) {
                 t = frame * static_cast<double>(opts.frame_dt);
             }
             // While the camera is being dragged the UI must not take the mouse.
-            update_camera(camera, window, dt, !ui_mouse || window.input().right_button, !ui_keys);
+            // A timed run (--frames: a test, a screenshot) takes no input: what the person at the computer types or
+            // moves while the window has the focus would move the camera.
+            if (!opts.frames) update_camera(camera, window, dt, !ui_mouse || window.input().right_button, !ui_keys);
             camera.position += opts.fly * dt;
 
             if (ui_layer) {

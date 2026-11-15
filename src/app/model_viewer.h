@@ -38,6 +38,9 @@ struct ModelViewerOptions {
     int spell_effect = 0; // --spell-effect: a spellsnew.eff effect replayed on the models (0 none)
     int spell_stage = 0;  // its stage: 0 cast, 1 projectile, 2 impact
     bool ride = false;    // --ride: the models in pairs, the second of each seated on the first (a mount)
+    float frame_dt = 0.0f; // --frame-dt: > 0, the clock moves this many seconds a frame, not with the wall clock
+    float orbit = 0.0f;    // --orbit: the camera circles the first model at this many degrees a second
+    bool screenshot_generated = false; // --screenshot-generated (with --frame-gen): the in-between frame too
 };
 
 int run_model_viewer(const ModelViewerOptions& options);

@@ -19,8 +19,8 @@ struct ComputePush {
 
 // The set's bindings (shaders/fg_*.comp, fg_synth.frag): 0 the depth, 1 the motion, 2 the keys, 3 the winners'
 // motion, 4 the in-between motion as the fill writes it, 5 the last picture, 6 this one, 7 the reactive mask, 8 the
-// in-between motion as the synthesis reads it.
-constexpr std::uint32_t kBindings = 9;
+// in-between motion as the synthesis reads it, 9 the keys at the last frame's places.
+constexpr std::uint32_t kBindings = 10;
 
 void memory_barrier(VkCommandBuffer cmd, VkPipelineStageFlags2 src, VkAccessFlags2 src_access,
                     VkPipelineStageFlags2 dst, VkAccessFlags2 dst_access) {
@@ -52,7 +52,7 @@ FrameGen::FrameGen(VkDevice device, VmaAllocator allocator, VkPipelineCache cach
     : device_(device), allocator_(allocator) {
     VkDescriptorSetLayoutBinding b[kBindings];
     for (std::uint32_t i = 0; i < kBindings; ++i) {
-        const bool storage = i >= 2 && i <= 4;
+        const bool storage = (i >= 2 && i <= 4) || i == 9;
         b[i] = {i, storage ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
                 VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     }
@@ -71,7 +71,7 @@ FrameGen::FrameGen(VkDevice device, VmaAllocator allocator, VkPipelineCache cach
              "vkCreateDescriptorSetLayout (framegen composite)");
 
     VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 * 6 + 3 * 2},
-                                     {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2 * 3}};
+                                     {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2 * 4}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.maxSets = 5;
     pi.poolSizeCount = 2;
@@ -119,6 +119,7 @@ FrameGen::FrameGen(VkDevice device, VmaAllocator allocator, VkPipelineCache cach
 
 FrameGen::~FrameGen() {
     free_image(key_);
+    free_image(prev_key_);
     free_image(field_);
     free_image(motion_t_);
     for (VkPipeline p : {scatter_pipeline_, fill_pipeline_})
@@ -157,11 +158,13 @@ void FrameGen::free_image(Image& image) {
 void FrameGen::resize(VkExtent2D scene) {
     if (scene.width == scene_.width && scene.height == scene_.height && key_.image) return;
     free_image(key_);
+    free_image(prev_key_);
     free_image(field_);
     free_image(motion_t_);
     scene_ = scene;
     // R32UI and RGBA16F storage need no optional device feature (shaderStorageImageExtendedFormats).
     key_ = make_image(VK_FORMAT_R32_UINT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    prev_key_ = make_image(VK_FORMAT_R32_UINT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
     field_ = make_image(VK_FORMAT_R32_UINT, VK_IMAGE_USAGE_STORAGE_BIT);
     motion_t_ = make_image(VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
     fresh_ = true;
@@ -196,6 +199,7 @@ void FrameGen::bind(const Views& v) {
         add(s, 6, kSampled, {v.linear, v.pictures[i], kRead});
         add(s, 7, kSampled, {v.linear, reactive, kRead});
         add(s, 8, kSampled, {v.nearest, motion_t_.view, kGeneral});
+        add(s, 9, kStorage, {VK_NULL_HANDLE, prev_key_.view, kGeneral});
     }
     for (std::uint32_t i = 0; i < 3; ++i) {
         add(composite_sets_[i], 0, kSampled, {v.nearest, i < 2 ? v.pictures[i] : v.generated, kRead});
@@ -207,7 +211,7 @@ void FrameGen::bind(const Views& v) {
 
 void FrameGen::record_motion(VkCommandBuffer cmd, float t) {
     if (fresh_) {
-        for (VkImage image : {key_.image, field_.image, motion_t_.image})
+        for (VkImage image : {key_.image, prev_key_.image, field_.image, motion_t_.image})
             image_barrier(cmd, image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                           VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                           VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
@@ -225,6 +229,7 @@ void FrameGen::record_motion(VkCommandBuffer cmd, float t) {
     const VkClearColorValue zero{};
     const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     vkCmdClearColorImage(cmd, key_.image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &range);
+    vkCmdClearColorImage(cmd, prev_key_.image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &range);
     memory_barrier(cmd, VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
 
@@ -243,7 +248,7 @@ void FrameGen::record_motion(VkCommandBuffer cmd, float t) {
                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                        VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
     };
-    step(scatter_pipeline_, 0); // the nearest depth at each place
+    step(scatter_pipeline_, 0); // the nearest depth at each place, then and a frame ago
     step(scatter_pipeline_, 1); // the winners' motion
     step(fill_pipeline_, 0);    // every place's motion, the holes the background's
 }

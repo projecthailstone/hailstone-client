@@ -10,6 +10,7 @@ struct ClientOptions {
     bool validation = false;
     int frames = 0;          // exit after this many frames (0 = until closed)
     std::string screenshot;  // with frames: save the last frame as PNG
+    bool screenshot_generated = false; // --screenshot-generated: screenshots save frame generation's in-between frame
     float ui_scale = 0.0f;   // > 0 overrides the display scale
     int window_width = 1280, window_height = 720; // --window-size WxH
     int clip_plane = 15;     // eqclient.ini ClipPlane, 0..20

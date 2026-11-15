@@ -248,6 +248,7 @@ public:
               ui::ImGuiLayerDesc{.scale_override = ui_scale_setting(options),
                                  .ini_path = platform::imgui_ini()}) {
         log_memory("startup: window, Vulkan, fonts");
+        vk_.screenshot_generated(options.screenshot_generated);
         apply_window_icon(window_);
         shader_dir_ = platform::shaders_dir();
         config_path_ = default_config_path();
@@ -1227,6 +1228,8 @@ private:
     bool grass_ = true;
     // Hailstone's Flora Distance (display.flora_distance): how far the flora is drawn, in units.
     float flora_reach_ = render::kFloraReach;
+    // Hailstone's Grass Density (display.grass_density, percent): how thick the lawn is (FloraRenderer::set_density).
+    int grass_density_ = 100;
     std::vector<render::FireSource> zone_fires_;
     std::vector<render::FireSource> zone_mesh_fires_; // the flame meshes' alone (no particle clouds)
     std::vector<render::FireSource> frame_fires_;            // the zone's with the moving ones', when there are any

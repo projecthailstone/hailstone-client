@@ -314,8 +314,8 @@ struct Builder {
     // The shade baked into the vertices (assets::Vertex::color, which multiplies a placement's light): set by the
     // generator per part of the tree.
     float shade = 1.0f;
-    // The height the vertices made now sway as (assets::Mesh::sway_heights), NaN: each its own. A branch, its needle
-    // sprays and its clump get the height of its root on the trunk, so they move as one piece and crossing cards stay
+    // The height the vertices made now sway as (assets::Mesh::sway_heights), NaN: each its own. A branch and its
+    // needle sprays get the height of its root on the trunk, so they move as one piece and crossing cards stay
     // crossed where they were made.
     float sway_z = std::numeric_limits<float>::quiet_NaN();
 
@@ -1194,16 +1194,8 @@ GeneratedTree generate_tree(const TreeShape& shape, const TreeOptions& options) 
                     }
                     b.strip(c, side, nrm, 0.0f, 1.0f);
                 }
-                // A clump at the branch's end, so the crown reads as pads rather than single fronds.
-                const glm::vec3 tip = path[2];
-                const glm::vec3 out_dir = glm::normalize(dir + up * 0.3f);
-                const float half = len * rng.range(0.22f, 0.3f);
-                const glm::vec3 a = glm::normalize(glm::cross(up, out_dir)), c2 = glm::normalize(glm::cross(out_dir, a));
-                for (const glm::vec3& across : {a, c2}) {
-                    const glm::vec3 along = glm::normalize(glm::cross(across, out_dir));
-                    const glm::vec3 nrm = glm::normalize(out_dir + up);
-                    b.strip({tip - along * half, tip + along * half}, {across * half, across * half}, {nrm, nrm}, 0.0f, 1.0f);
-                }
+                // No clump of crossed cards at the branch's end: one of them stood upright, and from beside the tree
+                // it showed as a flat slab across the branches.
             }
         }
         b.shade = 1.0f;

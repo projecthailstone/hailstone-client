@@ -59,11 +59,19 @@ inline constexpr std::array<LawnLod, 3> kLawnLods = {{{49, 3}, {16, 3}, {9, 1}}}
 inline constexpr float kLawnFull = 40.0f, kLawnNear = 90.0f, kLawnMid = 250.0f;
 // A blade's width at its widest with all of a patch's blades, in units.
 inline constexpr float kLawnBladeWidth = 0.24f;
+// Hailstone's Grass Density (display.grass_density, a share): how many of kLawnLods' blades each draw has, the
+// blades keeping their width, so less is sparser (and cheaper) and more is thicker.
+inline constexpr float kMinGrassDensity = 0.25f, kMaxGrassDensity = 2.0f;
+// The option in percent (the Options window's slider), clamped to 25 .. 200.
+inline int grass_density_percent(int percent) { return percent < 25 ? 25 : percent > 200 ? 200 : percent; }
+// kLawnLods[k]'s blades at `density` (clamped to the bounds above): at least one.
+std::uint32_t lawn_lod_blades(std::size_t k, float density = 1.0f);
 // How many of a patch's blades stand at distance `d`, smoothly fewer: kLawnLods[0]'s count to kLawnFull, [1]'s at
-// kLawnNear, [2]'s from kLawnMid. Fractional: the last one is part grown.
-float lawn_blades(float d);
-// A blade's width at distance `d`: wider as there are fewer (by the square root), so a patch keeps its cover.
-float lawn_blade_width(float d);
+// kLawnNear, [2]'s from kLawnMid (each at `density`, lawn_lod_blades). Fractional: the last one is part grown.
+float lawn_blades(float d, float density = 1.0f);
+// A blade's width at distance `d`: wider as there are fewer than the nearest draw's (by the square root), so a patch
+// keeps its cover; kLawnBladeWidth near at any density.
+float lawn_blade_width(float d, float density = 1.0f);
 // The draw a patch at distance `d` goes in (an index into kLawnLods): one with at least lawn_blades(d) blades.
 std::size_t lawn_lod(float d);
 // How far before kFloraReach (and twice it) the patches a coarser stride drops fade out.
@@ -97,6 +105,9 @@ public:
     // How far the plants are drawn: kFloraReach .. kMaxFloraReach (display.flora_distance).
     void set_reach(float reach);
     float reach() const { return reach_; }
+    // How thick the lawn is: kMinGrassDensity .. kMaxGrassDensity (display.grass_density).
+    void set_density(float density);
+    float density() const { return density_; }
 
     // Who the plants bend away from (Hailstone's own): xyz a foot, w how far round it (the player, the spawns walking
     // through the grass); at most kMaxPushers, nearest first. Kept until changed.
@@ -122,6 +133,7 @@ private:
     double seconds_ = 0.0, seconds_before_ = 0.0;
     std::uint64_t seconds_frame_ = 0;
     float reach_ = kFloraReach;
+    float density_ = 1.0f;
     // A grown tile's plants: the lawn first, the patches that stride 4 keeps, then those stride 2 keeps, then the rest
     // (lawn_end: where each part ends), then the other plants.
     struct Grown {

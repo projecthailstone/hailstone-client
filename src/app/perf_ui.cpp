@@ -271,7 +271,7 @@ void PerfUi::draw(const PerfInputs& in) {
         ImGui::CollapsingHeader("Frame generation", ImGuiTreeNodeFlags_DefaultOpen) &&
         ImGui::BeginTable("framegen", 2, kTable)) {
         if (!fg->active) {
-            row("State", "%s", fg->no_motion ? "off: needs the Temporal or AMD FSR 3.1 upscaler (FSR 1 has no motion)"
+            row("State", "%s", fg->no_motion ? "off: the upscaler running is FSR 1, which has no motion to follow\n(a new upscaler, Temporal or AMD FSR 3.1, takes effect at the next start)"
                                              : "asked for, not running (no 3D scene yet)");
         } else {
             row("State", "on");

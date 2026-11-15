@@ -187,7 +187,8 @@ TEST_CASE("Settings files: a character's settings over hailstone.ini") {
 
 TEST_CASE("Settings files: the keys a character's settings leave in hailstone.ini") {
     for (const char* key : {"assets.path", "addons.index", "update.skip", "login.profile", "login.last_world.x",
-                            "window.x", "display.window_mode", "display.resolution", "display.msaa", "ui.name",
+                            "window.x", "display.window_mode", "display.resolution", "display.msaa",
+                            "display.upscaler", "ui.name",
                             "ui.scale", "audio.pregame_music", "plugins.autoload", "scripts.autoload", "news.last_read"})
         CHECK_MESSAGE(Config::is_shared_key(key), key);
     for (const char* key : {"display.render_scale", "display.shadows", "display.max_fps", "display.clip_plane",
@@ -230,4 +231,27 @@ TEST_CASE("Settings files: the log keeps the earlier runs' files") {
     CHECK(read(tmp.path / "logs" / "test.2.log").find("run 3") != std::string::npos);
     CHECK(read(tmp.path / "logs" / "test.3.log").find("run 2") != std::string::npos);
     CHECK_FALSE(fs::exists(tmp.path / "logs" / "test.4.log"));
+}
+
+TEST_CASE("Settings files: a shared key a character's file still holds moves to hailstone.ini when it has none") {
+    test::ScratchDir tmp("shared_key_moves");
+    const auto one = tmp.path() / "One" / "hailstone.ini";
+    {
+        Config old; // a character's file from before display.upscaler was shared
+        old.set("display.upscaler", "fsr3");
+        old.set("display.render_scale", "67");
+        std::filesystem::create_directories(one.parent_path());
+        REQUIRE(old.save(one));
+    }
+    Config config;
+    REQUIRE(config.attach_character(one));
+    CHECK(config.get_string("display.upscaler") == "fsr3");
+    config.detach_character();
+    CHECK(config.get_string("display.upscaler") == "fsr3"); // kept in the shared settings
+    CHECK_FALSE(config.get("display.render_scale"));       // a character's own stays its own
+
+    Config set_globally; // hailstone.ini's own value wins over a stale one in the character's file
+    set_globally.set("display.upscaler", "taa");
+    REQUIRE(set_globally.attach_character(one));
+    CHECK(set_globally.get_string("display.upscaler") == "taa");
 }

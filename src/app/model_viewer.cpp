@@ -28,6 +28,7 @@
 #include "app/window_icon.h"
 #include "platform/paths.h"
 #include "platform/window.h"
+#include "render/temporal.h"
 #include "render/actor_renderer.h"
 #include "render/camera.h"
 #include "render/particle_renderer.h"
@@ -224,6 +225,7 @@ int run_model_viewer(const ModelViewerOptions& opts) {
         a.mesh = meshes[i].get();
         a.position = origin + glm::vec3(0.0f, y, render::ActorRenderer::model_z_offset(m, scale, &heights_data));
         a.yaw = game::heading_to_yaw(opts.heading);
+        a.motion_key = i + 1; // its bones a frame ago (the temporal upscaler's and frame generation's motion)
         a.scale = scale;
         a.clip = m.clip(opts.anim) ? m.clip(opts.anim) : m.clip("");
         if (!opts.upper_anim.empty() && m.clip(opts.upper_anim)) {
@@ -254,6 +256,11 @@ int run_model_viewer(const ModelViewerOptions& opts) {
     camera.yaw = glm::radians(opts.yaw_deg.value_or(180.0f));
     camera.pitch = glm::radians(opts.pitch_deg.value_or(-5.0f));
     camera.near_plane = 0.5f;
+    // --orbit: round the first model's middle, at the distance and height the camera starts at.
+    const glm::vec3 orbit_centre = draws.front().position + glm::vec3(0.0f, 0.0f, top * 0.25f);
+    const glm::vec2 orbit_arm = glm::vec2(camera.position - orbit_centre);
+    const float orbit_radius = glm::length(orbit_arm);
+    const float orbit_start = std::atan2(orbit_arm.y, orbit_arm.x);
 
     game::ViewDistance view = game::compute_view_distance({}, opts.clip_plane);
     if (!zone) view.fog_color = glm::vec3(0.35f, 0.4f, 0.5f);
@@ -301,16 +308,31 @@ int run_model_viewer(const ModelViewerOptions& opts) {
     auto last = start;
     for (int frame = 0; window.poll_events(); ++frame) {
         if (opts.frames && frame >= opts.frames) break;
-        if (!opts.screenshot.empty() && opts.frames && frame == opts.frames - 1) vk.request_screenshot(opts.screenshot);
+        if (opts.screenshot_generated && !opts.screenshot.empty() && opts.frames && frame == opts.frames - 2) {
+            std::filesystem::path prev = opts.screenshot; // the real frame before the in-between one
+            prev.replace_filename(prev.stem().string() + "_prev" + prev.extension().string());
+            vk.request_screenshot(prev);
+        }
+        if (!opts.screenshot.empty() && opts.frames && frame == opts.frames - 1) {
+            vk.screenshot_generated(opts.screenshot_generated);
+            vk.request_screenshot(opts.screenshot);
+        }
         if (window.input().was_pressed(platform::Key::Escape)) break;
         auto now = std::chrono::steady_clock::now();
         float dt = std::chrono::duration<float>(now - last).count();
         last = now;
         double t = std::chrono::duration<double>(now - start).count();
+        if (opts.frame_dt > 0.0f) {
+            dt = opts.frame_dt;
+            t = frame * static_cast<double>(opts.frame_dt);
+        }
 
         const auto& in = window.input();
-        window.set_mouse_captured(in.right_button);
-        if (in.right_button) camera.rotate(-in.mouse_dx * 0.0025f, -in.mouse_dy * 0.0025f);
+        // A timed run (--frames: a test, a screenshot) takes no input: whatever the person at the computer types or
+        // moves while the window has the focus would move the camera.
+        const bool interactive = opts.frames == 0;
+        window.set_mouse_captured(interactive && in.right_button);
+        if (interactive && in.right_button) camera.rotate(-in.mouse_dx * 0.0025f, -in.mouse_dy * 0.0025f);
         glm::vec3 move(0.0f);
         if (in.is_down(platform::Key::W)) move += camera.forward();
         if (in.is_down(platform::Key::S)) move -= camera.forward();
@@ -318,7 +340,13 @@ int run_model_viewer(const ModelViewerOptions& opts) {
         if (in.is_down(platform::Key::A)) move -= camera.right();
         if (in.is_down(platform::Key::Space)) move.z += 1.0f;
         if (in.is_down(platform::Key::LeftCtrl)) move.z -= 1.0f;
-        if (glm::dot(move, move) > 0.0f) camera.position += glm::normalize(move) * 20.0f * dt;
+        if (interactive && glm::dot(move, move) > 0.0f) camera.position += glm::normalize(move) * 20.0f * dt;
+        if (opts.orbit != 0.0f && orbit_radius > 0.0f) {
+            const float a = orbit_start + glm::radians(opts.orbit) * static_cast<float>(t);
+            camera.position = glm::vec3(orbit_centre.x + orbit_radius * std::cos(a),
+                                        orbit_centre.y + orbit_radius * std::sin(a), camera.position.z);
+            camera.yaw = a + glm::pi<float>(); // facing the centre
+        }
 
         for (auto& a : draws) a.time = a.upper_time = opts.anim_time.value_or(static_cast<float>(t));
         if (opts.ride)
@@ -403,9 +431,13 @@ int run_model_viewer(const ModelViewerOptions& opts) {
                     vk.end_shadow_cascade(*f);
                 }
         }
+        // The plain camera first: begin_scene hands it to the scene's shaders for their own motion; the draws go
+        // through the temporal upscaler's jitter (none without it).
+        const glm::mat4 plain_proj = camera.projection(width, height, view.far_plane);
+        vk.set_temporal_view(camera.view(), plain_proj);
         vk.begin_scene(*f, glm::vec4(view.fog_color, 1.0f));
         if (opts.modern) vk.set_ao_view(camera.ao_view(width, height, view.far_plane));
-        glm::mat4 vp = camera.projection(width, height, view.far_plane) * camera.view();
+        glm::mat4 vp = render::jittered(plain_proj, vk.projection_jitter()) * camera.view();
         if (zone_renderer) zone_renderer->draw(*f, vp, camera.position, view, t);
         if (opts.modern)
             actors.draw_prepared(*f, vp, camera.position, view);
