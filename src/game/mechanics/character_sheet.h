@@ -131,7 +131,8 @@ struct CharacterSheet {
     // ---- gear and effects ----
     std::array<std::optional<net::Item>, kPossessionSlots> possessions{}; // 0..22 worn, 23..32 general, 33 cursor
     // The 21 other item lookups the original walks after the worn slots (0x42def0 0..4, 0x42df20 0..9, the
-    // character's virtuals +0x4c 0..1 and +0x54 0..3; tribute-like containers). The clean client has none yet.
+    // character's virtuals +0x4c 0..1 and +0x54 0..3). Received personal tribute items fill 0..4 and guild tribute
+    // items fill 15..16. The trophy lookups (5..14 and 17..20) have no item source on stock EQEmu.
     std::array<std::optional<net::Item>, 21> extra_items{};
     std::vector<SheetBuff> buffs;          // index = buff slot (GetMaxEffects of them are read)
     std::vector<SheetAbility> abilities;   // owned alternate abilities
@@ -152,9 +153,10 @@ struct CharacterSheet {
     bool bazaar_zone = false, barter_zone = false;
     std::int32_t encumbered_state = 0; // int 0xddf748: 1 while "You are encumbered" stands (CalculateWeight)
 
-    // ---- group / raid leadership (Leadership_Get*Bonus; no packet source yet) ----
+    // ---- group / raid leadership (the active leaders' ranks, with population / expansion checks) ----
     bool leadership_active = false;  // pinstLeadership (0xe63b58) exists
     std::int32_t leadership_hp_bonus = 0, leadership_mana_bonus = 0, leadership_hp_regen_bonus = 0;
+    std::int32_t leadership_offense_bonus = 0;
 
     // ---- arithmetic ----
     FpuPrecision fpu = FpuPrecision::Single24;

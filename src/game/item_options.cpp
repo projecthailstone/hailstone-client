@@ -1,6 +1,7 @@
 #include "game/item_options.h"
 
 #include <cctype>
+#include <charconv>
 
 namespace hailstone::game {
 
@@ -51,6 +52,16 @@ DestroyResult destroy_held_decision(const DestroyInput& in) {
         r.eqstr = kStrDestroyMoney;
     }
     return r;
+}
+
+std::optional<std::uint32_t> destroy_cursor_item_id(std::string_view argument) {
+    while (!argument.empty() && std::isspace(static_cast<unsigned char>(argument.front()))) argument.remove_prefix(1);
+    while (!argument.empty() && std::isspace(static_cast<unsigned char>(argument.back()))) argument.remove_suffix(1);
+    if (argument.empty()) return std::nullopt;
+    std::uint32_t id = 0;
+    const auto [end, error] = std::from_chars(argument.data(), argument.data() + argument.size(), id);
+    if (error != std::errc{} || end != argument.data() + argument.size() || id == 0) return std::nullopt;
+    return id;
 }
 
 std::optional<CoinDestroy> destroy_cursor_coin(const std::uint32_t (&cursor)[4]) {

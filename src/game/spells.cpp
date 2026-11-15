@@ -468,6 +468,108 @@ std::optional<std::string> spell_hit_message(const EqStrings& strings, const Wor
     return line;
 }
 
+namespace {
+
+bool hit_amount(std::string_view text) {
+    // Server amounts are unsigned decimal; older damage reports use grouped thousands (ConvertArray). Validate
+    // the complete value before shortening, including comma placement, rather than consuming a numeric prefix.
+    if (text.empty()) return false;
+    std::string digits;
+    std::size_t group = 0;
+    bool grouped = false;
+    for (char c : text) {
+        if (c == ',') {
+            if (group == 0 || (grouped ? group != 3 : group > 3)) return false;
+            grouped = true;
+            group = 0;
+        } else {
+            if (c < '0' || c > '9') return false;
+            digits += c;
+            ++group;
+        }
+    }
+    if (group == 0 || (grouped && group != 3)) return false;
+    std::uint64_t amount = 0;
+    const auto result = std::from_chars(digits.data(), digits.data() + digits.size(), amount);
+    return result.ec == std::errc{} && result.ptr == digits.data() + digits.size();
+}
+
+} // namespace
+
+std::optional<SpellHitLine> spell_message_hit_report(std::uint32_t eqstr, std::span<const std::string> args) {
+    // Message identity and argument roles follow EQEmu's string_ids.h and spell damage/heal senders. The compact
+    // wording is this client's own UI. In particular no language-dependent scan of a rendered line is involved.
+    std::size_t count = 0, amount = 0;
+    SpellHitReport kind = SpellHitReport::DirectDamage;
+    switch (eqstr) {
+    case 9073: count = 3; amount = 2; break;  // non-melee hit: attacker, target, amount
+    case 434: count = 2; amount = 1; break;   // legacy non-melee hit (also damage shields): target, amount
+    case 12481: count = 1; break;             // legacy non-melee hit on the player: amount
+    case 428: count = 1; break;               // own critical blast: amount
+    case 1040: count = 2; amount = 1; break;  // another's critical blast: attacker, amount
+    case 9072: count = 3; amount = 1; kind = SpellHitReport::DamageOverTime; break;
+    case 12954: count = 3; kind = SpellHitReport::DamageOverTime; break;
+    case 13327: count = 4; amount = 1; kind = SpellHitReport::DamageOverTime; break;
+    case 9068: case 419: case 1039:
+        count = 2; amount = 1; kind = SpellHitReport::Healing; break;
+    case 427:
+        // EQEmu uses this same critical-heal report (and 1039) for direct and periodic healing. With no tick
+        // discriminator in the message, both follow Healing rather than guessing from nearby chat or buffs.
+        count = 1; kind = SpellHitReport::Healing; break;
+    case 12976: count = 2; kind = SpellHitReport::HealingOverTime; break;
+    case 12997: case 12998: count = 3; amount = 1; kind = SpellHitReport::HealingOverTime; break;
+    default: return std::nullopt;
+    }
+    if (args.size() < count || !hit_amount(args[amount])) return std::nullopt;
+    for (std::size_t i = 0; i < count; ++i)
+        if (args[i].empty()) return std::nullopt;
+
+    SpellHitLine line;
+    line.kind = kind;
+    line.amount = args[amount];
+    const std::string& n = line.amount;
+    switch (eqstr) {
+    case 9073: line.abbreviated = args[0] + " -> " + args[1] + ": " + n + " damage"; break;
+    case 434: line.abbreviated = args[0] + ": " + n + " non-melee"; break;
+    case 12481: line.abbreviated = "You: " + n + " non-melee"; break;
+    case 428: line.abbreviated = "You: " + n + " critical blast"; break;
+    case 1040: line.abbreviated = args[0] + ": " + n + " critical blast"; break;
+    case 9072: line.abbreviated = args[0] + ": " + n + " DoT (" + args[2] + ")"; break;
+    case 12954: line.abbreviated = "You: " + n + " DoT"; break;
+    case 13327:
+        // Servers differ in the last two substitutions' ordering. Amount and victim are unambiguous; do not
+        // invent which remaining argument names the caster or spell.
+        line.abbreviated = args[0] + ": " + n + " DoT"; break;
+    case 9068: line.abbreviated = "You -> " + args[0] + ": " + n + " heal"; break;
+    case 419: line.abbreviated = args[0] + " -> You: " + n + " heal"; break;
+    case 427: line.abbreviated = "You: " + n + " critical heal"; break;
+    case 1039: line.abbreviated = args[0] + ": " + n + " critical heal"; break;
+    case 12976: line.abbreviated = "You: " + n + " HoT (" + args[1] + ")"; break;
+    case 12997: line.abbreviated = "You -> " + args[0] + ": " + n + " HoT (" + args[2] + ")"; break;
+    case 12998: line.abbreviated = args[0] + " -> You: " + n + " HoT (" + args[2] + ")"; break;
+    default: break;
+    }
+    return line;
+}
+
+std::optional<SpellHitLine> spell_damage_hit_report(const WorldState& world, const SpellData& spell,
+                                                  std::uint32_t target, std::int32_t damage) {
+    if (target != world.player_id || !world.spawns.contains(target) || damage == 0) return std::nullopt;
+    SpellHitLine line;
+    line.kind = damage < 0 ? SpellHitReport::Healing : SpellHitReport::DirectDamage;
+    const auto signed_amount = static_cast<std::int64_t>(damage);
+    line.amount = std::to_string(signed_amount < 0 ? -signed_amount : signed_amount);
+    line.abbreviated = "You: " + line.amount + (damage < 0 ? " heal" : " damage");
+    if (!spell.name.empty()) line.abbreviated += " (" + spell.name + ")";
+    return line;
+}
+
+std::string report_spell_hit_line(const SpellHitLine& line, std::string_view normal, std::int32_t mode) {
+    if (mode == 1) return line.abbreviated;
+    if (mode == 2) return line.amount;
+    return std::string(normal);
+}
+
 bool buff_is_permanent(std::uint32_t tics, const SpellData* spell) {
     return tics >= 0xfffffffeu || (spell && spell->duration_formula == 50);
 }

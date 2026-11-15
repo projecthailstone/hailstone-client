@@ -179,3 +179,15 @@ TEST_CASE("camera: the FOV offset widens the view without changing the chosen FO
     chosen.fov_units = 90.0f;
     CHECK(widened.projection(1280, 720, 1000.0f) == chosen.projection(1280, 720, 1000.0f));
 }
+
+TEST_CASE("actor_phase_passes splits the actors' passes round the grass") {
+    using hailstone::render::ActorPhase;
+    using hailstone::render::actor_phase_passes;
+    // Opaque: the opaque and alpha-tested pass alone, before the grass; Translucent: blended and additive, after it.
+    CHECK(actor_phase_passes(ActorPhase::Opaque).first == 0);
+    CHECK(actor_phase_passes(ActorPhase::Opaque).end == 1);
+    CHECK(actor_phase_passes(ActorPhase::Translucent).first == 1);
+    CHECK(actor_phase_passes(ActorPhase::Translucent).end == 3);
+    CHECK(actor_phase_passes(ActorPhase::All).first == 0);
+    CHECK(actor_phase_passes(ActorPhase::All).end == 3);
+}

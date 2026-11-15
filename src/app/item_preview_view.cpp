@@ -43,7 +43,8 @@ VkImage make_image(VmaAllocator allocator, VkFormat format, VkImageUsageFlags us
 ItemPreviewView::ItemPreviewView(render::VkContext& vk, std::shared_ptr<const assets::CharacterLibrary> library,
                                  const std::filesystem::path& shader_dir)
     : vk_(vk), library_(std::move(library)) {
-    actors_ = std::make_unique<render::ActorRenderer>(vk_, library_, shader_dir);
+    // Its own targets, the colour alone (not the scene's motion and reactive mask).
+    actors_ = std::make_unique<render::ActorRenderer>(vk_, library_, shader_dir, nullptr, false);
     VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     si.magFilter = si.minFilter = VK_FILTER_LINEAR;
     si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;

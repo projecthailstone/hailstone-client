@@ -1,0 +1,44 @@
+#version 450
+
+// Frame generation, step 2: the motion at every place at the in-between time. A place step 1 marked takes its
+// winner's; a place none marked shows something this frame does not, because it is being covered between the frames
+// (or a surface stretched between its pixels): it takes the motion of the farthest mark round it (the background's),
+// flagged so step 3 takes it from the last frame alone.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 2, r32ui) uniform readonly uimage2D key_img;
+layout(set = 0, binding = 3, r32ui) uniform readonly uimage2D field_img;
+layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D motion_t; // xy the motion, z 1 where filled
+
+layout(push_constant) uniform Push {
+    ivec2 size;
+    float t;
+    uint pass;
+} pc;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, pc.size))) return;
+    uint key = imageLoad(key_img, p).r;
+    if (key != 0u) {
+        imageStore(motion_t, p, vec4(unpackHalf2x16(imageLoad(field_img, p).r), 0.0, 0.0));
+        return;
+    }
+    // The farthest (least key) mark within a few pixels; none: no motion, still flagged (the last frame shows what is
+    // here; this one's pixel at the same place is what covers it).
+    const int kReach = 3;
+    uint best = 0xffffffffu;
+    vec2 m = vec2(0.0);
+    for (int y = -kReach; y <= kReach; ++y)
+        for (int x = -kReach; x <= kReach; ++x) {
+            ivec2 q = p + ivec2(x, y);
+            if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, pc.size))) continue;
+            uint k = imageLoad(key_img, q).r;
+            if (k != 0u && k < best) {
+                best = k;
+                m = unpackHalf2x16(imageLoad(field_img, q).r);
+            }
+        }
+    imageStore(motion_t, p, vec4(m, 1.0, 0.0));
+}

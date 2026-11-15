@@ -292,6 +292,9 @@ local function displayTab()
   end)
   -- Hailstone's isometric camera (docs/isometric.md): the iso_* options, also /camera.
   section("Isometric Camera", function()
+    check("click_move", "Click to Move in Every Camera",
+      "Click the ground to walk there, and click a door, an item or an NPC out of reach to walk to it and use it, "
+      .. "in the other cameras too. The isometric camera always moves this way.")
     local deg = function(v) return v .. "°" end
     check("iso_camera", "Isometric Camera",
       "Look down on your character from above and to one side, and click to move. /camera iso and /camera behind "
@@ -380,6 +383,10 @@ local function displayTab()
     check("npc_names", "Show NPC Names", "The names over NPCs.")
     combo("find_trail_style", "Find Trail", { "Gold line (default)", "Rainbow trail" },
       "Choose the gold ground line or thin, winding rainbow strands hovering a few feet above the terrain along your Find route.")
+    check("item_compare", "Compare Items",
+      "Hailstone: an item's tooltip and its details show what wearing it instead of what you wear would change: your HP, mana, AC, stats and resists as the game works them out, caps included.")
+    check("item_compare_verdict", "Upgrade Verdict",
+      "Hailstone: the comparison also says Upgrade, Downgrade or Mixed, weighing the changes by what matters for your class. It is a guide: the numbers are always shown.")
     check("con_name_colour", "Con-Coloured NPC Names", "Hailstone: NPC names take their consider colour, as your target's does. Off keeps them yellow.")
     check("target_plate_highlight", "Highlight Target Name",
       "Hailstone: makes your target's name easy to spot, on a dark background with a coloured edge and a small bouncing arrow above it. Turn it off to show the name as plain text in its colour.")
@@ -570,7 +577,7 @@ local PRESETS = {
   { name = "Low", shadows = 0, msaa = 0, ao = 0, distance_blur = 0, view_distance = 2 },
   { name = "Medium", shadows = 1, msaa = 1, ao = 0, distance_blur = 1, view_distance = 4 },
   { name = "High", shadows = 2, msaa = 2, ao = 1, distance_blur = 1, view_distance = 6 },
-  { name = "Ultra", shadows = 3, msaa = 3, ao = 1, distance_blur = 1, view_distance = 12 },
+  { name = "Ultra", shadows = 3, msaa = 2, ao = 1, distance_blur = 1, view_distance = 12 },
 }
 local PRESET_KEYS = { "shadows", "msaa", "ao", "distance_blur", "view_distance" }
 
@@ -585,10 +592,12 @@ local function currentPreset()
 end
 
 local msaaAtStart -- anti-aliasing changes at the next start: the setting the client started with
+local upscalerAtStart -- so does the upscaler
 local packAtStart -- so does the texture pack
 
 local function graphicsTab()
   msaaAtStart = msaaAtStart or eq.Option("msaa")
+  upscalerAtStart = upscalerAtStart or eq.Option("upscaler")
   section("Quality", function()
     row("Preset", "Sets shadows, anti-aliasing, ambient occlusion, distance blur and view distance together.", function()
       local p = currentPreset()
@@ -606,17 +615,34 @@ local function graphicsTab()
     slider("shadow_clip_plane", "Shadow Clip Plane", 0, 100,
       function(v) return string.format("%d (%d units)", v, v * 5 + 10) end,
       "How far from the camera characters cast shadows (the original's advanced display setting; /shadows on <n>).")
-    combo("msaa", "Anti-aliasing", { "Off", "2x MSAA", "4x MSAA", "8x MSAA" },
+    combo("msaa", "Anti-aliasing", { "Off", "2x MSAA", "4x MSAA" },
       "Smooths edges. Takes effect the next time the game starts.")
     local msaa = eq.Option("msaa")
     if msaa ~= nil and msaaAtStart ~= nil and msaa ~= msaaAtStart then
       note("Restart the game to change anti-aliasing.")
     end
-    slider("render_scale", "Render Scale", 50, 100, pct,
-      "Draws the 3D world at this share of its size and upscales it with AMD FSR 1. Lower is faster and softer; the interface stays sharp.")
-    if (eq.Option("render_scale") or 100) < 100 then
+    if (upscalerAtStart or 0) >= 1 then note("The temporal upscalers smooth edges themselves: MSAA is off while one is on.") end
+    combo("upscaler", "Upscaler", { "AMD FSR 1", "Temporal (TAA)", "AMD FSR 3.1" },
+      "FSR 1 sharpens each frame on its own, below a render scale of 100. Temporal and FSR 3.1 build a smooth picture over several frames at every render scale and replace MSAA; FSR 3.1 is AMD's, Temporal is Hailstone's own. Takes effect the next time the game starts.")
+    local upscaler = eq.Option("upscaler")
+    if upscaler ~= nil and upscalerAtStart ~= nil and upscaler ~= upscalerAtStart then
+      note("Restart the game to change the upscaler.")
+    end
+    -- The usual presets (render/temporal.h UpscaleQuality), each a render scale; Custom is the slider's own.
+    local temporal = (upscalerAtStart or 0) >= 1
+    combo("upscale_quality", "Upscale Quality",
+      { temporal and "Native AA" or "Native (no anti-aliasing)", "Quality", "Balanced", "Performance",
+        "Ultra Performance", "Custom" },
+      "Native draws the 3D world at full size (with Temporal or FSR 3.1 that is anti-aliasing alone). Quality, Balanced, Performance and Ultra Performance draw it at 67, 59, 50 and 33 % and upscale it: lower is faster and softer. Custom is the Render Scale below.")
+    if temporal then
+      check("frame_gen", "Frame Generation",
+        "Shows a frame made between each two the game draws, from their motion: smoother movement on a high refresh rate screen. The game then draws at most half the refresh rate, keeps vertical sync on and reacts a little later. Needs Temporal or AMD FSR 3.1.")
+    end
+    slider("render_scale", "Render Scale", 33, 100, pct,
+      "Draws the 3D world at this share of its size and upscales it. Lower is faster and softer; the interface stays sharp.")
+    if (eq.Option("render_scale") or 100) < 100 or (upscalerAtStart or 0) >= 1 then
       ticks("sharpness", "Upscale Sharpening", function(t) return pct(t * 5) end,
-        "How much FSR 1 sharpens the upscaled picture.")
+        "How much the upscaled picture is sharpened.")
     end
     check("grass", "Radial Flora",
       "Grass, flowers and ferns on the newer zones' open ground, and Hailstone's grass on classic zones such as East Commonlands (/showgrass).")
@@ -626,6 +652,10 @@ local function graphicsTab()
     check("distance_blur", "Distance Blur", "Softens the far distance a little (modern lighting).")
     check("neighbour_zones", "Neighbour Zones",
       "Draws the next zone past an outdoor zone line in the distance (modern lighting; scenery only).")
+    check("horizon_hills", "Horizon Hills",
+      "Land, hills and mountains past the edges of outdoor zones, in the zone's own ground, so the world does not end in haze (modern lighting; scenery only).")
+    slider("tree_detail", "Tree Detail Distance", 50, 200, pct,
+      "How far a texture pack's generated trees keep their full and middle detail. Lower is faster; further trees turn to simpler ones sooner.")
     check("ground_npcs", "Ground Floating NPCs",
       "Draws an NPC the server left standing in the air on the ground below it (up to 50 units). Flying and levitating NPCs stay up.")
     ticks("bloom", "Bloom", function(t) return pct(t * 5) end, "A glow around bright lights and the sun.")

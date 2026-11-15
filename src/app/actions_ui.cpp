@@ -19,6 +19,7 @@
 #include "game/mechanics/tables.h"
 #include "game/race_models.h"
 #include "game/tracking.h"
+#include "app/skill_race.h"
 #include "net/ability_packets.h"
 #include "net/game_connection.h"
 #include "net/notice_packets.h"
@@ -363,7 +364,7 @@ mech::SkillContext ActionsUi::context(net::GameConnection& conn, const mech::Cha
     ctx.speed_z = v.z;
     ctx.cursor_has_item = conn.inventory().at(net::ItemSlot::possessions(net::kSlotCursor)) != nullptr;
     ctx.can_see_target = view.can_see_target;
-    ctx.profile_slam = mech::slam_innate(ch.sheet().race); // EQ_Character::InitInnates
+    ctx.form_slam = mech::slam_innate(skill_race(conn, ch)); // current form; illusions can grant/lose Slam
     if (ctx.target && !ctx.target_is_me) ctx.allowed_to_attack = conn.allowed_to_attack(world.target_id, -1);
     ctx.attack_locked = conn.attack_locked();
     ctx.backstab_either_hand = conn.server_ext().backstab_either_hand(conn);
@@ -815,7 +816,7 @@ void ActionsUi::hot_button_menu(net::GameConnection& conn, const mech::Character
     }
     if (ch && ImGui::BeginMenu("Skills")) {
         for (bool combat : {true, false})
-            for (std::uint32_t s : mech::usable_skills(*ch, combat))
+            for (std::uint32_t s : mech::usable_skills(*ch, combat, skill_race(conn, *ch)))
                 if (ImGui::MenuItem(skill_name(conn, s).c_str())) {
                     b = skill_button(s, combat);
                     changed();
@@ -970,8 +971,8 @@ void ActionsUi::draw_actions(net::GameConnection& conn, const mech::Character* c
             ImGui::EndDragDropSource();
         }
         ImGui::SameLine();
-        std::int32_t value = ch ? ch->sheet().skills[s] : 0;
-        ImGui::Text("%3d", value);
+        if (s == mech::skill::kSlam) ImGui::TextUnformatted("innate");
+        else ImGui::Text("%3d", ch && s < mech::kSkills ? ch->sheet().skills[s] : 0);
         ImGui::SameLine();
         if (left > 0) ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "%s s", seconds_text(left).c_str());
         else ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f), "ready");
@@ -998,7 +999,7 @@ void ActionsUi::draw_actions(net::GameConnection& conn, const mech::Character* c
                     changed();
                 }
                 if (ch)
-                    for (std::uint32_t k : mech::usable_skills(*ch, combat))
+                    for (std::uint32_t k : mech::usable_skills(*ch, combat, skill_race(conn, *ch)))
                         if (ImGui::MenuItem(skill_name(conn, k).c_str())) {
                             slots[i] = static_cast<std::int32_t>(k);
                             changed();
@@ -1048,7 +1049,7 @@ void ActionsUi::draw_actions(net::GameConnection& conn, const mech::Character* c
             slot_buttons(store_.abilities, false, "ab");
             ImGui::Separator();
             if (ch)
-                for (std::uint32_t s : mech::usable_skills(*ch, false)) skill_row(s, false);
+                for (std::uint32_t s : mech::usable_skills(*ch, false, skill_race(conn, *ch))) skill_row(s, false);
             ImGui::EndTabItem();
         }
         if (tab("Combat", 2)) {
@@ -1067,7 +1068,7 @@ void ActionsUi::draw_actions(net::GameConnection& conn, const mech::Character* c
             slot_buttons(store_.combat_skills, true, "cb");
             ImGui::Separator();
             if (ch)
-                for (std::uint32_t s : mech::usable_skills(*ch, true)) skill_row(s, true);
+                for (std::uint32_t s : mech::usable_skills(*ch, true, skill_race(conn, *ch))) skill_row(s, true);
             ImGui::EndTabItem();
         }
         if (tab("Socials", 3)) {

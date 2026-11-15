@@ -47,7 +47,9 @@ function stml.Parse(line, color)
         link = false
       else
         local message, data = tag:match('[Ww]nd[Nn]otify="(%d+),([^"]*)"')
-        local href = tag:match('[Hh][Rr][Ee][Ff]%s*=%s*"([^"]*)"')
+        -- (an unclosed quote ends at the tag's end: storyline pages written as href="file:///x.txt>, which the
+        -- original's STML box follows)
+        local href = tag:match('[Hh][Rr][Ee][Ff]%s*=%s*"([^"]*)"') or tag:match('[Hh][Rr][Ee][Ff]%s*=%s*"([^"]*)$')
         -- an href link: message -1, the target (the STML window follows it: eq.StmlLink)
         link = message and { tonumber(message), data } or (href and { -1, href }) or true
       end

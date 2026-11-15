@@ -48,6 +48,9 @@ constexpr std::string_view kChat[] = {"Cmd_say",   "Cmd_gsay",     "Cmd_shout", 
                                       "Cmd_2",     "Cmd_3",        "Cmd_4",         "Cmd_5",        "Cmd_6",
                                       "Cmd_7",     "Cmd_8",        "Cmd_9",         "Cmd_10"};
 constexpr std::string_view kWeb[] = {"Cmd_url", "Cmd_www"};
+// Hailstone's own commands (not in RoF2's table; GameConnection::item_command) by their whole word, lower case: they
+// destroy or move items, so they need what using an item needs, not the generic 'commands'.
+constexpr std::string_view kOwnActions[] = {"/destroy", "/destroycursor", "/stowcursor"};
 
 template <std::size_t N> bool in(const std::string_view (&list)[N], std::string_view h) {
     return std::find(std::begin(list), std::end(list), h) != std::end(list);
@@ -127,7 +130,11 @@ std::uint32_t command_caps(std::string_view line, const game::EqStrings* strings
     case game::CommandLine::Kind::Empty: return 0;
     case game::CommandLine::Kind::ChatServer:
     case game::CommandLine::Kind::Text: return kCapChat;
-    case game::CommandLine::Kind::Invalid: return kCapCommands;
+    case game::CommandLine::Kind::Invalid: {
+        std::string word = cl.word;
+        for (char& c : word) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return in(kOwnActions, word) ? kCapActions : kCapCommands;
+    }
     case game::CommandLine::Kind::Command: break;
     }
     std::string_view h = game::slash_commands()[cl.index].handler;

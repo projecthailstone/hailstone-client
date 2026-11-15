@@ -490,7 +490,7 @@ bool can_use_combat_skill(const SkillContext& ctx, std::uint32_t skill) {
     if (skill > 99) return false; // IsSkillIdBelow100
     if (skill_table_entry(skill).base_damage < 1) return false;
     const CharacterSheet& sheet = ctx.ch->sheet();
-    if (skill == skill::kBash && (sheet.race == 9 || sheet.race == 10 || sheet.race == 2)) return true;
+    if (skill == skill::kBash && ctx.form_slam != 0xff) return true;
     if (adjusted_skill(*ctx.ch, skill) <= 0) return false; // CharacterZoneClient::HasSkill @0x44a1b0
     if (skill != skill::kBash || ctx.me.type != 0) return true;
     // Bash: a shield in the secondary slot, one of three primary items, or a two-hander with SPA 226.
@@ -828,6 +828,9 @@ useskill::Spawn spawn_of(const SkillActor& a) {
 SkillResult use_skill(const SkillContext& ctx, SkillState& state, std::uint32_t id) {
     SkillResult out;
     if (!ctx.ch) return out;
+    // Racial Slam follows the current appearance, including illusions. Route Bash through the
+    // shieldless Slam path when the current form supplies it, even if the base race cannot Slam.
+    if (id == skill::kBash && ctx.form_slam != 0xff) id = skill::kSlam;
     useskill::Spawn me = spawn_of(ctx.me);
     me.stand_state = ctx.stand_state;
     me.has_mount = ctx.mounted;
@@ -853,7 +856,7 @@ SkillResult use_skill(const SkillContext& ctx, SkillState& state, std::uint32_t 
     s.skill_disarm = profile_skill(ctx, skill::kDisarm);
     s.skill_pick_pockets = profile_skill(ctx, skill::kPickPockets);
     s.skill_begging = profile_skill(ctx, skill::kBegging);
-    s.innate_slam = ctx.profile_slam;
+    s.innate_slam = ctx.form_slam;
     s.attack = ctx.attacking;
     s.autofire = ctx.autofire;
     s.ruleset = ctx.pvp_ruleset;
@@ -876,13 +879,17 @@ SkillResult use_skill(const SkillContext& ctx, SkillState& state, std::uint32_t 
     return out;
 }
 
-std::vector<std::uint32_t> usable_skills(const Character& ch, bool combat) {
+std::vector<std::uint32_t> usable_skills(const Character& ch, bool combat, std::uint32_t current_race) {
     std::vector<std::uint32_t> out;
     for (std::uint32_t s = 0; s < 100; ++s) {
         if (!skill_activated(s) || adjusted_skill(ch, s) < 1) continue;
         std::int32_t type = skill_combat_type(s);
         if ((type == 1 || type == 2) == combat) out.push_back(s);
     }
+    // Slam (111) comes from the current form, not necessarily the profile race.
+    // The list updates as an illusion starts or expires.
+    const auto race = current_race ? current_race : ch.sheet().race;
+    if (combat && slam_innate(race) != 0xff) out.push_back(skill::kSlam);
     return out;
 }
 

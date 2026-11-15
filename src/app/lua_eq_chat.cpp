@@ -30,6 +30,7 @@
 #include "game/combat.h"
 #include "game/eq_names.h"
 #include "game/item_links.h"
+#include "game/spells.h"
 #include "net/game_connection.h"
 #include "platform/local_time.h"
 #include "ui/dev_screens.h"
@@ -448,6 +449,7 @@ struct ChatManager {
     int locked = 0;             // LockedActive (Always Chat Here; -1: none); the main window by default (set_locked)
     std::array<int, game::kChatChannelCount> channel_map{}; // the window of each channel
     std::array<int, game::kChatHitModeCount> hit_modes{};
+    game::SpellHitModes spell_hit_modes{};
     int default_channel = 8;    // eqclient.ini [Defaults] DefaultChannel
     bool tell_windows = false;
     std::uint64_t synced = 0;   // ChatView::revision the tell windows were made up to
@@ -468,6 +470,7 @@ struct ChatManager {
         locked = 0;
         channel_map.fill(0);
         hit_modes.fill(0);
+        spell_hit_modes.fill(0);
         tell_windows = false;
         synced = 0;
         ++serial;
@@ -550,6 +553,8 @@ void save_manager() {
     }
     for (int i = 0; i < game::kChatHitModeCount; ++i)
         m.ini->put("ChatManager", std::format("HitMode{}", i), std::to_string(m.hit_modes[static_cast<std::size_t>(i)]));
+    for (std::size_t i = 0; i < m.spell_hit_modes.size(); ++i)
+        m.ini->put("ChatManager", std::format("SpellHitMode{}", i), std::to_string(m.spell_hit_modes[i]));
 }
 
 void changed() {
@@ -557,13 +562,45 @@ void changed() {
     save_manager();
 }
 
-// The categories ReportHit_* reads (the first six modes) go to the connection.
+// The categories ReportHit_* reads (the first six native modes) and the separate spell modes go to the connection.
 void push_hit_modes() {
     EqHost* h = chat_host();
     if (!h || !h->conn) return;
     game::HitModes modes{};
     for (std::size_t i = 0; i < modes.size(); ++i) modes[i] = manager().hit_modes[i];
     h->conn->set_hit_modes(modes);
+    h->conn->set_spell_hit_modes(manager().spell_hit_modes);
+}
+
+// Keep Lua's existing category 7 = ALL; Hailstone's spell categories start at 8.
+std::string hit_category_name(int category) {
+    if (category < 6) return eqstr(game::hit_category_eqstr(category));
+    if (category == 6) return eqstr(game::kStrAll);
+    return std::string(game::spell_hit_category_name(category - 7));
+}
+
+int hit_mode_value(int category) {
+    const auto& m = manager();
+    if (category < 6) return m.hit_modes[static_cast<std::size_t>(category)];
+    if (category > 6) return m.spell_hit_modes[static_cast<std::size_t>(category - 7)];
+    const int mode = m.hit_modes[0];
+    for (std::size_t i = 1; i < game::HitModes{}.size(); ++i)
+        if (m.hit_modes[i] != mode) return -1;
+    for (auto spell_mode : m.spell_hit_modes)
+        if (spell_mode != mode) return -1;
+    return mode;
+}
+
+void set_hit_mode(int category, int mode) {
+    auto& m = manager();
+    if (category < 6) m.hit_modes[static_cast<std::size_t>(category)] = mode;
+    else if (category > 6) m.spell_hit_modes[static_cast<std::size_t>(category - 7)] = mode;
+    else {
+        m.hit_modes.fill(mode);
+        m.spell_hit_modes.fill(mode);
+    }
+    push_hit_modes();
+    changed();
 }
 
 // The colour a line goes by: its own, else its channel's user colour.
@@ -1076,30 +1113,28 @@ std::vector<Row> language_menu(int w) {
 
 std::vector<Row> hit_modes_menu(int w) {
     std::vector<Row> rows;
-    for (int cat = 0; cat <= 6; ++cat) {
+    // ALL stays last in the menu while retaining its public API index (7).
+    for (int cat : {0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 6}) {
         Row r;
-        r.text = eqstr(cat < 6 ? game::hit_category_eqstr(cat) : game::kStrAll);
+        r.text = hit_category_name(cat);
         r.submenu = [w, cat] {
             std::vector<Row> out;
             for (int mode = 0; mode < 3; ++mode) {
                 Row m;
                 m.text = eqstr(game::hit_mode_eqstr(cat, mode));
-                if (cat < 6) {
-                    // ids 0x190 + 10 cat + mode: the mode, and "<category> <mode>" (dsp_chat_2, colour 0x111)
+                m.check = hit_mode_value(cat) == mode;
+                if (cat != 6) {
+                    // The original categories use ids 0x190 + 10 cat + mode; spell categories use Hailstone's labels.
                     m.act = [cat, mode] {
-                        manager().hit_modes[static_cast<std::size_t>(cat)] = mode;
-                        push_hit_modes();
-                        dsp_chat(std::format("{} {}", eqstr(game::hit_category_eqstr(cat)),
+                        set_hit_mode(cat, mode);
+                        dsp_chat(std::format("{} {}", hit_category_name(cat),
                                              eqstr(game::hit_mode_eqstr(cat, mode))), 0x111);
-                        changed();
                     };
                 } else {
-                    // 0x1cc..0x1ce: all eight modes, eqstr 6044..6046 in the window
+                    // 0x1cc..0x1ce: all eight native modes, plus Hailstone's spell modes.
                     m.act = on_window(w, [mode](int win) {
-                        manager().hit_modes.fill(mode);
-                        push_hit_modes();
+                        set_hit_mode(6, mode);
                         window_text(win, eqstr(game::hit_mode_all_eqstr(mode)), 10);
-                        changed();
                     });
                 }
                 out.push_back(std::move(m));
@@ -1782,16 +1817,18 @@ int ChatSetTellWindows(lua_State* L) {
     return 0;
 }
 
-// modes = eq.ChatHitModes()   -- { name, mode, modes = { names } } per melee report category (CChatWindowManager
+// modes = eq.ChatHitModes()   -- { id, name, mode, modes = { names } } per melee report category (CChatWindowManager
 // +0x224..: 0 Normal, 1 Abbreviated, 2 Number Only / Miss Only)   /   eq.ChatSetHitMode(index, mode)  (1-based
-// index; 7: ALL)
+// index; 7: ALL, 8..11 Hailstone's spell categories). ALL's mode is -1 when the categories differ.
 int ChatHitModes(lua_State* L) {
     lua_newtable(L);
-    for (int cat = 0; cat < 6; ++cat) {
-        lua_createtable(L, 0, 3);
-        lua_pushstring(L, eqstr(game::hit_category_eqstr(cat)).c_str());
+    for (int cat = 0; cat < 7 + static_cast<int>(game::SpellHitModes{}.size()); ++cat) {
+        lua_createtable(L, 0, 4);
+        lua_pushinteger(L, cat + 1);
+        lua_setfield(L, -2, "id");
+        lua_pushstring(L, hit_category_name(cat).c_str());
         lua_setfield(L, -2, "name");
-        lua_pushinteger(L, manager().hit_modes[static_cast<std::size_t>(cat)]);
+        lua_pushinteger(L, hit_mode_value(cat));
         lua_setfield(L, -2, "mode");
         lua_createtable(L, 3, 0);
         for (int mode = 0; mode < 3; ++mode) {
@@ -1804,13 +1841,10 @@ int ChatHitModes(lua_State* L) {
     return 1;
 }
 int ChatSetHitMode(lua_State* L) {
-    lua_Integer i = luaL_checkinteger(L, 1) - 1;
+    lua_Integer index = luaL_checkinteger(L, 1);
     lua_Integer mode = luaL_checkinteger(L, 2);
-    if (i < 0 || i > 6 || mode < 0 || mode > 2) return 0;
-    if (i == 6) manager().hit_modes.fill(static_cast<int>(mode));
-    else manager().hit_modes[static_cast<std::size_t>(i)] = static_cast<int>(mode);
-    push_hit_modes();
-    changed();
+    if (index < 1 || index > 7 + static_cast<lua_Integer>(game::SpellHitModes{}.size()) || mode < 0 || mode > 2) return 0;
+    set_hit_mode(static_cast<int>(index - 1), static_cast<int>(mode));
     return 0;
 }
 
@@ -2040,6 +2074,10 @@ void chat_layout_loaded(ui::UiIni& ini, EqHost& host, const std::filesystem::pat
     for (int i = 0; i < game::kChatHitModeCount; ++i) {
         int mode = num(std::format("HitMode{}", i), 0);
         if (mode >= 0 && mode < 3) m.hit_modes[static_cast<std::size_t>(i)] = mode;
+    }
+    for (std::size_t i = 0; i < m.spell_hit_modes.size(); ++i) {
+        int mode = num(std::format("SpellHitMode{}", i), 0);
+        if (mode >= 0 && mode < 3) m.spell_hit_modes[i] = mode;
     }
     restore_chat_history(host, CharacterFiles{user_dir}.chat_history());
     if (host.chat) {

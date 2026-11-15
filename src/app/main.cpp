@@ -24,6 +24,7 @@
 #include "app/ui_demo.h"
 #include "app/zone_particles.h"
 #include "game/spells.h"
+#include "assets/ground_refine.h"
 #include "assets/sky.h"
 #include "assets/texture_overrides.h"
 #include "assets/zone_flora.h"
@@ -83,6 +84,7 @@ struct Options {
     std::optional<float> yaw_deg;
     std::optional<float> pitch_deg;
     std::string screenshot; // save this frame's image and exit (with --frames)
+    bool screenshot_generated = false; // viewer: the screenshot is frame generation's in-between frame
     // --neighbours "N:zone:x:y:z,...": the zone points OP_SendZonepoints would send (server coordinates, 999999
     // keeps), so the viewer draws the neighbour zones past the zone lines (app/neighbour_zones.h).
     std::optional<std::vector<hailstone::game::ZonePointTarget>> neighbours;
@@ -105,6 +107,10 @@ struct Options {
     std::vector<hailstone::render::FireSource> fires; // --fire X Y Z H W: flames placed by hand (modern)
     bool no_fire = false;                         // --no-fire: the modern lighting without its flames (timing)
     bool no_grass = false;                        // --no-grass: the viewer without the zone's flora
+    bool no_smooth_ground = false;                // --no-smooth-ground: the viewer draws the file's flat ground
+    bool no_horizon = false;                      // --no-horizon: no land round the zone (render/horizon.h)
+    bool neighbour_tint = false;                  // --neighbour-tint: render::ZoneRenderer::set_debug_tint
+    float tree_detail = 1.0f;                     // --tree-detail PCT: display.tree_detail, as a scale
     float flora_distance = 400.0f;                // --flora-distance: how far the viewer draws the flora
     std::optional<glm::vec3> flora_push;          // --flora-push: a foot the viewer's flora bends away from
     std::optional<std::string> textures; // --textures DIR: replacement textures (assets/texture_overrides.h)
@@ -146,6 +152,7 @@ struct Options {
     bool no_audio = false;
     bool no_vsync = false; // present as fast as the GPU draws (frame-time measurements)
     float frame_dt = 0.0f; // > 0: the clock moves this many seconds a frame, not with the wall clock
+    glm::vec3 fly{0.0f};   // viewer: the camera moves this many units a second (--fly)
     hailstone::app::ModelViewerOptions model; // --model viewer; active when model.codes is not empty
 };
 
@@ -243,13 +250,19 @@ void usage() {
         "  --shadows N        shadow map size per cascade (0 off; default 2048), with --lighting modern\n"
         "  --light-shadows N  how many lights cast shadows (0 off; default 8, at most 8), modern\n"
         "  --no-ao            no screen-space ambient occlusion (--lighting modern)\n"
+        "  --depth-prepass    draw the opaque geometry depth-only first, then colour it (--lighting modern)\n"
         "  --bloom N          bloom strength 0..1 (--lighting modern; default 0.5)\n"
-        "  --render-scale P   draw the 3D view at P percent of its size (50..100) and upscale it with FSR 1\n"
+        "  --render-scale P   draw the 3D view at P percent of its size (33..100) and upscale it (--upscaler)\n"
         "  --sharpness N      FSR 1's sharpening below a render scale of 100, 0..1 (default 0.5)\n"
+        "  --upscaler NAME    fsr1 (spatial, below a render scale of 100), taa (temporal, MSAA off) or fsr3 (AMD FSR 3.1)\n"
+        "  --frame-gen        generate a frame between each two (needs --upscaler taa or fsr3; vsync on)\n"
+        "  --screenshot-generated  viewer, with --frame-gen: --screenshot FILE saves the last in-between frame,\n"
+        "                     and the real frames around it as FILE_prev and FILE_real\n"
         "  --fire X Y Z H W   viewer: a flame H high and W wide standing at X Y Z (modern; repeatable)\n"
         "  --no-fire          viewer: no flames at all in the modern lighting (to time them)\n"
         "  --no-grass         viewer: no flora (radial flora, and Hailstone's zone flora: flora/<zone>.txt); the\n"
         "                     viewer draws flora with --lighting modern only\n"
+        "  --no-smooth-ground viewer: draw the zone's ground as the file's flat triangles (display.smooth_ground off)\n"
         "  --flora-distance U viewer: draw the flora U units round the camera (400 .. 1200; default 400)\n"
         "  --flora-push X Y Z viewer: the flora bends away from a foot standing there, as from a spawn (testing)\n"
         "  --moon P           the moon's phase, 0 new .. 0.5 full .. 1 (--lighting modern; client: instead of the calendar)\n"
@@ -263,6 +276,10 @@ void usage() {
         "  --weather-age S    viewer: S seconds after --weather began (its transition; default 600, settled)\n"
         "  --weather-stopped S  viewer: --weather stopped S seconds ago (the clearing)\n"
         "  --no-grade         viewer: no colour grade (--lighting modern; display.color_grade)\n"
+        "  --no-horizon       viewer: no land round the zone (--lighting modern; display.horizon_hills)\n"
+        "  --neighbour-tint   viewer, with --neighbours: the neighbours' own geometry magenta, their own ground in\n"
+        "                     their part of the land green (display.neighbour_tint)\n"
+        "  --tree-detail PCT  viewer: replacement models' levels of detail reach PCT %% as far (display.tree_detail)\n"
         "  --view-distance X  with --lighting modern: draw X times further than the original, into haze (2.5)\n"
         "  --model A,B,...    model viewer: classic character models by code (HUM) or race (r:RACE[:GENDER]);\n"
         "                     --anim CODE (default P01), --anim-time T, --size S, --heading H (0..512),\n"
@@ -289,6 +306,8 @@ void usage() {
         "  --no-vsync         present without waiting for the display (measuring frame times)\n"
         "  --frame-dt S       the viewer's clock moves S seconds each frame, not with the wall clock (screenshots\n"
         "                     that match from run to run: the wind, water and sky at the same moment)\n"
+        "  --fly X Y Z        viewer: the camera flies X Y Z units a second (with --frame-dt, frame N of one run\n"
+        "                     and N+1 of another are two frames of the flight: flicker in motion)\n"
         "  --verbose          debug logging\n"
         "viewer controls: hold right mouse to look, WASD move, Space/Ctrl up/down, Shift faster, Esc quit\n");
 }
@@ -403,7 +422,7 @@ Options parse_args(int argc, char** argv) {
             o.modern = m == "modern";
         } else if (arg("--msaa")) {
             need(1);
-            o.scene.msaa = static_cast<std::uint32_t>(std::clamp(std::atoi(argv[++i]), 1, 16));
+            o.scene.msaa = static_cast<std::uint32_t>(std::clamp(std::atoi(argv[++i]), 1, static_cast<int>(hailstone::render::kMaxMsaa)));
         } else if (arg("--tonemap")) {
             need(1);
             o.scene.tonemap = hailstone::render::parse_tonemap(argv[++i]);
@@ -413,6 +432,8 @@ Options parse_args(int argc, char** argv) {
             o.view_distance = std::strtof(argv[++i], nullptr);
         } else if (arg("--no-grass")) {
             o.no_grass = true;
+        } else if (arg("--no-smooth-ground")) {
+            o.no_smooth_ground = true;
         } else if (arg("--flora-push")) {
             need(3);
             o.flora_push = glm::vec3(std::strtof(argv[i + 1], nullptr), std::strtof(argv[i + 2], nullptr),
@@ -423,6 +444,8 @@ Options parse_args(int argc, char** argv) {
             o.flora_distance = std::strtof(argv[++i], nullptr);
         } else if (arg("--no-ao")) {
             o.scene.ambient_occlusion = false;
+        } else if (arg("--depth-prepass")) {
+            o.scene.depth_prepass = true;
         } else if (arg("--weather-age")) {
             need(1);
             o.weather_age = std::strtof(argv[++i], nullptr);
@@ -431,6 +454,13 @@ Options parse_args(int argc, char** argv) {
             o.weather_stopped = std::strtof(argv[++i], nullptr);
         } else if (arg("--no-grade")) {
             o.scene.color_grade = false;
+        } else if (arg("--no-horizon")) {
+            o.no_horizon = true;
+        } else if (arg("--neighbour-tint")) {
+            o.neighbour_tint = true;
+        } else if (arg("--tree-detail")) {
+            need(1);
+            o.tree_detail = std::strtof(argv[++i], nullptr) / 100.0f;
         } else if (arg("--weather")) {
             need(2);
             std::string kind = argv[++i];
@@ -466,7 +496,15 @@ Options parse_args(int argc, char** argv) {
             o.scene.bloom = std::clamp(std::strtof(argv[++i], nullptr), 0.0f, 1.0f);
         } else if (arg("--render-scale")) {
             need(1);
-            o.scene.render_scale = static_cast<float>(std::clamp(std::atoi(argv[++i]), 50, 100)) / 100.0f;
+            o.scene.render_scale =
+                static_cast<float>(std::clamp(std::atoi(argv[++i]), hailstone::render::kMinRenderScalePercent, 100)) / 100.0f;
+        } else if (arg("--frame-gen")) {
+            o.scene.frame_gen = true;
+        } else if (arg("--screenshot-generated")) {
+            o.screenshot_generated = true;
+        } else if (arg("--upscaler")) {
+            need(1);
+            o.scene.upscaler = hailstone::render::parse_upscaler(argv[++i]);
         } else if (arg("--sharpness")) {
             need(1);
             o.scene.sharpness = std::clamp(std::strtof(argv[++i], nullptr), 0.0f, 1.0f);
@@ -552,6 +590,11 @@ Options parse_args(int argc, char** argv) {
         } else if (arg("--frame-dt")) {
             need(1);
             o.frame_dt = std::strtof(argv[++i], nullptr);
+        } else if (arg("--fly")) {
+            need(3);
+            const float x = std::strtof(argv[++i], nullptr);
+            const float y = std::strtof(argv[++i], nullptr);
+            o.fly = glm::vec3(x, y, std::strtof(argv[++i], nullptr));
         } else if (arg("--auto-accept")) {
             o.auto_accept_invite = true;
         } else if (arg("--max-fps")) {
@@ -782,6 +825,11 @@ int main(int argc, char** argv) {
             GameDir game = open_game_dir(opts.game_dir, opts.classic_dir);
             auto t0 = std::chrono::steady_clock::now();
             zone = assets::load_zone(game, opts.zone);
+            if (!opts.no_smooth_ground) {
+                const auto r = assets::refine_ground(*zone);
+                log::info("smoothed ground: {} triangles drawn as {}, {} curved edges, at most {:.2f} units off",
+                          r.ground_triangles, r.triangles, r.curved_edges, r.max_offset);
+            }
             if (!opts.no_grass) {
                 const int tt = opts.time_type >= 0 ? opts.time_type : (opts.sky > 0 ? 1 : 0); // as the fog below
                 assets::add_zone_flora(game, *zone, platform::flora_dir(), tt == 1 || tt == 2 || tt == 5);
@@ -831,9 +879,15 @@ int main(int argc, char** argv) {
         render::CoverMapState cover_state, water_state; // what the cover and water maps last showed
         render::FlyCamera camera;
         if (zone) {
-            zone_renderer = std::make_unique<render::ZoneRenderer>(vk, *zone, shader_dir,
-                                                                   render::zone_render_options(open_game_dir(opts.game_dir, opts.classic_dir)));
+            const GameDir game = open_game_dir(opts.game_dir, opts.classic_dir);
+            auto options = render::zone_render_options(game);
+            // The neighbours' ground an earlier run measured (--neighbours) shapes the land round the zone.
+            if (opts.neighbours && opts.modern)
+                options.horizon_sources =
+                    app::cached_horizon_sources(game, app::horizon_cache_dir("viewer", zone->name), zone->name);
+            zone_renderer = std::make_unique<render::ZoneRenderer>(vk, *zone, shader_dir, options);
             zone_renderer->set_hide_flames(opts.modern);
+            zone_renderer->set_lod_scale(opts.tree_detail);
             const auto& s = zone_renderer->stats();
             log::info("zone renderer: {} triangles, {} draws in {} chunks, {} textures ({} missing)", s.triangles,
                       s.draws, s.chunks, s.textures, s.missing_textures);
@@ -842,6 +896,7 @@ int main(int argc, char** argv) {
         // --neighbours: the zones past the zone lines, loaded before the first frame (the screenshot waits for them).
         std::unique_ptr<GameDir> neighbour_game;
         std::unique_ptr<app::NeighbourZones> neighbours;
+        std::uint64_t distant_hidden_key = 0; // the drawn neighbours the land round the zone was last hidden for
         std::optional<game::CollisionMesh> neighbour_collision; // the zone's, which the neighbours read until they go
         if (zone && opts.neighbours && opts.modern) {
             neighbour_game = std::make_unique<GameDir>(open_game_dir(opts.game_dir, opts.classic_dir));
@@ -854,6 +909,8 @@ int main(int argc, char** argv) {
             in.zone_id = game::zone_id_by_short_name(opts.zone);
             const int tt = opts.time_type >= 0 ? opts.time_type : (opts.sky > 0 ? 1 : 0);
             in.outdoor = opts.sky > 0 && (tt == 1 || tt == 2 || tt == 5);
+            in.horizon = zone_renderer->horizon_build();
+            in.cache_dir = app::horizon_cache_dir("viewer", zone->name);
             neighbours->enter(in);
         }
         if (opts.yaw_deg) camera.yaw = glm::radians(*opts.yaw_deg);
@@ -1046,6 +1103,7 @@ int main(int argc, char** argv) {
         const int timed_from = opts.frames / 4;
         auto timed_start = start;
         render::ZoneDrawn drawn; // the last frame's
+        int generated_frames = 0; // frame generation's in-between frames presented in the timed frames
         for (int frame = 0; window.poll_events(); ++frame) {
             if (opts.frames && frame == timed_from) timed_start = std::chrono::steady_clock::now();
             if (opts.frames && frame >= opts.frames) {
@@ -1055,6 +1113,9 @@ int main(int argc, char** argv) {
                               "triangles in {} calls, {} into shadows in {} calls",
                               ms / (frame - timed_from), timed_from, frame - 1, 1000.0 * (frame - timed_from) / ms,
                               drawn.triangles, drawn.calls, drawn.shadow_triangles, drawn.shadow_calls);
+                if (vk.frame_gen_active())
+                    log::info("frame generation: {} in-between frames presented in frames {}..{}", generated_frames,
+                              timed_from, frame - 1);
                 if (flora_renderer) log::info("flora: the last frame drew {} plants", flora_drawn);
                 if (neighbours)
                     log::info("neighbour zones: {} loaded, the last frame drew {} triangles in {} calls, {:.3f} ms of CPU",
@@ -1062,7 +1123,16 @@ int main(int argc, char** argv) {
                               neighbours->draw_ms());
                 break;
             }
-            if (!opts.screenshot.empty() && opts.frames && frame == opts.frames - 1) vk.request_screenshot(opts.screenshot);
+            if (opts.screenshot_generated && !opts.screenshot.empty() && opts.frames && frame == opts.frames - 2) {
+                // The real frame before the in-between one (FILE_prev; the last frame saves FILE and FILE_real).
+                std::filesystem::path prev = opts.screenshot;
+                prev.replace_filename(prev.stem().string() + "_prev" + prev.extension().string());
+                vk.request_screenshot(prev);
+            }
+            if (!opts.screenshot.empty() && opts.frames && frame == opts.frames - 1) {
+                vk.screenshot_generated(opts.screenshot_generated);
+                vk.request_screenshot(opts.screenshot);
+            }
             bool ui_keys = ui_layer && ui_layer->wants_keyboard();
             bool ui_mouse = ui_layer && ui_layer->wants_mouse();
             if (window.input().was_pressed(platform::Key::Escape) && !ui_keys) break;
@@ -1077,6 +1147,7 @@ int main(int argc, char** argv) {
             }
             // While the camera is being dragged the UI must not take the mouse.
             update_camera(camera, window, dt, !ui_mouse || window.input().right_button, !ui_keys);
+            camera.position += opts.fly * dt;
 
             if (ui_layer) {
                 ui_layer->new_frame();
@@ -1265,6 +1336,14 @@ int main(int argc, char** argv) {
                         }
                         neighbours->set_scene_light(scene_light);
                         neighbours->set_lighting(lighting);
+                        neighbours->set_debug_tint(opts.neighbour_tint);
+                        // As the client: no land round the zone where a neighbour is drawn.
+                        if (neighbours->drawn_key() != distant_hidden_key) {
+                            distant_hidden_key = neighbours->drawn_key();
+                            std::vector<std::int64_t> cells;
+                            neighbours->footprint(cells);
+                            zone_renderer->set_distant_hidden(std::move(cells));
+                        }
                     }
                     if (vk.point_shadow_slots() > 0)
                         render::draw_point_shadows(vk, *f, point_shadows, zone->lights, point_builds, *zone_renderer,
@@ -1292,6 +1371,8 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+            // The plain camera first: begin_scene hands it to the scene's shaders for their own motion.
+            if (zone_renderer) vk.set_temporal_view(camera.view(), camera.projection(width, height, draw_view.far_plane));
             vk.begin_scene(*f, glm::vec4(water_color ? *water_color : view.fog_color, 1.0f));
             if (zone_renderer && opts.modern) {
                 vk.set_ao_view(camera.ao_view(width, height, draw_view.far_plane));
@@ -1308,7 +1389,9 @@ int main(int argc, char** argv) {
                 }
             }
             if (zone_renderer) {
-                glm::mat4 proj = camera.projection(width, height, draw_view.far_plane);
+                // Drawn through the temporal upscaler's jitter (none without it), which follows the plain view.
+                const glm::mat4 plain_proj = camera.projection(width, height, draw_view.far_plane);
+                glm::mat4 proj = hailstone::render::jittered(plain_proj, vk.projection_jitter());
                 glm::mat4 vp = proj * camera.view();
                 render::SkyFrame sky_frame{sky_hour, t, horizon_haze};
                 render::Daylight day = render::daylight(sky_hour, true, moon_phase, blood_moon);
@@ -1326,8 +1409,12 @@ int main(int argc, char** argv) {
                 if (sky_drawn) sky_renderer->draw(*f, proj, camera.view(), sky_frame);
                 // As the client: the modern haze behind everything where no sky is drawn; under water, the water.
                 if (water_color || (opts.modern && !sky_drawn)) zone_renderer->draw_backdrop(*f, vp);
+                // The land round an outdoor zone, under an open sky or none (not the planes' painted skies).
+                zone_renderer->set_distant(opts.modern && outdoor && !opts.no_horizon &&
+                                           (!sky_renderer || sky_renderer->has_atmosphere()));
                 if (opts.modern) {
                     // The water reads the opaque world (VkContext::begin_translucent).
+                    zone_renderer->draw_depth(*f, vp, camera.position, draw_view, t);
                     zone_renderer->draw(*f, vp, camera.position, draw_view, t, render::ZonePhase::Opaque);
                     if (neighbours) neighbours->draw(*f, vp, camera.position, draw_view, t, render::ZonePhase::Opaque);
                     if (flora_renderer) flora_drawn = flora_renderer->draw(*f, vp, camera.position, t, frame_lighting, true);
@@ -1395,6 +1482,7 @@ int main(int argc, char** argv) {
             }
             if (ui_layer) ui_layer->render(*f);
             vk.end_frame(*f);
+            if (opts.frames && frame >= timed_from && vk.frames_presented() == 2) ++generated_frames;
             if (zone_renderer) drawn = zone_renderer->take_drawn();
         }
         return 0;

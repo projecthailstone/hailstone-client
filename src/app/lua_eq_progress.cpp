@@ -8,7 +8,10 @@
 #include <string>
 #include <vector>
 
+#include <lua.hpp>
+
 #include "app/lua_eq_windows.h"
+#include "core/msvc_atoi.h"
 #include "game/eq_names.h"
 #include "game/hot_button_press.h"
 #include "game/leadership.h"
@@ -593,6 +596,29 @@ class TaskWindow : public StockWindow {
 public:
     TaskWindow() : StockWindow("TaskWnd", false) {}
 
+    std::uint32_t selected_id(const net::GameConnection& c) const {
+        const auto* task = selected_task(c);
+        return task ? task->task_id : 0;
+    }
+
+    bool open_task(EqHost& host, std::uint32_t id) {
+        if (!host.in_game || !host.conn || !host.conn->tasks().find_id(id)) return false;
+        auto& c = *host.conn;
+        // An explicit open can be the first use after changing characters. Task revisions restart with the
+        // connection, so an equal revision alone cannot prove the old journal rows describe this session.
+        rebuild(c);
+        for (std::size_t i = 0; i < rows_.size(); ++i) {
+            if (rows_[i].separator || rows_[i].task_id != id) continue;
+            list_click(host, "TASK_TaskList", static_cast<int>(i), false, 0);
+            page_ = 0;
+            // Selection is ready now, even if the stock frame was hidden. Showing it must not schedule a rebuild
+            // which would replace that selection before the tracker-opened journal draws.
+            StockWindow::set_shown(host, true);
+            return true;
+        }
+        return false;
+    }
+
     void set_shown(EqHost& host, bool show) override {
         if (show && !StockWindow::shown(host)) rebuild_ = true; // AboutToShow: CTaskWnd_RebuildTaskLists
         StockWindow::set_shown(host, show);
@@ -855,7 +881,156 @@ private:
     bool abandon_enabled_ = false, preview_enabled_ = false;
 };
 
+EqHost& task_host(lua_State* L) { return *static_cast<EqHost*>(lua_touserdata(L, lua_upvalueindex(1))); }
+TaskWindow& task_window(lua_State* L) { return *static_cast<TaskWindow*>(lua_touserdata(L, lua_upvalueindex(2))); }
+
+void task_string(lua_State* L, const char* key, const std::string& value) {
+    lua_pushlstring(L, value.data(), value.size());
+    lua_setfield(L, -2, key);
+}
+void task_integer(lua_State* L, const char* key, lua_Integer value) {
+    lua_pushinteger(L, value);
+    lua_setfield(L, -2, key);
+}
+void task_boolean(lua_State* L, const char* key, bool value) {
+    lua_pushboolean(L, value);
+    lua_setfield(L, -2, key);
+}
+
+bool task_element_in_zone(const game::TaskElement& e, std::uint32_t zone) {
+    if (e.hidden || e.type == -1 || zone == 0) return false;
+    // Match the ids the zone column names (task_zone_names), not a substring of its translated text.
+    const auto list = std::string_view(e.zones).substr(0, 63);
+    for (std::size_t p = 0; p < list.size();) {
+        auto end = list.find(';', p);
+        if (end == std::string_view::npos) end = list.size();
+        const auto id = core::msvc_atoi(list.substr(p, end - p));
+        const auto normalized = static_cast<std::uint32_t>(id) & (id > 1000 ? 0x7fffu : 0xffffffffu);
+        if (id > 0 && normalized == zone) return true;
+        p = end + 1;
+    }
+    return false;
+}
+
+// eq.TasksRevision() -> revision, selectedId: what eq.Tasks() would change by, without building it (its text and
+// objectives cost too much to rebuild every frame). Both 0 out of game.
+int TasksRevision(lua_State* L) {
+    auto& host = task_host(L);
+    const bool live = host.in_game && host.conn;
+    lua_pushinteger(L, live ? static_cast<lua_Integer>(host.conn->tasks().revision) : 0);
+    lua_pushinteger(L, live ? static_cast<lua_Integer>(task_window(L).selected_id(*host.conn)) : 0);
+    return 2;
+}
+
+// A UI-owned quest tracker must not scrape TaskWnd's selected row: that window intentionally stops rebuilding
+// while hidden. This read-only view uses the same row/text builders over every authoritative active task.
+int Tasks(lua_State* L) {
+    auto& host = task_host(L);
+    lua_newtable(L);
+    task_integer(L, "selectedId", host.in_game && host.conn ? task_window(L).selected_id(*host.conn) : 0);
+    task_integer(L, "revision", host.in_game && host.conn ? host.conn->tasks().revision : 0);
+    task_integer(L, "requestTimerLeft", 0);
+    if (!host.in_game || !host.conn) return 1;
+    const auto& c = *host.conn;
+    const auto now = net::GameConnection::now_ms();
+    task_integer(L, "requestTimerLeft", std::max<std::int64_t>(0, (c.tasks().request_timer_until_ms - now + 999) / 1000));
+    const auto zone = game::zone_id_by_short_name(host.zone_short_name);
+    const auto element_text = [&c](const game::TaskElement& e) { return c.task_element_text(e); };
+    int task_index = 0;
+    for (const auto type : {game::kTaskTypeTask, game::kTaskTypeShared, game::kTaskTypeQuest}) {
+        for (const auto& listed : game::collect_task_rows(c.tasks(), type, now)) {
+            const auto* t = c.tasks().find(type, listed.index);
+            if (!t || !t->task_id) continue;
+            lua_createtable(L, 0, 16);
+            task_integer(L, "id", t->task_id);
+            task_integer(L, "type", t->type);
+            task_integer(L, "sequence", t->sequence);
+            task_integer(L, "duration", t->duration);
+            task_integer(L, "left", t->duration ? game::task_seconds_left(*t, now) : 0);
+            task_string(L, "title", t->title);
+            task_string(L, "description", game::task_description_text(*t, element_text));
+            // Keep the native reward formatting separate from the description. Reward-set previews use
+            // TaskWnd's existing Preview Reward action and the reward-selection window.
+            game::Task rewards;
+            rewards.type = t->type;
+            rewards.has_rewards = t->has_rewards;
+            rewards.coin_reward = t->coin_reward;
+            rewards.xp_reward = t->xp_reward;
+            rewards.reward_link = t->reward_link;
+            rewards.points = t->points;
+            rewards.reward_type = t->reward_type;
+            task_string(L, "rewards", game::task_details_stml(rewards, c.strings(), element_text));
+            task_boolean(L, "hasRewards", t->has_rewards);
+            task_boolean(L, "rewardSet", t->reward_set);
+            const auto rows = game::objective_rows(*t, c.strings(), element_text, task_zone_name);
+            lua_createtable(L, static_cast<int>(rows.size()), 0);
+            std::size_t row = 0;
+            int total = 0, done = 0;
+            for (std::uint32_t step = 0; step < 20; ++step) {
+                for (std::uint32_t slot = 0; slot < 20; ++slot) {
+                    const auto it = t->elements.find(slot);
+                    if (it == t->elements.end() || it->second.step != step || it->second.type == 0) continue;
+                    const auto& e = it->second;
+                    if (row < rows.size() && rows[row].separator) {
+                        lua_createtable(L, 0, 2);
+                        task_boolean(L, "separator", true);
+                        task_integer(L, "group", step);
+                        lua_rawseti(L, -2, static_cast<lua_Integer>(++row));
+                    }
+                    if (row >= rows.size()) continue;
+                    const auto& r = rows[row];
+                    const bool hidden = e.hidden || e.type == -1;
+                    const bool complete = !hidden && e.done();
+                    lua_createtable(L, 0, 12);
+                    task_integer(L, "activityId", e.activity_id);
+                    task_integer(L, "group", e.step);
+                    task_boolean(L, "separator", false);
+                    task_boolean(L, "hidden", hidden);
+                    task_boolean(L, "optional", e.optional);
+                    task_boolean(L, "done", complete);
+                    task_boolean(L, "currentZone", task_element_in_zone(e, zone));
+                    task_string(L, "text", r.texts[0]);
+                    task_string(L, "status", hidden ? std::string() : r.texts[1]);
+                    task_string(L, "zone", r.texts[2]);
+                    if (!hidden) {
+                        task_integer(L, "count", e.done_count);
+                        task_integer(L, "goal", e.goal_count);
+                    }
+                    lua_rawseti(L, -2, static_cast<lua_Integer>(++row));
+                    ++total;
+                    if (complete) ++done;
+                }
+            }
+            lua_setfield(L, -2, "objectives");
+            task_integer(L, "total", total);
+            task_integer(L, "done", done);
+            lua_rawseti(L, -2, ++task_index);
+        }
+    }
+    return 1;
+}
+
+int OpenTask(lua_State* L) {
+    // Check before making C++ objects: Lua's argument errors longjmp across the caller's stack.
+    const lua_Integer id = luaL_checkinteger(L, 1);
+    const bool valid = id > 0 && id <= 0xffffffff;
+    lua_pushboolean(L, valid && task_window(L).open_task(task_host(L), static_cast<std::uint32_t>(id)));
+    return 1;
+}
+
 } // namespace
+
+void register_task_api(lua_State* L, EqHost& host, std::vector<std::unique_ptr<StockWindow>>& windows) {
+    for (const auto& window : windows) {
+        auto* tasks = dynamic_cast<TaskWindow*>(window.get());
+        if (!tasks) continue;
+        static const luaL_Reg functions[] = {{"Tasks", Tasks}, {"TasksRevision", TasksRevision}, {"OpenTask", OpenTask}, {nullptr, nullptr}};
+        lua_pushlightuserdata(L, &host);
+        lua_pushlightuserdata(L, tasks);
+        luaL_setfuncs(L, functions, 2);
+        return;
+    }
+}
 
 namespace {
 
@@ -908,7 +1083,16 @@ public:
     }
     // Closed by the server or by zoning: an unsent edit is dropped, so the window reopens on the server's state.
     void frame(EqHost& host) override {
-        if (!shown(host)) editing_ = false;
+        const auto serial = !shown(host) ? 0 : guild(host) ? host.conn->guild_tribute().master_serial
+                                                                       : host.conn->tribute().master_serial;
+        if (serial != master_serial_) {
+            master_serial_ = serial;
+            editing_ = false;
+            available_sel_ = active_sel_ = -1;
+            described_ = net::kTributeNone;
+            platinum_ = 0;
+        }
+        if (!shown(host) || !can_edit(host)) editing_ = false;
         if (host.conn && guild(host) != was_guild_) {
             was_guild_ = guild(host);
             editing_ = false;
@@ -920,6 +1104,7 @@ public:
     void child(EqHost& host, std::string_view id, Child& out) override {
         if (!host.conn) return;
         bool g = guild(host);
+        bool may_edit = can_edit(host);
         const auto& gt = host.conn->guild_tribute();
         net::TributeSettings now = settings(host);
         const auto& set = editing_ ? edit_ : now;
@@ -928,12 +1113,19 @@ public:
         else if (id == "TMW_ValueLabel") out.text = std::to_string(donation);
         else if (id == "TMW_CoinButton") out.text = std::to_string(platinum_);
         else if (id == "TMW_StatusText") out.text = now.active ? "Active" : "Inactive";
-        else if (id == "TMW_StatusButton") out.checked = now.active;
-        else if (id == "TMW_LockButton") out.text = editing_ ? "Save Benefits" : "Modify Benefits";
-        else if (id == "TMW_UpgradeButton") out.enabled = editing_ && (available_sel_ >= 0 || active_sel_ >= 0);
-        else if (id == "TMW_DowngradeButton") out.enabled = editing_ && active_sel_ >= 0 && active_sel_ < slots(host) &&
+        else if (id == "TMW_StatusButton") {
+            out.checked = now.active;
+            out.enabled = may_edit;
+        } else if (id == "TMW_LockButton") {
+            out.text = editing_ ? "Save Benefits" : "Modify Benefits";
+            out.enabled = may_edit;
+        } else if (id == "TMW_UpgradeButton") out.enabled = may_edit && editing_ && (available_sel_ >= 0 || active_sel_ >= 0);
+        else if (id == "TMW_DowngradeButton") out.enabled = may_edit && editing_ && active_sel_ >= 0 && active_sel_ < slots(host) &&
                                                        set.tributes[static_cast<std::size_t>(active_sel_)] != net::kTributeNone;
-        else if (id == "TMW_DonateButton") out.enabled = host.conn->inventory().cursor() != nullptr || platinum_ > 0;
+        // UpdateDonateButton @0x785f40: greyed while a donation waits for its reply (+0x2d8; the guild platinum one).
+        else if (id == "TMW_DonateButton")
+            out.enabled = !(g && host.conn->guild_platinum_pending()) &&
+                          (host.conn->inventory().cursor() != nullptr || platinum_ > 0);
         else if (id == "TMW_SelectedItem") {
             const net::Item* held = host.conn->inventory().cursor();
             if (held && host.textures)
@@ -1009,6 +1201,11 @@ public:
         auto& c = *host.conn;
         bool g = guild(host);
         net::TributeSettings now = settings(host);
+        if ((id == "TMW_LockButton" || id == "TMW_UpgradeButton" || id == "TMW_DowngradeButton" ||
+             id == "TMW_StatusButton") && !can_edit(host)) {
+            editing_ = false;
+            return true;
+        }
         if (id == "TMW_LockButton") {
             if (editing_) save(c, g);
             else edit_ = now;
@@ -1026,6 +1223,7 @@ public:
             if (g) c.guild_tribute_toggle(!now.active);
             else c.tribute_toggle(!now.active);
         } else if (id == "TMW_DonateButton") {
+            if (g && c.guild_platinum_pending()) return true; // greyed until the reply
             if (c.inventory().cursor()) {
                 if (g) c.guild_tribute_donate_cursor();
                 else c.tribute_donate_cursor();
@@ -1036,7 +1234,14 @@ public:
             game::QuantityOpen q;
             q.max = static_cast<std::int32_t>(std::min<std::uint32_t>(c.coins().platinum, 1000000));
             q.start = static_cast<std::int32_t>(std::min<std::uint32_t>(platinum_, c.coins().platinum));
-            open_quantity(host, q, [this](std::int32_t v) { platinum_ = static_cast<std::uint32_t>(std::max(0, v)); });
+            const auto* conn = host.conn;
+            const auto serial = g ? c.guild_tribute().master_serial : c.tribute().master_serial;
+            open_quantity(host, q, [this](std::int32_t v) { platinum_ = static_cast<std::uint32_t>(std::max(0, v)); },
+                          [&host, conn, g, serial] {
+                              if (host.conn != conn || !conn) return false;
+                              return g ? conn->guild_tribute().master_id && conn->guild_tribute().master_serial == serial
+                                       : conn->tribute().master_id && conn->tribute().master_serial == serial;
+                          });
         } else if (id == "TMW_SelectedItem") {
         } else {
             return false;
@@ -1046,6 +1251,9 @@ public:
 
 private:
     static bool guild(EqHost& host) { return host.conn && host.conn->guild_tribute().master_id != 0; }
+    static bool can_edit(EqHost& host) {
+        return host.conn && (!guild(host) || host.conn->can_change_guild_tribute());
+    }
     static int slots(EqHost& host) { return guild(host) ? net::kGuildTributeSlots : net::kTributeSlots; }
     static const std::map<std::uint32_t, net::TributeAbility>& abilities(EqHost& host) {
         return guild(host) ? host.conn->guild_tribute().abilities : host.conn->tribute().abilities;
@@ -1104,6 +1312,7 @@ private:
     int available_sel_ = -1, active_sel_ = -1;
     std::uint32_t described_ = net::kTributeNone;
     std::uint32_t platinum_ = 0;
+    std::uint64_t master_serial_ = 0;
 };
 
 // The tribute benefit window (TOGGLE_TRIBUTEBENEFITWIN): the Personal page's chosen benefits (ActiveBenefitList), a
@@ -1133,7 +1342,7 @@ public:
             out.enabled = in_guild;
         } else if (id == "GuildActivateButton") {
             out.text = g.active.enabled ? "Deactivate" : "Activate";
-            out.enabled = in_guild;
+            out.enabled = host.conn->can_change_guild_tribute();
         } else if (id == "TrophyActivateButton" || id == "TrophyOptOutButton" || id == "GuildTrophyActivateButton")
             out.enabled = false;
     }
@@ -1225,7 +1434,10 @@ public:
         else if (id == "LEW_PurchaseButton") {
             std::uint32_t cost = selected_ >= 0 ? game::leadership_next_cost(selected_, l.ranks[static_cast<std::size_t>(selected_)]) : 0;
             std::uint32_t points = selected_ >= game::kFirstRaidAbility ? l.raid_points : l.group_points;
-            out.enabled = cost > 0 && cost <= points;
+            // A deliberate change: the original disables Purchase below its own cost table, but the costs are the
+            // server's (stock EQEmu charges Mark NPC 1 / 2 / 3 and Delegate Mark NPC 6 / 6 / 6 where RoF2 shows
+            // 3 / 4 / 5 and 6 / 7 / 8), and the server checks every purchase. Any point lets the request go.
+            out.enabled = cost > 0 && points > 0;
         } else if (id == "LEW_Description") {
             out.text = selected_ >= 0 ? description(l, selected_) : std::string();
         } else if (id == "LEW_GroupMentoring") {
@@ -1234,6 +1446,10 @@ public:
         } else if (int n = hotkey_button(id)) {
             // CLeadershipWnd_UpdateAbilityDescription: no ability selected disables the three.
             out.enabled = selected_ >= 0 && host.conn->leadership_hot_button_enabled(selected_, n);
+            if (selected_ >= 0 && n <= game::leadership_hot_button_def(selected_).count &&
+                !game::leadership_passive(selected_))
+                out.tooltip = host.conn->leadership_hot_button_label(selected_, n) +
+                              ": pick up this ability and place it on a hot bar.";
         }
     }
 
@@ -1281,7 +1497,7 @@ public:
         else if (int n = hotkey_button(id)) {
             // CLeadershipWnd::WndNotification @0x6b7bf0: the selected ability as a hot button on the cursor (type 11,
             // ability * 8 + n, its text).
-            if (selected_ < 0 || host.cursor_button) return true;
+            if (selected_ < 0 || host.cursor_button || !c.leadership_hot_button_enabled(selected_, n)) return true;
             game::HotButton b;
             b.type = game::HotButtonType::Leadership;
             b.slot = game::leadership_hot_button_value(selected_, n);

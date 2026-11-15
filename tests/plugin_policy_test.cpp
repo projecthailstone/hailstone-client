@@ -193,6 +193,14 @@ TEST_CASE("command_caps: EQ commands by their handler, abbreviations too; text i
     CHECK(command_caps("/disc Fortitude") == kCapActions);
     CHECK(command_caps("/useitem 22") == kCapActions);
     CHECK(command_caps("/attack on") == kCapActions);
+    // Hailstone's own item commands (not in RoF2's table) need what using an item needs, by their whole word.
+    CHECK(command_caps("/destroycursor 123") == kCapActions);
+    CHECK(command_caps("/STOWCURSOR 123") == kCapActions);
+    CHECK(command_caps("/destroy") == kCapActions);
+    CHECK(command_caps("/Destroy") == kCapActions);
+    CHECK(command_caps("/stowcursorx 123") == kCapCommands);
+    CHECK(command_caps("/destro") == kCapCommands); // no prefix match: the client runs it as no command
+    CHECK(command_caps("/finditem sword") == kCapCommands); // a window, not an item move
     CHECK(command_caps("/sit") == kCapMove);
     CHECK(command_caps("/follow") == kCapMove);
     CHECK(command_caps("/g hello") == kCapChat);

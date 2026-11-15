@@ -128,6 +128,9 @@ struct MeshPart {
     std::uint32_t index_count = 0;
     std::uint32_t material = 0; // index into Mesh::materials
     bool solid = true;          // false: passable, no collision (EQG triangle flag bit 0)
+    // A level of detail (a replacement model's, assets/gltf_mesh.h): drawn only from `lod_near` to `lod_far` world
+    // units from the camera. lod_far 0: at every distance (the game's meshes).
+    float lod_near = 0.0f, lod_far = 0.0f;
 };
 
 struct Mesh {
@@ -146,6 +149,9 @@ struct Mesh {
     // Heightmap terrain: drawn with heights truncated to 1/8 unit, as the
     // DLL packs them (z = trunc(height * 8) as a short, TerrainTileChunk_BuildVertices).
     bool heightmap_terrain = false;
+    // Each vertex's uv2.x is the height (model z) it sways in the wind as, not its own (render/zone_renderer.cpp
+    // sway_plant): a generated tree's branch, its needle sprays and its clump move as one piece (texpack/trees.h).
+    bool sway_heights = false;
 };
 
 // A placed static object (ActorInstance) in a zone.

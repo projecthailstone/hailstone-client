@@ -25,12 +25,16 @@ layout(location = 3) in vec4 v_shade;        // rgb the light (linear), w the de
 layout(location = 4) in vec4 v_haze;         // rgb the haze in front of it, w how much of it shows through
 
 layout(location = 0) out vec4 o_color;
+layout(location = 2) out float o_reactive; // the temporal upscaler's reactive mask (shaders/reactive.glsl)
+
+#include "reactive.glsl"
 
 void main() {
     vec4 c = texture(textures[nonuniformEXT(v_texture & 0x7fffffffu)], v_uv) * v_color;
     vec3 light = to_linear(c.rgb) * v_shade.rgb; // the scene target is linear
     if (pc.params.x < 0.5) {
         o_color = vec4(light, c.a);
+        o_reactive = reactive_of(o_color);
         return;
     }
     // Soft where it meets the scene and as it nears the eye (reverse Z: view depth = y / (d + x)).
@@ -44,4 +48,5 @@ void main() {
         o_color = vec4(light * v_haze.w * a, 0.0);
     else
         o_color = vec4(mix(v_haze.rgb, light, v_haze.w) * a, a);
+    o_reactive = reactive_of(o_color);
 }

@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 // The target ring (render/target_ring_renderer.h; docs/graphics.md "The target ring"), Hailstone's look: a soft band
 // in the con colour with a halo, dashes on an inner track turning round it, a notch outside it where the target faces,
@@ -27,6 +28,9 @@ layout(location = 4) flat in vec4 v_shape;
 layout(location = 5) flat in vec4 v_cues;
 
 layout(location = 0) out vec4 o_color;
+layout(location = 2) out float o_reactive; // the temporal upscaler's reactive mask (shaders/reactive.glsl)
+
+#include "reactive.glsl"
 
 const float kTau = 6.28318530718;
 
@@ -106,4 +110,5 @@ void main() {
         alpha *= exp(-3.5 * dist * dist * exp(-max(dv.z, 0.0) * pc.haze.y));
     }
     o_color = vec4(light * alpha, alpha);
+    o_reactive = reactive_of(o_color);
 }

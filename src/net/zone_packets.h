@@ -256,6 +256,9 @@ struct PlayerProfile {
     // Personal tribute (ENCODE(OP_PlayerProfile)): favour, career favour, and the chosen benefits {tribute id
     // (0xffffffff none), tier} (RoF2: 5).
     std::uint32_t tribute_points = 0, career_tribute_points = 0;
+    // RoF2's counted LDoN block: unknown slot 0 followed by the five themes, then the spendable total.
+    std::array<std::uint32_t, 5> adventure_points{};
+    std::uint32_t adventure_points_available = 0;
     // Leadership (ENCODE(OP_PlayerProfile)): experience toward the next group and raid point (EQEmu: 1000 and 2000 a
     // point), the unspent points, the abilities' ranks by EQEmu's index (0..15 group, 16..31 raid), and whether
     // leadership experience is earned.
@@ -289,6 +292,9 @@ struct PlayerProfile {
     std::uint32_t platinum_bank = 0, gold_bank = 0, silver_bank = 0, copper_bank = 0, platinum_shared = 0;
     std::uint32_t character_id = 0;
     std::uint32_t aa_exp = 0;
+    std::uint32_t last_fellowship_join = 0;
+    std::uint64_t fellowship_vitality_normal = 0;
+    std::uint32_t fellowship_vitality_aa = 0;
     std::array<std::uint8_t, 3> auto_consent{}; // group, raid, guild (PcClient +0x2921..+0x2923)
     std::uint8_t show_helm = 0;
     std::uint32_t rest_timer = 0;
@@ -633,8 +639,8 @@ std::optional<ZonePlayerToBind> decode_zone_player_to_bind(const AppPacket& p);
 
 // OP_RespawnWindow, zone → client (with Character:RespawnFromHover):
 // u32 default selection, u32 time remaining (ms), u32 the Select delay (ms; EQEmu sends 0), u32 count, then per
-// option u32 id, u32 zone, f32 x, y, z, heading, cstr name, u8 type (1 for the
-// last, "Resurrect"); EQEmu pads count + 1 zero bytes (OpenEQ
+// option u32 id, u32 zone, f32 x, y, z, heading, cstr name, u8 validity (0 available,
+// 1 unavailable). The flag does not identify resurrection choices. EQEmu pads count + 1 zero bytes (OpenEQ
 // DEATH_RECOVERY_PLAN.md, zone/client.cpp SendRespawnBinds). Client → zone:
 // u32 chosen option id (Handle_OP_RespawnWindow).
 struct RespawnOption {
@@ -642,7 +648,9 @@ struct RespawnOption {
     std::uint32_t zone_id = 0;
     float x = 0, y = 0, z = 0, heading = 0;
     std::string name;
-    std::uint8_t type = 0;
+    std::uint8_t validity = 0;
+    bool available() const { return validity == 0; }
+    bool operator==(const RespawnOption&) const = default;
 };
 struct RespawnWindow {
     std::uint32_t selected = 0;

@@ -549,6 +549,66 @@ end)
     ImGui::DestroyContext(ctx);
 }
 
+// The modern pack's STML links (ui/modern/lib/stml.lua): an href's target, also when its quote is never closed (the
+// storyline pages some servers ship: <a href="file:///storyline/Epic/BardEpic.txt>Bard</a>), a WndNotify link's
+// message and data, and an <a> with neither only coloured.
+TEST_CASE("Lua UI: STML href links, an unclosed quote ending at the tag's end") {
+    hailstone::test::ScratchDir scratch("lua_ui_api_stml_href_test");
+    const fs::path dir = scratch.path() / "pack";
+    fs::create_directories(dir / "lib");
+    const fs::path ui_src = fs::path(__FILE__).parent_path().parent_path() / "ui";
+    if (!fs::exists(ui_src / "modern" / "lib" / "stml.lua")) return; // an installed test binary run away from the sources
+    fs::copy_file(ui_src / "modern" / "lib" / "stml.lua", dir / "lib" / "stml.lua");
+    std::ofstream(dir / "lib" / "theme.lua")
+        << "local c = { link = { 0, 0, 1, 1 }, text = { 1, 1, 1, 1 } }\n"
+           "return { color = c, C = c, text = function(x, y, t) return ui.CalcTextSize(t) end }\n";
+    std::ofstream(dir / "links.lua") << R"lua(
+local stml = dofile("lib/stml.lua")
+local function link(line)
+  for _, seg in ipairs(stml.Parse(line)) do
+    if seg[3] then return type(seg[3]) == "table" and (seg[1] .. "=" .. seg[3][1] .. "," .. seg[3][2]) or (seg[1] .. "=plain") end
+  end
+  return "none"
+end
+out = {
+  closed = link('<a href="file:///storyline/storyEpicsGuide.txt">Epics</a>'),
+  unclosed = link('&nbsp;<a href="file:///storyline/Epic/BardEpic.txt>Bard</a><br>'),
+  notify = link('<a WndNotify="27,x">item</a>'),
+  plain = link('<a name="top">here</a>'),
+}
+)lua";
+    ImGuiContext* ctx = ImGui::CreateContext();
+    ImGui::GetIO().IniFilename = nullptr;
+    unsigned char* px = nullptr;
+    int w = 0, h = 0;
+    ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&px, &w, &h);
+    {
+        hailstone::ui::lua::LuaUi lua(dir, scratch.path() / "ui.txt");
+        lua_State* L = lua.state();
+        ImGui::GetIO().DisplaySize = ImVec2(800, 600);
+        ImGui::GetIO().DeltaTime = 1.0f / 60.0f;
+        ImGui::NewFrame();
+        lua.frame(); // (the pack's scripts run)
+        ImGui::Render();
+        auto get = [&](const char* key) {
+            lua_getglobal(L, "out");
+            if (!lua_istable(L, -1)) {
+                lua_settop(L, 0);
+                return std::string("no out");
+            }
+            lua_getfield(L, -1, key);
+            std::string v = lua_isnil(L, -1) ? "nil" : luaL_tolstring(L, -1, nullptr);
+            lua_settop(L, 0);
+            return v;
+        };
+        CHECK(get("closed") == "Epics=-1,file:///storyline/storyEpicsGuide.txt");
+        CHECK(get("unclosed") == "Bard=-1,file:///storyline/Epic/BardEpic.txt");
+        CHECK(get("notify") == "item=27,x");
+        CHECK(get("plain") == "here=plain");
+    }
+    ImGui::DestroyContext(ctx);
+}
+
 // The table calls ImGui does not guard: TableNextRow and the header row with no current table read through a null
 // table, and a column or freeze set up after the first row asserts. The bindings refuse them; inside a table they
 // work as before.

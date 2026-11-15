@@ -7,6 +7,44 @@ draws them with a modern renderer. The procedural sky's
 colour maps, the EQG material classes and the multi-pass light details are not planned work unless a feature needs
 them; the classic path that exists stays as the `classic` look.
 
+## Shared GPU textures (experimental, Windows)
+
+Several clients on one machine can share the GPU memory of their immutable zone and actor textures instead of each
+uploading its own copy. It is off unless a separately started broker is configured, it is not in the release package,
+and every client still has its own Vulkan device, renderer, UI and window: only the texture payloads are shared.
+The design and its limits are in [Shared GPU memory](research/shared-gpu-memory.md).
+
+- **The broker** (`hailstone_gpu_cache_broker`, `tools/gpu_lab/`) owns one copy of each texture on its own device and
+  hands each client an opaque Win32 handle to it over a local named pipe (`platform/gpu_ipc.h`: current user only,
+  local peers only, a random endpoint and 256-bit token passed in `HAILSTONE_GPU_IPC_ENDPOINT` and
+  `HAILSTONE_GPU_IPC_TOKEN`, never in arguments or logs). Clients and broker must use the same GPU model, driver and
+  memory layout (checked in the handshake); `HAILSTONE_GPU_NAME` picks the GPU by its exact model name.
+- **The client** (`render/gpu_shared_cache.h`) asks for a texture by its final content (after colour preparation and
+  mip building, `render::prepare_immutable_texture_image`, so the broker's UNORM image never builds a colour chain)
+  and imports the handle (`platform/gpu_external_memory.h`). A texture the broker declines (unsupported format, its
+  budget full, an upload failure) is uploaded privately; sharing carries on.
+- **Frames:** Vulkan allows one instance to own an external image at a time, so a frame that samples imports takes a
+  machine-wide lease, acquires the imports from `VK_QUEUE_FAMILY_EXTERNAL`, submits, waits for its own fence and
+  releases them. The barriers cover every live import, not only those the frame samples (the renderers bind whole
+  texture arrays). GPU work that touches shared textures is therefore serialized across clients, and each such
+  frame waits for its own fence: memory is saved at a cost in frame overlap.
+- **Failure never stops the game.** A bad request fails alone; a client that disconnects or crashes gives back its
+  lease and references and the others carry on. A client that loses the broker, waits more than 5 seconds for the
+  lease, does not see its frame finish within 2 seconds or gets any reply it cannot use stops sharing for good: it
+  closes its connection, copies its imports into its own images before the next frame (they stay valid without the
+  broker) and plays on with private textures (`render/gpu_share_link.h`). A connection idle for 5 minutes is closed
+  by the broker; clients ping well within that.
+
+The tools beside it, also only in the build tree: `hailstone_gpu_share_probe` reports each adapter's external memory
+capabilities (`--smoke --device-index N` checks buffer aliases on one device), and `hailstone_gpu_asset_probe` renders
+a real zone's static assets in several offscreen views on one device with sharing on and off and compares the pixels.
+
+To try it, build `hailstone_gpu_cache_broker`, start it with `--serve` and the session variables, then start each
+client with the same variables (and `HAILSTONE_GPU_IPC_SERVER_PID` set to the broker's process id to pin it).
+`--status` and `--stop-if-idle` query and stop the broker. Without the variables nothing changes: every texture is
+private, as before. `HAILSTONE_GPU_BENCHMARK=1` logs the client's presented frames and the time spent waiting for
+the lease and for shared frames' fences.
+
 ## The frame
 
 `render::VkContext` (`src/render/vk_context.h`):
@@ -33,14 +71,152 @@ covers the whole window, and the app maps the nameplates and mouse picking onto 
 (`ClientApp::view_area_`).
 
 The scene can be drawn below the view's size and upscaled (`display.render_scale`, `SceneOptions::render_scale`,
-50 .. 100 %): the scene targets are made at the view's size times the scale (`render::scaled_extent`, each side
+33 .. 100 %, `render::kMinRenderScalePercent`): the scene targets are made at the view's size times the scale (`render::scaled_extent`, each side
 rounded), and `FrameInfo::extent` is that size, so the scene's projection, AO, SSR and bloom all work at it; the view's
 rectangle in the window (picking, nameplates) is unchanged. Below 100 % `begin_overlay` runs AMD FidelityFX FSR 1
 (`third_party/fsr1`, MIT; spatial, no motion vectors): `post.frag` draws into a 10-bit image at the scene's size,
 tonemapped and sRGB-encoded as FSR 1 wants it and without the dither; `shaders/fsr_easu.frag` (EASU, edge-adaptive)
 brings it up to the view's size; `shaders/fsr_rcas.frag` (RCAS) sharpens that by `display.sharpness` into the
 swapchain and adds the dither. The UI is drawn after, at the window's own size. Textures keep their LOD bias (none
-yet). A temporal upscaler (FSR 2/3.1, which needs motion vectors and jitter) is the next step (Roadmap).
+yet). With `display.upscaler = taa` the temporal upscaler takes FSR 1's place (Temporal upscaling, below).
+
+### Temporal upscaling
+
+`display.upscaler = taa` (read at start-up, as `display.msaa`; the viewer's `--upscaler taa`) draws the scene jittered
+and resolves it over the frames into a picture at the view's size: anti-aliasing at a render scale of 100 and
+upscaling below it. It is the groundwork a temporal upscaler from outside (FSR 3.1) needs too, run through one of our
+own first (Roadmap 6). `render/temporal.h` holds the maths, `VkContext::begin_overlay` the passes:
+
+1. **One sample.** The scene targets are single-sampled whatever `display.msaa` says: the resolve smooths the edges,
+   and the motion and depth it reads are taken per pixel. Alpha-tested cut-outs lose MSAA's alpha-to-coverage.
+2. **Jitter.** Each frame the scene's projection is moved by a sub-pixel offset (`VkContext::projection_jitter`,
+   `render::jittered`): Halton (2, 3) from its second point, in a cycle of 8 x (view / scene)^2 frames (8 at a
+   render scale of 100, 32 at 50; FSR 2's count), so every view pixel sees samples near it. Only the scene's draws
+   take it: picking, the name plates, the map overlay, the sun's place for the shafts and the culling of spawns to
+   pose keep the plain projection. The app gives that plain camera to `VkContext::set_temporal_view`; a frame that
+   does not (no 3D scene) is drawn without the temporal path and drops the history.
+3. **Prep** (`shaders/temporal_prep.frag`, at the scene's size, two targets): the scene with its AO applied (the AO is
+   lighting, so it goes in before the resolve, which then smooths its pattern too; the post pass does not apply it
+   again), and each pixel's motion in UV to where it was a frame ago (RG16F). The motion is rebuilt from the depth
+   with `render::reprojection`, last frame's view-projection times this frame's inverse, worked in double through
+   the cameras' relative motion so that zone coordinates in the tens of thousands keep sub-pixel precision, wherever
+   no draw wrote a motion of its own (step 6); where one did, that is taken. The reactive mask (step 6) goes on in
+   the colour's alpha.
+4. **Resolve** (`shaders/taa_resolve.frag`, at the view's size): each view pixel gathers the 3 x 3 scene samples round
+   it, weighted by a Gaussian fit of Blackman-Harris by their jittered distance; takes the nearest surface's motion
+   among them (edges move with what is in front); reads last frame's history there through a 5-tap Catmull-Rom;
+   clips it in YCoCg to the samples' mean +- 1.25 standard deviations (inside their extremes); and blends. Colours are
+   compressed by their exposed luma while mixed, so one bright pixel cannot dominate. The history's alpha holds the
+   weight it has gathered: this frame adds how near a sample fell to the pixel's centre in view pixels (0 .. 1), the
+   history keeps at most 12 (`kHistoryMaxWeight`; each frame is then at least 1/12 of the result), less the further
+   the clip pulled it, and at most 4 once the motion passes 32 view pixels a frame (resampling softens it). A new,
+   dropped or off-screen history takes the frame as it is. Two histories (RGBA16F) are written in turn.
+5. **Post** at the view's size: `post.frag` reads the history in the scene's place (`post_taa_sets_`); the distance
+   blur and the shafts read the scene-sized depth through `depth_texel` and UVs. The bloom is still made from the
+   scene at its own size. With `display.sharpness` above 0, the post pass draws into a 10-bit image and RCAS
+   sharpens it into the swapchain, as under FSR 1; at 0 it draws straight into the swapchain.
+
+6. **The draws' own motion and the reactive mask.** Under a temporal upscaler (and with `independentBlend`, which
+   every desktop driver has; without it the camera's motion is all there is) the scene has three colour
+   attachments: the colour, the object motion (RG16F, cleared to `kMotionUnset`) and the reactive mask (R8, cleared
+   to 0). Every scene pipeline is made for them through `VkContext::scene_rendering` and `scene_blends`, which mask
+   off what its shader does not write (`SceneOutput`); the item previews, drawn into targets of their own, keep the
+   colour alone. The scene shaders read the temporal block (the shared scene set's binding 5,
+   `shaders/motion.glsl`: this frame's and last frame's plain view-projection), which `begin_scene` writes into the
+   frame's commands, and write each vertex's place now and a frame ago as `o_motion`:
+   - the zone: its plants' wind sway at last frame's wind clock (`SceneLighting::time.y`, kept per zone renderer);
+     the rest of it stands still, so its motion is the camera's, drawn exactly;
+   - characters: their bones a frame ago, kept per spawn (`ActorDraw::motion_key`) and written after this frame's at
+     `kMaxBones` in the same buffer; a spawn new this frame, or with another number of bones, moves with the camera;
+   - doors, objects, placed items, the placement ghost and missiles: their transforms a frame ago, kept per thing
+     (`ObjectRenderer::Instance::motion_key`), written after this frame's at `kMaxInstances`;
+   - flora and the lawn: their sway and the wind at last frame's clock (`Push::time.y`); the pushing spawns' bend
+     is taken as it is now.
+   The opaque passes write the motion; the blended and additive draws (the zone's water, glass and glows, the
+   characters' and objects' blended parts, particles, fire, spell bolts, rain and snow, the target ring, the
+   isometric silhouette) write the reactive mask instead, `shaders/reactive.glsl`: the larger of their alpha and
+   brightness, at most 0.9, blended to the largest over the pixel (water a third of that, or its waves would keep no
+   history). The resolve keeps that much less of the history. The sky and the spawns' stand-in boxes write neither.
+   Under FSR 1 the same shaders run with the colour alone; the validation layer then warns once that locations 1 and
+   2 are not drawn into, which is harmless.
+
+The history is dropped when the scene targets are made again (a resize, a new render scale), on zone-in
+(`VkContext::reset_history`), on a frame without the temporal path, and when the camera jumps between two frames
+(`render::camera_cut`: more than 25 units, or a turn of more than 0.5 radians: a teleport, a camera switch).
+
+Open (docs/todo.md): a negative texture LOD bias below a render scale of 100; the bloom from the resolved picture;
+the held items and other attachments drawn as characters without a motion key.
+
+### AMD FSR 3.1
+
+`display.upscaler = fsr3` (the viewer's `--upscaler fsr3`) runs AMD FidelityFX FSR 3.1's upscaler in the resolve's
+place, on the same groundwork: one sample, the jitter, `temporal_prep.frag`'s colour (with the AO) and motion, the
+history dropped as above. The post pass then reads its output at the view's size (`post_fsr3_set_`, as it reads
+the history through `post_taa_sets_` under `taa`); `display.sharpness` drives FSR's own RCAS (0 skips it) and our RCAS pass does not run.
+
+- **What is vendored**: only the upscaler's GLSL (`third_party/fidelityfx`, FidelityFX SDK tag v1.1.4, the upscaler
+  3.1.4, MIT; its README lists the source paths and two local changes). SDK 2.x ships the Vulkan upscaler only as
+  signed prebuilt DLLs under a binary-only licence, so it is not used. Nor are the SDK's runtime and Vulkan backend:
+  `render::Fsr3Upscaler` (`src/render/fsr3_upscaler.cpp`) is Hailstone's own host side, following the SDK's
+  `ffx_fsr3upscaler.cpp`: the internal images (the pairs that alternate by frame, the luminance pyramid, the
+  reactive and lock masks), the constants, the clears and the dispatch order (prepare inputs, luma pyramid, shading
+  change pyramid, shading change, prepare reactivity, luma instability, accumulate, RCAS). The binding tables are the
+  passes' own `FSR3UPSCALER_BIND_*` numbers; descriptor sets are written each frame, one set per pass per frame in
+  flight.
+- **Shaders**: `cmake/Shaders.cmake` (`hailstone_add_fsr3_shaders`) compiles each pass once as compute with glslc or
+  glslangValidator, no AMD tool: HDR colour, reverse depth, motion vectors at the render size without jitter, the
+  reference Lanczos, 32-bit maths; accumulate twice, with and without sharpening (`fsr3_*.spv`).
+- **Inputs as FSR wants them**: our jitter (`jitter_px_`) is FSR's `jitterOffset` as it is (a texel's unjittered
+  place is `t + 0.5 - jitter` in both), and its cycle length is ours (FSR's count rounded up: 15 against its 14 at a
+  render scale of 75, the same at 50 and 100); our motion (UV to last frame's place) goes in with a scale of 1; near,
+  far and the vertical field of view are read back from the plain projection. Exposure is FSR's automatic one (its
+  frame info), so nothing else is passed; the frame time is measured between FSR frames.
+- **Device**: storage images in FSR's formats (R8, R16F, RG16F: `shaderStorageImageExtendedFormats`, enabled when
+  present) and quad subgroup operations in compute (`render::Fsr3Upscaler::supported`, `DeviceCaps::fsr3`). Without
+  them `fsr3` falls back to `taa` with a log line.
+- **Motion and reactive mask**: the same as the resolve's (Temporal upscaling 6): the draws' own motion in
+  `motion_`, and the scene's reactive mask as FSR's (`Fsr3Upscaler::Inputs::reactive`; none, FSR's default of 0,
+  without `independentBlend`).
+
+### Frame generation
+
+`display.frame_gen = true` (Options > Frame Generation, shown with a temporal upscaler; the viewer's `--frame-gen`)
+presents a frame made between each two real ones. It needs `taa` or `fsr3`: their motion (`motion_`, the draws' own
+and the camera's) and depth are what it follows; under `fsr1` it stays off with a log line. It is Hailstone's own,
+fed by the engine, not a layer guessing motion from finished images; the choices of what to show where the two frames
+disagree follow kettle-framegen (the same author's BSD-3 Vulkan layer; no code taken). `render/frame_gen_logic.h`
+holds the decisions (unit tested), `render::FrameGen` (`src/render/frame_gen.cpp`) the GPU side.
+
+1. **Pictures without the UI.** The post pass draws into one of two pictures (`pictures_`, `kUpscaleFormat`, the
+   view's size; written in turn) instead of the swapchain, and the UI draws into an image of its own (`overlay_`,
+   the swapchain's format, cleared transparent, premultiplied). The in-between frame is made from pictures alone, so
+   text and windows never warp; each presented image is the picture with the UI laid over it (`fg_composite.frag`,
+   which also encodes sRGB for an sRGB swapchain).
+2. **Motion at the in-between time** (`fg_scatter.comp`, two runs): each pixel of this frame is moved back along its
+   motion to where it stood at t = 0.5 (`kFrameGenTime`); the nearest depth that lands on each place wins (reverse
+   Z, atomic max on the depth's bits), and the winner's motion is written there. What moves in front covers what is
+   behind, as in the frame.
+3. **Holes** (`fg_fill.comp`): a place nothing landed on shows something this frame does not, because it is being
+   covered between the two frames. It takes the motion of the farthest mark within 3 pixels (the background's) and is
+   flagged, so the synthesis takes it from the last frame alone; with no mark near, it is flagged with no motion.
+4. **The in-between frame** (`fg_synth.frag`, the view's size): each pixel samples this frame (back along the motion)
+   and the last one (forward). Where they agree it blends them by the time; a flagged pixel takes the last frame;
+   anything else that disagrees was uncovered and takes this frame; a sample off the screen takes the other frame.
+   Where the reactive mask is set (particles, spells, rain: no motion of their own) it takes this frame along the
+   motion, sharp, rather than two copies a little apart.
+5. **Presenting**: a second swapchain image is acquired (`Frame::generated_available`) and both are submitted
+   together, the in-between frame presented first. FIFO is forced whatever `display.vsync` says, and the swapchain
+   gets one image more (`swapchain_image_count`, min + 2): waiting for the second image is what holds the game to
+   half the refresh, so the two presents alternate evenly. With fewer images (a surface's maximum) the second is
+   taken only when one is free. No frame is made across a cut, a reset, a resize or the first frame after any of them
+   (`frame_gen_ready`): the real frame is presented alone.
+
+Cost and limits: two small compute passes at the scene's size and two full-screen draws at the view's per real frame,
+plus one composite more. The game reacts up to one real frame later. A moving thing the depth does not hold (glass,
+water's surface) follows what is behind it; thin edges can leave a pixel-wide trace where they were about to cover the
+background. The viewer's `--screenshot-generated` saves the last in-between frame with the real ones round it
+(`FILE_prev`, `FILE_real`) for a side-by-side look; its `--frames` log counts the in-between frames presented. The
+performance window shows its rates, skips, pacing and GPU time (`VkContext::frame_gen_stats`, docs/dev-ui.md).
 
 Screenshots copy the presented swapchain image, so the swapchain asks for `TRANSFER_SRC` when the surface offers it;
 where it does not, a screenshot is refused with a log line (and a chat line for the screenshot key) instead of an
@@ -70,11 +246,25 @@ client's own, a new one made when they fill, with a set layout defined as the ba
 most 1024 files (`kMaxFiles`); past that the one asked for least recently is retired.
 
 In the modern lighting the scene is split for the water. The zone's opaque draws (`render::ZonePhase::Opaque`, with
-the water held back), the placed objects and the characters go first. `begin_translucent` then ends rendering and
+the water held back), the placed objects and the characters' opaque and alpha-tested parts (`render::ActorPhase::Opaque`)
+go first. `begin_translucent` then ends rendering and
 copies the resolved colour and depth (sample 0) into images that `shadow_set()` binds as 1 and 2. Drawing then goes
 on into the same targets (stored and loaded, the multisampled ones too): the grass (opaque, but left out of the copies
-so the target ring lies on the ground under it), then `ZonePhase::Translucent`: the water first, then the blended and
-additive draws.
+so the target ring lies on the ground under it), then the characters' blended and additive parts
+(`ActorPhase::Translucent`: they write no depth, so grass drawn after them would cover a glass shield or a glow; in
+every lighting), then `ZonePhase::Translucent`: the water first, then the blended and additive draws. Being after the
+copies, a character's blended parts are missing from what the water shows through it.
+
+With `display.depth_prepass` (off by default; the viewer's `--depth-prepass`) the zone's opaque and alpha-tested
+geometry is drawn depth-only first (`ZoneRenderer::draw_depth`, `shaders/zone_depth.frag`), then coloured with the
+depth test equal and no depth write: a pixel covered by several surfaces is shaded once. The alpha test is the colour
+pass's, so an alpha-tested edge covers the same samples in both passes, and `zone.vert`'s position is `invariant`, so
+both passes give a surface the same depth. The pre-pass discards every pixel `zone.frag` discards, the isometric
+camera's cut-away included, or the cut walls would keep their depth and hide what stands behind them. The water stays
+out of the pre-pass (it is drawn blended after `begin_translucent`). The pre-pass covers the current zone's geometry only: the neighbour zones (their ties go by the
+draw order, which an equal test would turn around), the objects, the flora and the characters keep their single pass.
+The setting is read when a zone loads. The pre-pass's shader is optional: without it the zone draws the single pass,
+with a warning in the log.
 
 The scene target holds linear colour. The classic lighting computes in display (sRGB) values as the classic renderer does
 and converts at the end of each shader; the modern lighting computes in linear HDR.
@@ -97,9 +287,9 @@ by alpha. Transparent texels take their opaque neighbours' colour, so palette in
 longer fringes leaves. Cut-outs keep level 0's coverage on every level, so trees stay full at a distance. DDS files
 shipped without mips get a chain too.
 
-A fully opaque image whose sides are powers of two needs none of that: its chain is a plain average, which the GPU
-builds as the CPU would, so it goes up as it is and the GPU builds the levels (`render::gpu_builds_mips`,
-`render::prepare_texture_image`, `UploadBatch::texture`). The image is created `R8G8B8A8_SRGB` with
+In the ordinary private `UploadBatch::texture` path, a fully opaque image whose sides are powers of two needs none
+of that: its chain is a plain average, which the GPU builds as the CPU would, so it goes up as it is and the GPU
+builds the levels (`render::gpu_builds_mips`, `render::prepare_texture_image`). The image is created `R8G8B8A8_SRGB` with
 `VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT` and blitted level by level, so each blit decodes to linear light, filters and
 encodes back, as `assets::build_color_mips` does; the view the shaders sample is `R8G8B8A8_UNORM`, so they read the
 same values as from a CPU chain. The two agree within a rounding step per level (the GPU stores each level in 8 bits
@@ -111,6 +301,10 @@ as the GPU's own levels would blend the colour key into the edges and bring back
 those images (the baked terrain tiles, uncompressed A8R8G8B8 DDS, are opaque where they are a zone's base layer). A
 neighbour zone's textures, held to `ZoneRenderer::Options::max_texture_size` (`render::prepare_capped_texture`), always
 get the CPU chain, as only a chain has levels to drop.
+
+A texture shared through the broker ("Shared GPU textures" above) instead gets its colour chain on the CPU
+(`render::prepare_immutable_texture_image`) before it is keyed and exported, since the broker's image is UNORM. Data
+images keep their ordinary mip recipe, and BC formats the device lacks are decoded first.
 
 A material that never reads its texture's alpha (opaque, no alpha test: EQG `Opaque_*` classes and the classic opaque
 methods, `MaterialState::alpha_unused`) uploads it as `TextureUse::OpaqueColor` in the actor and object renderers: made
@@ -268,23 +462,27 @@ far ring costs about what the near circle does. The tiles are filled nearest fir
 
 Hailstone's own, not the original's: the classic zones have no flora, and this gives them grass without changing
 their files (`assets/zone_flora.h`, `display.zone_flora`). Their plants join the same `Zone::flora` the EQG zones'
-radial flora fills and are drawn the same way (above; /showgrass hides them, Flora Distance sets their reach).
+radial flora fills (/showgrass hides them, Flora Distance sets their reach). The grass is a lawn the client builds
+itself, no game asset (below); ferns, flowers and bushes from donor EQG archives are scattered over it and drawn as
+the radial flora is (above).
 
 **Which rules.** A zone takes `flora/<zone>.txt` from the install folder (shipped) when there is one, else
 `flora/default.txt` when the server calls it outdoor (OP_NewZone's time type 1, 2 or 5; PEQ marks some dungeons so,
 which the cover test below keeps bare). A rules file is read line by line, and the first matching ground line wins:
 - `donor <archive>`: an EQG archive in the player's game folder whose `RadialFloraDefs.rfd` and textures give the
-  plants' shapes and pictures; several donor lines add up. The default takes `commonlands.eqg`'s, the revamped
-  Commonlands. Nothing is shipped; without its donors a zone has no flora, and a kind whose donor (or whose picture)
-  is missing is left out.
-- `ground <glob> <density> [+green|+greenish] <kind>[:<weight>]...`: plants per 100 square units on the ground
-  textures the glob matches, and their kinds by weight (a definition of the first donor that has it, or one donor's
-  as `<archive stem>/<name>`); 0 keeps a texture bare. The classic ground textures blend
+  scattered plants' shapes and pictures; several donor lines add up. Nothing is shipped; a kind whose donor (or
+  whose picture) is missing is left out, and the lawn needs none (the default names no donor).
+- `ground <glob> <density> [+green|+greenish] [lawn] [<kind>[:<weight>]...]`: on the ground textures the glob
+  matches, the lawn when the line says `lawn`, and `<density>` plants per 100 square units of the kinds by weight (a
+  definition of the first donor that has it, or one donor's as `<archive stem>/<name>`); a density of 0 and no lawn
+  keeps a texture bare. The classic ground textures blend
   grass into cliff, sand or a path within one picture, so `+green` keeps a plant only where the game's own texel
   under it is clearly green (`is_green_texel`: not the water's teal, mud's olive or a dungeon's near-black), and
   `+greenish` also takes dry and dark grass, for textures whose name says they are grass.
-- `max_slope` (degrees), `scale <min> <max>`, and `include <name>` (another file's lines in place: a zone file puts its
-  own exceptions first, then `include default`; East Commonlands adds desert plants on its sand that way).
+- `max_slope` (degrees), `scale <min> <max>` (the scattered plants' sizes), `lawn_height <min> <max>` (the lawn's
+  blades, 1.8 to 3 units by default; the grasslands' grow 2.4 to 4), and `include <name>` (another file's lines in
+  place: a zone file puts its own exceptions first, then `include default`; East Commonlands adds desert plants from
+  `commonlands.eqg` on its sand that way).
 
 The shared files turn down built and wet surfaces by name before anything else (`bare.txt`: roofs, walls, cobbles,
 tiles, bridges, hedges, ship decks, water, lava), then take grass-named textures with `+greenish`, then turn down
@@ -292,8 +490,9 @@ floors, rock, stone and cliffs (`stone.txt`, after the grass lines so a grass an
 then take anything else with `+green`. A `+green` texture with next to no green texels (`kMinGreenShare`) grows
 nothing at all.
 
-**Families.** Most zones take the shared Commonlands grass alone (`default.txt`). A zone of a climate with plants of
-its own includes a family file, the same lines with more kinds from more donors:
+**Families.** Most zones take the lawn alone (`default.txt`). A zone of a climate with plants of its own includes a
+family file, the same lines with kinds from donors scattered sparsely over the lawn (about 0.4 to 1 plant per 100
+square units):
 
 | Family | Zones | Added, from |
 |---|---|---|
@@ -306,6 +505,49 @@ its own includes a family file, the same lines with more kinds from more donors:
 | `luclin` | the Twilight Sea, the Grimling Forest, Tenebrous, Shadeweaver's, Hollowshade, Dawnshroud, the Maiden's Eye, Shar Vahl, Katta Castellum, Sanctus Seru | shrubs, plants and shade grass, `mistythicket.eqg` |
 | `growth` | the Plane of Growth | tall flowering grass and ferns, `arcstone.eqg`; flowering grass, `moors.eqg` |
 
+
+**The lawn.** An even carpet rather than plants scattered at random: the ground is cut into world-aligned squares
+of `kLawnCell` (3.2 units, 40 to a tile), and each square whose centre lies over ground that grows a lawn (the
+tests below, at that centre; `+green` by the majority of five texels, the centre's and four half a square out, so a
+texture blending grass into dirt texel by texel grows no speckle) holds one patch of blades, at the ground's height
+and slope there. Each square goes to
+exactly one ground triangle, so the patches meet without gaps or overlaps. A patch takes the colour of the ground
+texel at its centre; its height wanders slowly over the zone between `lawn_height`'s two values (smooth value noise
+on a 48-unit lattice, `assets::lawn_height_noise`), not patch by patch. Where the lawn meets bare ground (a path, a
+road, a texture `+green` turns down) it tapers over three squares (`lawn_edge_factor`: 0.55 of the height beside it),
+so it does not end in a wall along a texture's straight border, and it frays: a patch there keeps only a share of its
+blades, a draw of its own between a quarter and 85% beside bare ground, all of them three squares in
+(`lawn_edge_cover`, carried to `lawn.vert` in the instance's flags). A patch with fewer than three of its eight
+neighbours grown is dropped (a lone tuft); a tile grows its neighbours' squares within three of its edge to see them,
+then drops them. Under cover (a platform, a bridge, a roof) a square asks whether it is covered not at its centre but
+at a spot moved off it by smooth noise of two scales, up to three squares either way (`lawn_cover_offset`), on the
+ground's plane there and a little over it, so the bare ground under a straight platform wobbles in and out rather
+than tracing its outline.
+
+The blades are built in `shaders/lawn.vert`, without a texture (`render::FloraRenderer`'s second pipeline): a
+patch's square holds a grid of blades, one jittered in each cell, so the cover is even. A blade is a tapered strip
+of a few pieces ending in a point, standing on the ground across the patch (its slope), curving over as it rises, a
+little taller or shorter, combed: it leans 0.4 to 0.65 of its height the way a slowly turning field over the zone
+points (broad swathes lying together), a little off it, its flat side to the way it leans; leaning
+with the scene's wind as gusts roll across the zone (the zone's plants' wind, `SceneLighting::wind`: gentle in fair
+weather, hard in a storm) and fluttering a little, and bent away from the spawns walking through it like the other
+plants. `shaders/lawn.frag` gives it the ground's hue with its brightness held within a band (a pale or dark texel
+makes no pale or dark patch), darker at the roots and brighter and warmer towards the tip; in the modern lighting it
+is lit as the radial flora is, with its face's normal turned most of the way up (the lawn is lit like the ground
+under it, not blade by blade) and some light through it when the sun is behind it. It casts no shadow.
+
+Nothing about the lawn changes at a line as the camera moves (`render::kLawnLods`, `lawn_blades`). A patch's blades
+come in a fixed order, placed by a low-discrepancy sequence shifted per patch, so any first few of them cover its
+square evenly. All 49 stand within 40 units; past that the last of them shrink away one by one (each over three
+places in the order) to 16 at 90 units and 9 at 250, while the rest widen by the square root of how many fewer there
+are, so a patch keeps its cover. The three draws (49 blades of three pieces within 90 units, 16 of three to 250, 9
+single triangles past that) each take the first blades of the one before, so a draw's switch removes only blades
+already gone. Past 400 units every second patch each way fades out over the 120 units before it while the patches
+kept widen to take their squares, past 800 every fourth (`lawn_patch_fade`, `lawn_patch_side`); a grown tile keeps
+its patches by the coarsest stride that keeps them, so a far tile walks only those it draws. The lawn shrinks into
+the ground over the last fifth of the reach with the other plants. A blade is narrow at the root (0.55 of its width),
+widest a third of the way up, and comes to a point. In South Karana, on the AMD card (RADV) it was tuned on, the lawn
+costs about 0.4 ms a frame at the default reach.
 
 **Where.** On level ground (45 degrees by default) of a drawn, opaque or cut-out surface: not the invisible collision
 surfaces, nor the translucent water. Not in water, lava or a zone line, nor on the water's surface (the region just
@@ -616,13 +858,23 @@ intensity; updated every frame, in every zone type, with or without a sky):
   - The ground gets wet over 30 s of rain and dries over 2 minutes: darker, with a Fresnel reflection of the sky,
     most on level surfaces. The doors and ground objects get wet the same way (`shaders/object.frag`); the
     characters get a lighter sheen (`shaders/actor.frag`).
-  - Puddles fill the level ground's low spots over 90 s of rain (slow noise picks them; up to about a quarter of the
-    ground in a long storm) and dry over 4 minutes: the ground under them darker, the sky in them nearly a mirror's.
-    While it rains, drops ring them (`rain_ripples`: jittered cells about a unit across, more drops the harder it
-    rains), the rings fading out where a pixel spans more than a tenth of a unit.
+  - Puddles fill the flat ground's low spots over 90 s of rain (warped noise picks them, a finer one frays their
+    shores; up to about a quarter of the flat ground in a long storm) and dry over 4 minutes. Only flat ground holds
+    water: both the smoothed normal and the triangle's own normal (screen derivatives of the position; the smoothed
+    one reads level at a slope's foot or on a rounded crest) must be within about 11 degrees of level, full puddles
+    within about 6, and ground nearer that limit needs a deeper spot to hold water. At the shore the water is
+    shallow and shows the soaked ground through it; further in, its reflection of the sky takes over by Schlick's
+    Fresnel term (water's 2 %), so it reads dark from above and a mirror at a low angle; a damp, darker rim rings
+    it, and the sun or moon glints in it, shadowed (`puddle_surface`; the cover is `shaders/puddle_cover.glsl`, which
+    `tests/lighting_test.cpp` also compiles as C++). While it rains, drops ring them
+    (`rain_ripples`: jittered cells about a unit across, more drops the harder it rains), the rings fading out where
+    a pixel spans more than a tenth of a unit.
   - Snow lies on level surfaces in noisy drifts, covering over 2 minutes and melting over 5: on the ground and on the
     doors' and objects' roofs and ledges, not on the characters (drifts fixed in the world would slide over them).
-  - All of it is in `shaders/weather.glsl` (`weather_surface`), fed `SceneLighting::weather` (`render::set_weather`:
+  - A cut-out surface of the zone (alpha-tested: leaves, fronds, grates) gets neither puddles nor snow, and a third
+    of the wet look: its normals are a crown's or a card's, mostly facing up, and would paint a generated tree's
+    crown with the sky's reflection or turn it white.
+  - All of it is in `shaders/weather.glsl` (`weather_surface`, and `puddle_surface` on the zone's ground), fed `SceneLighting::weather` (`render::set_weather`:
     wet, snow, the rain falling, the puddles).
   - The look belongs to the zone: entering another zone starts it over, dry and with a clear sky
     (`WeatherLook::update`'s zone id), so a storm's snow, wet ground and sky do not follow the player in.
@@ -810,6 +1062,15 @@ modern lighting always uses them (`shaders/zone.frag` `mapped_normal`, `surface_
 
 The classic lighting draws them as before (the diffuse texture by the lit colour).
 
+Hero's Forge attachments carry their own EQG surface properties into the actor renderer, including supplied layer
+overrides. Their native normal maps use the full RGB tangent vector and the same +v convention as EQG zones;
+texture-pack normals keep their separate BC5 RG interpretation and remain the fallback when a native map is absent.
+Armor reflection uses the material's environment DDS cube, converted with the existing cube-to-octahedral loader;
+an absent or invalid cube supplies no reflection. The base shader's known specular/reflective classes select the
+effect, and a layer's parameters do not invent a new shader class. Native surface records share the actor's lighting
+buffer, with one bounded table per frame shared by instances of a mesh. Push constants remain 128 bytes and no
+descriptor bindings are added. Ordinary WLD, Luclin, held-item and EQG NPC materials retain their existing path.
+
 Alpha-tested materials (trees, grass, fences, Chroma/Masked) draw in the opaque pass with alpha-to-coverage when the
 scene is multisampled: the pipelines set `shaders/coverage.glsl`'s `kAlphaToCoverage`, and the alpha test becomes a
 ramp about one pixel wide around the reference, capped at 0.05 of alpha so far minified textures do not leave
@@ -949,6 +1210,13 @@ zoning and what the server sees are unchanged. The classic client drew nothing p
 in filler: the ground, hills and walls their builders put past each line, often a stand-in for the neighbour).
 `game/neighbour_zones.h` holds the arithmetic, `app/neighbour_zones.h` the loading and drawing.
 
+The two zones were never built to meet: their ground disagrees in height and texture where they overlap, and their
+filler stands in each other's way. So next to this zone the neighbour's own terrain is not drawn: the land round the
+current zone (below, "Horizon hills") is the ground past its edge, shaped like the neighbour's, easing onto it across a
+band. Further in, the neighbour's own terrain is drawn (its roads, its textures, its hills) with the land sunk under
+it, and its walls, buildings and trees stand on whichever ground is drawn, so there is one continuous ground from the
+current zone's filler out to the neighbour.
+
 - **The lines**: the zone-line regions of the zone's BSP (`assets::ZoneRegions::leaf_cells`: each leaf's convex cell,
   its split planes cut from the zone's box) grouped by where they lead: an absolute tag's zone, or a reference tag's
   zone point from OP_SendZonepoints. Each group's seam faces the zone edge it is nearest (+-x or +-y: zones are not
@@ -974,15 +1242,65 @@ in filler: the ground, hills and walls their builders put past each line, often 
   zone-line region and never count. An indoor zone draws none.
 - **The cut**: the neighbour is moved into place on the CPU and cut at the plane through the seam's face, keeping what
   lies past it (triangles across it split along it, `ZoneRenderOptions::keep`), so its own filler towards this zone
-  goes. Past the seam this zone's filler and the neighbour's real ground overlap as far as this zone's edge, and where
-  both have ground this zone's wins:
-  - this zone's ground there is sampled on a 24-unit grid (`game::GroundGrid`, bilinear between the samples); the
-    neighbour's upward-facing triangles over it are cut along the grid's cells and each piece within 24 units of it
-    goes (`game::split_off_ground`, `ZoneRenderOptions::split`), unless it lies in the last cell before this zone's
-    ground ends, so no gap opens there; walls, buildings and hills standing higher stay;
-  - what still meets this zone's surfaces loses to them: the neighbour is drawn after this zone with a strict depth
-    test and a depth bias pushing it back (`ZoneRenderOptions::behind`: 16 steps of the depth's precision plus twice
-    its slope; the depth is reversed), so ties and near-ties do not flicker between the two as the camera moves.
+  goes.
+- **Its ground** (`render::HorizonSource`): the highest visible ground (`CollisionMesh::ground_below`) of the
+  neighbour's terrain alone (a collision mesh built without its placed objects: trees and houses are not its ground)
+  on 64-unit squares over its box past the seam, at most 8000 units past this zone's box, the median of four samples a
+  square, moved by the offset; the highest of the four is kept too (`HorizonSource::top`, `render::source_top`). It is
+  "opened" (the lowest within one square, then the highest of those lows), so a wall or a crest narrower than about
+  200 units goes from it and the land does not rise in a ramp against a wall; wider, it follows the terrain. Past its
+  ground its cover fades from 1 to 0 over 1200 units, and on it `inner` says how far in from its edge a point lies
+  (before the seam, and its void past its own boundary walls).
+- **The land over it** (`render::horizon_mesh`): past this zone's edge the land eases from the edge's height to the
+  neighbour's ground across a band three times their difference wide (200 to 800 units), is the neighbour's ground
+  beyond, and goes back into the zone's own hills as the cover fades. A square of the land belongs to the neighbour
+  whose cover is the greatest at its corners. The neighbour draws its squares (`ZoneRenderOptions::land`,
+  `render::LandPatch`; the land's own lines and heights, so they meet this zone's land vertex for vertex), and this
+  zone hides its ground and rock triangles there (`ZoneRenderer::set_distant_hidden`, by `HorizonField::mesh_square`);
+  its sea stays. In the neighbour's squares, past the band and at least 128 units in from the neighbour's edge (all of
+  it by 512), the land sinks 40 units under its ground (`render::horizon_point`, `HorizonMesh::settled`), so its own
+  terrain is drawn there over the land.
+- **Two grounds fading into each other**: each of the neighbour's squares is drawn twice, with the neighbour's own
+  most used plain ground (or rock) material and with this zone's land material (its texture's file read from this
+  zone's archive when the zone is entered, `LandPatch::files`). A vertex's weight is the neighbour's cover times how far
+  across the band it lies; a pixel shows the neighbour's material where world-space value noise (patches of 48, 12 and
+  3 units) lies under the weight, else this zone's (`coverage.glsl` `land_blend_discard`, zone.frag and
+  zone_depth.frag), so the zone's grass gives way to the neighbour's in ragged clumps across the band and holds still
+  as the camera moves.
+- **What of the neighbour stays** (`game::split_off_land`, `game::LandMask` on 64-unit cells, each triangle cut
+  along them and each piece judged by its middle), by what it is (`ZoneRenderOptions::Part`: its terrain, the vertices
+  of its own meshes; a water or lava surface; a placed object):
+  - its terrain stays where the land has sunk at least 30 % of the way under it (12 units), and goes elsewhere: in the
+    band and over this zone's own terrain the land or this zone is the ground, and a slope or ridge of the
+    neighbour's crossing it there showed as shards and long brown strips (North Karana's lake towards East Karana);
+    by its edge its own filler goes. There what of it stands more than 24 units clear of its own (opened) ground, a
+    wall, a tower, a wall's top (Qeynos's walls are qeynos2's terrain), is kept as a placed object is, where
+    something may stand: narrower than the opened ground, it is not a slope the land would cross. Where its terrain stops it must stop where it meets the land,
+    or the cut leaves a fin in the air (a bank narrower than its opened ground): from where it is not drawn, a cell
+    whose highest ground (`source_top`) stands more than 24 units over the ground drawn there goes too, and so on, at
+    most six cells on (`game::spread_terrain_cut`); there its part of the land comes back up from under it;
+  - its water goes over this zone's own terrain or water (both zones' lakes doubled where they overlap), and where
+    nothing may stand;
+  - a placed object's piece facing up within 24 units of its measured ground is ground, and goes; and what stands in
+    a cell goes where the ground under it would leave it floating: where the land there (over this zone's own
+    terrain: that terrain, sampled past the seam on a 24-unit grid as before) lies more than 24 units under the
+    neighbour's ground, which happens in the band. A wall crossing such a cell is cut along its edge.
+
+  It is drawn after this zone with a strict depth test and a depth bias pushing it back
+  (`ZoneRenderOptions::behind`), so where it meets this zone's surfaces they win. Without the land (a zone with too
+  little level ground, or no plain ground material) it falls back to the earlier cut: its ground goes only where this
+  zone's doubles it within 24 units (`game::split_off_ground`).
+- **Seeing what comes from where**: `display.neighbour_tint` in `hailstone.ini` (the viewer's `--neighbour-tint`)
+  tints the neighbours' own geometry magenta and, in their parts of the land, the pixels showing their own ground
+  green (`ZoneRenderer::set_debug_tint`); the land showing this zone's ground and this zone itself keep their colours.
+  It is how a strip or a fin past a zone line is told apart: magenta is the neighbour's, the rest the land's or this
+  zone's.
+- **The cache**: its ground is written to `cache/horizon/<server>/<zone>/<neighbour>.bin` (docs/layout.md) with the
+  offset and both zones' file sizes; a zone's land is built with the cached ground of all its neighbours that still
+  match the asset folder, and a neighbour's load uses its cached ground when the offset found now is within a unit of
+  the cached one, else measures it again. Every qualifying neighbour is measured, drawn or not: when there is nothing
+  to load, the nearest whose ground is not known is loaded on the same thread just to measure it (about as long as a
+  load without the upload). One measured only this visit shapes the land from the next zone-in.
 - **Loading**: once the zone is entered and the zone points are in, the nearest qualifying neighbour whose line is
   within the view distance plus 1500 units loads on a background thread at a lower priority (`ZoneRenderer::prepare`:
   the geometry, chunks and decoded textures with their mip chains, capped at 128 texels across; no detail passes,
@@ -994,14 +1312,116 @@ in filler: the ground, hills and walls their builders put past each line, often 
   cut off by zoning or quitting stops at its next step (after reading the zone, after its collision mesh, and
   between `prepare`'s meshes and materials, `ZoneRenderOptions::cancelled`), so the wait for its thread is short;
   reading the zone's files is not broken off. It is fogged by this zone's haze, as it is drawn with this zone's
-  lighting; the sun's shadows do not reach it.
-- **Cost** (ecommons by the Freeport line, two neighbours loaded): freportw 81,244 triangles and 28 MB, nektulos
-  40,043 and 9 MB; about 300 ms on the loader, 20 to 45 ms of upload on the frame's thread; 72k triangles in 241
-  calls a frame, 0.09 ms of CPU, about 0.5 ms a frame on the GPU (7.0 -> 7.5 ms).
-- **Not yet**: the seam is a straight cut and the ground can step by a few units where the two zones' builders
-  disagree; the two zones' ground textures meet at a hard line; the neighbour's own sky, fog and water colour are
-  this zone's; a zone with a short view (freportw's 450) hides its neighbours in the haze; the classic zone-line
-  quirks for North Ro and East Freeport (`game::resolve_teleport_index`'s 1044) are not applied to the offset.
+  lighting; the sun's shadows do not reach it. A neighbour always draws its part of the land, whether the land round
+  the zone is shown or not (Options, Horizon Hills): it is its ground.
+- **Cost** (ecommons by the Freeport line, two neighbours loaded, before the land stood in for their ground):
+  freportw 81,244 triangles and 28 MB, nektulos 40,043 and 9 MB; about 300 ms on the loader, 20 to 45 ms of upload on
+  the frame's thread; 72k triangles in 241 calls a frame, 0.09 ms of CPU, about 0.5 ms a frame on the GPU (7.0 -> 7.5
+  ms). With the land (qeytoqrg, its two drawn neighbours, no texture pack, the viewer at 1280 x 720): qey2hh1 33 -> 38
+  MB (its part of the land, 13,237 squares drawn twice, 52,948 triangles), qeynos2 unchanged at 24 MB; on the loader
+  about 300 and 200 ms as before from the cache, and measuring a neighbour's ground the first time adds about as much
+  again; the frame time 5.19 -> 5.30 ms looking out over Western Karana. The cache files are 23 KB (qeynos2) and 136 KB
+  (qey2hh1).
+- **Not yet**: a wall cut where the land under it is too low shows its hollow inside along the cut (now out in the
+  band rather than at the seam); where the neighbour's terrain stops at the band, a step of up to 12 units down to the
+  land can show; the neighbour's water is drawn over the land where the land replaces its lake bed (in the band); where two neighbours' ground overlaps (past a zone's corner) and only one was
+  known when the other loaded, both may draw the squares between them until the next zone-in; the neighbour's own sky,
+  fog and water colour are this zone's; a zone with a short view (freportw's 450) hides its neighbours in the haze; the
+  classic zone-line quirks for North Ro and East Freeport (`game::resolve_teleport_index`'s 1044) are not applied to
+  the offset; the neighbours' neighbours are not measured (their offsets would need their zone points, which only the
+  server of the zone one is in sends).
+
+## Horizon hills
+
+In the modern lighting, outdoors, land stands round the zone past its edges, out to about the modern view's reach, so
+the world does not end in a blank haze (Hailstone's own; the classic client drew nothing past a zone's geometry). It is
+real geometry: a mesh built while `ZoneRenderer::prepare` builds the zone (`render::horizon_mesh`, `render/horizon.h`)
+and drawn with the zone's own materials through `zone.frag`, so it takes the zone's textures (a texture pack's photo
+materials and normal maps too), its light, the sun and the haze exactly as the zone's ground does, and the depth test
+puts it behind anything nearer. Scenery only: nothing collides with it.
+
+- **What the zone says** (`render::horizon_land`; not for a neighbour): the terrain's opaque triangles, and its water
+  and lava surfaces. The level ones (the normal's z at least 0.8, either way up) give the level ground's extent (2 % of
+  its area cut each side), its median height (the land's base) and its spread from the 10th to the 90th percentile,
+  40 to 1200 units (the relief, which makes rugged zones' land taller). A zone with less than 250,000 square units of
+  level ground gets none.
+- **The grid**: the zone's terrain (geometry more than 4000 units past the level ground left out) is laid on squares
+  64 units across. Terrain anywhere in a square covers it, with its lowest and highest point; a water surface marks it
+  wet. Each empty square takes, from the nearest covered square, its distance and the zone's edge there: the highest
+  terrain (a wall's top, the open ground at a zone line) or, where the water reaches the edge, the water's surface;
+  smoothed over a few squares.
+- **The land**: a grid of vertices over the zone's squares and 2500 units past them (64 units apart, more for a zone
+  wider than 256 squares with that), then wider by 12 % a step out to 10000 units past the zone's squares. Vertices in a covered square are tucked 40 units under its lowest terrain, and in
+  the empty square beside one 5 units under the lowest beside it (a wall's foot), so the land meets the zone's edge
+  without a gap and stays under its ground; the squares under the zone are drawn too (they show only through the back
+  of its walls, which have only their inner faces). Past the edge the land starts at the edge's height and turns over
+  1200 units into rolling hills (value noise, 200 to 650 units high with the relief) and, from 800 to 5000 units out,
+  ridged mountains (900 to 2250 units), all seeded by the zone's short name (`render::horizon_seed`), so it is the same
+  every visit. A pocket the zone's terrain closes round (a gap between its walls, a hole in it) is a flat lid just under
+  its rim. Where the edge is water, the sea: its floor falls to 250 units under the zone's water level (the median of
+  its water surfaces) within 800 units, with coasts and islands rising from 2500 units out, and its surface is drawn
+  at the water level with the zone's own water material.
+- **The look**: the zone's plain material (no shader effect of its own, no scrolling) that covers the most level
+  ground draws the land, the one on the most slopes (at most 0.8 up, and the mountains' upper half) its rock, and the
+  most used water material the sea, each mapped flat with its own texture scale (the zone's UV area over area) and
+  wound as the zone winds its own. Its vertex colour is the level ground's median baked light, darker in woods-like
+  patches on the level land, in the valleys and in broad patches that keep the texture's repeat from showing. The
+  log says what it used: qeytoqrg 36892 triangles, ground `XGRASSDIRT2.BMP`, rock `HHDROCKGRASS.BMP`; butcher with
+  10108 water triangles.
+- **Neighbour zones**: past a zone line the land takes the shape of the neighbour's ground (above, "Neighbour
+  zones": `render::HorizonSource`, the band, the cache): from the zone's edge it eases onto that ground, follows it,
+  and fades back into the hills past it. Where a neighbour is drawn, it draws its squares of the land itself with its
+  own ground faded into the zone's (`ZoneRenderer::footprint`, its squares), and the current zone collapses its
+  land's ground and rock triangles there (`ZoneRenderer::set_distant_hidden`, by `HorizonField::mesh_square` of each
+  triangle's middle), in index buffers of the land's own (one per frame in flight), whenever the neighbours drawn
+  change.
+- **When**: outdoors (time types 1, 2, 5), under an open sky (1, 2, 4) or none (gfaydark, everfrost); not under the
+  planes' and Luclin's painted skies. A thick fog, lava, a thick-fog region, a storm and the night hide it as they hide
+  the zone, by the same haze.
+- **Cost**: in Qeynos Hills about 99,000 triangles in 256-unit chunks (44,000 before its squares were kept fine out to
+  2500 units past the zone, which the neighbours' ground needs), culled with the zone's; no shadows (neither cast nor
+  drawn into the sun's cascades or the cover and water maps). Looking out over it, 9,000 more triangles and 70 more
+  draw calls; the frame time did not move.
+
+`display.horizon_hills` (Options, Horizon Hills) turns it off; the viewer takes `--no-horizon`.
+
+## Smoothed ground
+
+A classic zone's ground is drawn with smooth normals and curved, subdivided triangles instead of the file's flat
+facets (`assets/ground_refine.h`). A deliberate difference from the original, the look only, in both lightings:
+`Zone::terrain` stays as loaded and keeps collision, the regions, the liquids' classification, the ambient probe and
+everything else that must agree with the server's geometry. The refined copy goes into `Zone::draw_terrain` (with
+`draw_terrain_source`, the terrain triangle each drawn one was cut from), which the zone renderer and the zone flora
+use; the lawn and the plants stand on it, and the flora's cover test sees it.
+
+- **Ground:** the solid, opaque triangles of the classic (WLD) terrain meshes. Not cut-outs, translucent or invisible
+  surfaces, passable ones (water), heightmap tiles or EQG meshes. Neighbour zones are drawn from their own terrain,
+  flat.
+- **Normals:** corners are welded by position (to 1/128 unit) across meshes and materials, and each corner of a
+  triangle takes the angle-weighted average of the faces round it within 45 degrees of its own face. Hills turn
+  smooth; a wall's foot, a cliff's edge or a building's corner stays sharp.
+- **Shape:** each triangle becomes a cubic PN triangle (Vlachos, Peters, Boyd and Mitchell, "Curved PN Triangles",
+  2001) over its corner normals. An edge is curved only where exactly two ground triangles meet on it and agree on
+  both corners' normals; a crease, the ground's border and a seam with a wall or a cut-out stay the file's straight
+  edge, uncut, so the refined ground meets the rest of the zone exactly. A curved edge is cut into 2, 4 or 8 segments,
+  so a segment cuts through the curve by at most about 0.05 units. A triangle takes the most of its edges' (or what
+  its own bulge needs), S: the points whose weights are all at least 1/S form a regular inner grid, and each edge's
+  own samples are stitched to the inner grid's side along it. An edge's samples are counted and evaluated from its
+  lower welded corner, so both triangles on it make the same points bit for bit, and no crack opens where two
+  triangles cut it differently (Qeynos Hills: 9,655 ground triangles drawn as 127,293, the open edges the same 509
+  as the file's).
+- **Offset:** an edge's control points are held within 1 unit of the flat triangle, so the curve stays within 1
+  unit of the ground that collision, feet and the server's spawn heights are measured on (Qeynos Hills: at most 0.88).
+  Hills' outlines so change little; the shading changes most (flat light and dark planes on hills and rock become
+  smooth gradients).
+- **Attributes:** UVs, both vertex colours (the baked light) and the detail passes are interpolated over the original
+  triangle.
+- **Cost:** about 40 ms more on Qeynos Hills' load. In the viewer at 1280 x 720 on the RX 9060 XT, a view over its
+  hills went from 1.52 to 1.60 ms a frame to 1.74 to 1.77 ms (65,000 zone triangles drawn instead of 18,000, most of
+  the difference in the shadow cascades).
+
+`display.smooth_ground` (on by default, read as each zone loads) turns it off; the viewer takes
+`--no-smooth-ground`. The log says how many triangles were refined into how many.
 
 ## Texture overrides
 
@@ -1103,6 +1523,148 @@ At run time:
 - `display.material_maps` (on by default) and the viewer's `--no-material-maps` turn the maps off.
 - Every viewer, the model viewer too, takes `--textures`.
 
+### Photo materials
+
+A built pack can rebuild a classic zone's hand-painted ground from tiling photo textures (Poly Haven's, CC0) instead
+of upscaling it (`texpack/materials.h`; Hailstone Texture Studio's "Photo ground materials"). The rules are data the
+studio ships: `materials.txt` names each material (its Poly Haven asset, the metres one repeat shows, how much it is
+magnified, its detail strength, how much of the original's painted shading it keeps, and its colour in the art), and
+a file per zone (`qeytoqrg.txt`) gives each of the zone's textures one material or two
+(`hhdrockgrass1 = grass greyrock`; `sharp` for small shapes such as a path's flagstones). A zone file may set a
+material's colour in that zone's art (`colour grass = 0.30 0.27 0.12`), for its own tiles only: one material serves
+zones whose art differs (Qeynos Hills' green grass, Everfrost's dark tundra), and its photos are loaded once.
+
+- **Scale:** each texture's world units per repeat are measured on the zone's ground (the area-weighted median over
+  its triangles). A material repeats a power of two times across a tile, so Qeynos Hills' 56-unit grass tile and its
+  108-unit transitions show the grass at one scale. An EQ unit is taken as a foot.
+- **Two materials:** the original is split by a 2-means on its blurred chromaticity, seeded with the two materials'
+  colours (brightness barely counts, so the art's painted shadows are not taken for grass). The photos are blended
+  along that split, the edge moved by their displacement maps so it follows stones and soil.
+- **Detail transfer:** the result keeps the original's colour above about 6 of its texels (1.5 for `sharp`) and takes
+  only the photos' luminance detail below that, with part of the original's own painted shading. A rebuilt tile so
+  keeps the zone's palette and still meets the tiles round it, rebuilt or not; blurs and resizes wrap at the edges.
+- **Files:** the colour, normal and roughness maps go through the pack's encoder (BC7, BC5, BC4 with mips), at 512 x
+  the pack's scale on a side (1024 for a 2x pack). A texture with alpha or a variant, or not square, is upscaled.
+- **Resuming:** `PACK/materials.txt` records the rules each tile was made by; a build makes a tile again when its
+  rules change, and gives a texture back to the upscaler when the rules drop it.
+- **Fetching:** the 1K JPEG diffuse, `nor_dx`, rough and disp maps of each asset from Poly Haven's download host, once,
+  into the studio's cache.
+
+The studio has rules for the original game's 34 outdoor zones (not the expansions', not the revamped ones; in cities
+the ground only). A texture that is also drawn with a cut-out somewhere (three of North Ro's) stays with the upscaler.
+Seen in the zone viewer, not in a live session: the layout and seams hold; the photos' repeat still shows on large
+flat areas.
+
+### Model overrides
+
+A texture pack can also replace a zone's placed objects: `PACK/models/<zone>/<object>.glb`, a binary glTF 2.0 file
+named after the object (`TREE1_ACTORDEF` or `TREE1`, any case), is drawn in place of that object
+(`assets/model_overrides.h`, read with cgltf). A deliberate difference from the original, and the look only: the
+collision, picking, ladders and the ambient probe keep the game's mesh, so where a player can walk does not change.
+The pack folder is the one `display.texture_folder` (the viewer's `--textures`) chooses; the files are read as each
+zone loads (`Zone::draw_objects`).
+
+- **Frame:** glTF's own, Y up; its units are EQ units, and glTF (x, y, z) is the zone's (x, -z, y). Front faces are
+  counter-clockwise; each node's transform is applied.
+- **Materials:** a material's base colour texture names its texture by its image's URI: the file name is looked up as
+  a replacement texture is (the zone's subfolder first, so a model's textures can sit beside it), any extension, with
+  its `.n` and `.r` maps. `MASK` is drawn as a cut-out, `BLEND` at 50 %, `doubleSided` without culling. Images inside
+  the file and buffers outside it are refused.
+- **Made for a mesh:** a file whose `asset.extras.hailstone_source` holds the hash of the game mesh it was made for
+  (`object_mesh_hash`, 16 hex digits) is used only on that mesh, so a game update that changes the object turns it
+  off; one without (made by hand) is used on any object of its name in that zone.
+- **Instanced:** the zone renderer keeps each replacement mesh once, in its own space, and draws it at every placement
+  with a per-instance transform (`GpuInstance`: the transform's rows, the normal matrix's, the sway's scale and a
+  tint; the buffer's first entry is the identity, which the zone's own geometry uses, so one set of pipelines draws
+  both). Each placement of each level is a chunk of its own, and neighbouring placements in view go in one call.
+  Qeynos Hills with the generated trees: 52,000 vertices and 146,000 indices on the GPU, from 3.7 million and
+  8.3 million (266 MB of vertices) when every placement was a copy. A neighbour zone's placements are moved with it
+  and kept whole or left out by where they stand, not cut at the zone line.
+- **Light:** a placement's baked light is one colour per vertex of the game's mesh; the replacement takes their
+  average as its instance's tint, which multiplies its own vertex colours (a generated tree's shade inside its crown).
+- **Plants:** a replacement sways in the wind as the game's object would (`is_plant`): its cut-out parts flutter. One
+  with levels of detail (a generated tree) does not flutter, and its branches sway whole (`render::plant_sway`,
+  `assets::Mesh::sway_heights`): the generator gives each vertex the height it sways as, in the second UV set
+  (glTF TEXCOORD_1, asset extras `hailstone_sway`), a branch with its needle sprays and its clump the height of its
+  root on the trunk, the trunk and the far cards their own. A sway by each vertex's own height, or a flutter, moved
+  a branch's crossing cards apart, so up close its leaves seemed to flip back and forth (a third of the bend without
+  the flutter still did). A generated tree from a pack built before stands still.
+- **Levels of detail:** a node's extras `{"hailstone_lod": [near, far]}` draw its meshes only from `near` to `far` world
+  units from the camera (`MeshPart::lod_near`, `lod_far`). The zone renderer keeps each band's draws apart, a chunk
+  for each placement, and chooses by the camera's distance to where the placement stands (`render/lod_bands.h`), so
+  all of a tree changes level together. A model's levels are its bands in order of their near ends.
+  - The scene and the depth pre-pass fade one level into the next across 20 % of the distance where they meet,
+    centred on it: both are drawn there, and each of a pixel's samples shows exactly one of them
+    (`coverage.glsl lod_fade_samples`, a sample mask by the placement's distance from `zone.vert` and a per-pixel
+    noise), more of the next level the further the tree, so it dissolves instead of jumping. With 8x MSAA that is
+    nine steps a pixel; without MSAA, a dither.
+  - A shadow needs less detail than the tree it falls from: the sun's two nearest cascades draw at least the second
+    level (the camera's where coarser), the two further ones the last, and a light's shadow cube, drawn once and
+    kept, always the second whatever the camera's distance. Shadows do not fade; they take the camera's position of
+    the frame before. A banded draw is not merged into the untextured shadow casters.
+  - `display.tree_detail` (Options, Tree Detail Distance, 50 to 200 %) scales every band's distances.
+
+### Generated trees
+
+Hailstone Texture Studio's "Generated trees" grows a classic zone's trees again (`texpack/trees.h`) and writes them as
+model overrides with their textures (BC7 with mips; the bark's normal and roughness maps as `.n` and `.r`). The game's
+trees are a trunk of a few solid prisms under crossed cut-out cards. Each new tree is fitted to the game's:
+
+- **Trunk:** the prisms' rings, found by their hop count along the prism edges from each piece's bottom (a limb that is
+  a prism of its own, as TREETRY's second one, hangs from the ring nearest its root), make the skeleton. The bark is a
+  tube along it at 0.8 x the prism corners' distance: between the prism's faces and its corners, so a player stopped
+  by the collision stands at the bark.
+- **Leaves:** points spread over the cards and kept where their texture is opaque give the crown's shape; turned round
+  the trunk, they fill it. The leaves are drawn in colours picked from the game texture's opaque texels, then scaled
+  to its mean, so an autumn tree keeps its yellows among its greens.
+  The gaps up to a few dozen texels across inside a spray or a cluster (3.5 % of the picture's side for needles, 3 %
+  for leaves) are filled with a shadowed base (a closing of the cut-out), so a spray is cut out along its outer edge
+  only: thin holes showing the dark or the sky behind it shimmered as the camera moved. A needle spray's two
+  layers are close in shade and its twigs a darker shade of the needles, not brown: stark stripes and bright twig
+  lines shimmered as the camera moved and read as streaks from afar. Each needle's shade goes only 0.4 of the way
+  from the spray's mean towards the palette colour it picked (the game textures' palettes reach near white), and
+  the gaps are filled at 0.8 of the mean: needles a few texels wide in stark light and dark changed every pixel
+  they covered as a spray swayed or the camera moved, a flicker standing by a tree and a shimmer walking through a
+  forest. In the zone viewer (frames 4 ms apart, pixels changing by more than 12) that took a flight over Greater
+  Faydark from 11 % to 5 % (the game's own trees 3.5 %) and standing by Lake Rathe's pines in the wind from 0.67 %
+  to 0.14 %; the shadows, MSAA, anisotropic filtering and the levels of detail made little difference.
+- **Styles:** a pine (a single upright trunk up into leaves widest low down) grows whorls of drooping branches with
+  two crossed needle sprays and a clump at each end up a leader, the whorls three units apart or more (9 to 18) with
+  four to six branches each, so the crown shows gaps; a broadleaf tree grows branches into the crown by space
+  colonisation (Runions, Lane and Prusinkiewicz 2007), leaf clusters at their tips; a willow hangs strands from its
+  upper branches. A dead tree (`dead`: Everfrost's and Dagnor's Cauldron's bare pines) grows a few long limbs from its
+  upper trunk, rising and forking once, with sprays of drawn bare twigs at their ends. A palm (`palm`) carries its
+  trunk on up to near the top of the game's leaves (its solid prisms stop halfway; the cards paint the rest) and
+  springs two dozen arching fronds from there, a drawn frond of narrow leaflets along a rib. The rules may name the
+  style (`tree tree71 = willow bark`); `auto` takes pine or broadleaf by shape.
+- **Bark:** a Poly Haven photo material scaled to the game bark's mean colour, or a drawn one.
+- **Levels of detail:** the near tree to twice its height (at least 200 units); then a middle level with the same
+  leaf cards, each one straight quad (a tree does not change its leaves where the levels meet: fewer cards, grown to
+  keep the cover, showed as a flicker over a forest as the camera moved), about half the sides and no thin
+  branches; and from eight times
+  its height (at least 600 units) three crossed cards and a level one, with a picture of the near tree from the side
+  and from above (rendered by the generator: a small rasteriser, twice the size and averaged down). The near and
+  middle levels are built together, so they have one shape.
+- **Cards cut to their leaves:** each leaf card is cut to its texture's outline (`card_outline`: the convex hull of
+  the texels that are not transparent, cut down to six corners by the cheapest cuts, six texels out for the smaller
+  mips), each quad of a strip clipped to it in texture space. A spray fills only part of its square: a pine's card
+  keeps about 42 % of its area, a broadleaf cluster's 74 %. It costs triangles (a quad is a fan of up to four) and
+  saves the pixels the alpha test would throw away.
+- **Budget:** about 1,600 to 7,200 triangles a tree at the near level (the tenth to the ninetieth percentile of
+  the 129 classic trees; 12,000 to 20,000 for the few biggest broadleaf trees), 1,000 to 3,000 at the middle, 8 at
+  the far. In Greater Faydark at 3124 x 1366 with 8x MSAA and 4096 shadow maps a forest view took 8.5 ms (10.0 with
+  the denser pines and fewer middle cards before; 7.5 with the game's trees; zone viewer, offscreen), 700,000
+  triangles a frame from 1.1 million. The figures below are from before that change. At the
+  Qeynos Hills test spot the zone drew 56,000 triangles a frame (3,400 with the game's trees; the trees in a fade
+  draw two levels), 35,000 looking over the zone from above, and 9,300 into the shadow map (7,300 with the game's
+  trees). Cutting the cards doubled the leaf triangles and took about 5 % off the frame at 2560 x 1440 with 8x MSAA
+  in a view full of trees (3.29 ms from 3.47; zone viewer, offscreen). Each kind of tree is stored once (instanced),
+  so the triangles cost no memory per tree.
+
+The rules are lines of the studio's zone files (`tree <object> = <style> [<bark material>]`); the 34 zones with
+ground rules have them (129 trees in the 30 that have trees). A tree comes out the same on every build (its seed is its zone and name). Seen in the zone viewer, not
+in a live session. Open: leaves thin out in the smaller mips of a cut-out.
+
 ## The isometric camera's cut
 
 In the isometric camera (`docs/isometric.md`) `zone.frag`, `object.frag` and `flora.frag` drop the pixels of what
@@ -1148,13 +1710,16 @@ The target's highlight (the dark plate, the edge in its colour and the bobbing m
 
 In `hailstone.ini`, and in the Options window (`ui/modern/options.lua`, this client's own window: its Display and
 Graphics tabs; the client's options by name in `app/client_app_options.cpp`, the graphics ones `display_option`); the
-viewer (`--zone`, `--model`) takes `--msaa`, `--tonemap`, `--exposure`, `--render-scale` and `--sharpness`.
+viewer (`--zone`, `--model`) takes `--msaa`, `--tonemap`, `--exposure`, `--render-scale`, `--sharpness` and
+`--upscaler`, `--frame-gen` and `--screenshot-generated`.
 
 | Key | Values | Default | |
 |---|---|---|---|
-| `display.msaa` | 1, 2, 4, 8 | 4 | samples per pixel, cut to what the GPU supports; read at start-up |
-| `display.render_scale` | 50 .. 100 | 100 | percent of the 3D view's size the scene is drawn at; below 100 FSR 1 upscales it (The frame); the UI stays sharp |
-| `display.sharpness` | 0 .. 1 | 0.5 | FSR 1's sharpening (RCAS) below a render scale of 100; 0 none |
+| `display.msaa` | 1, 2, 4 | 4 | samples per pixel, at most 4 (`render::kMaxMsaa`; 8 and up are drawn at 4), cut to what the GPU supports; off under `display.upscaler = taa`; read at start-up |
+| `display.render_scale` | 33 .. 100 | 100 | percent of the 3D view's size the scene is drawn at; below 100 the upscaler (`display.upscaler`) brings it up (The frame); the UI stays sharp. Options > Upscale Quality's presets set it (`render::UpscaleQuality`): Native AA 100, Quality 67, Balanced 59, Performance 50, Ultra Performance 33 (FSR's ratios, 1.5x .. 3x); any other value shows as Custom |
+| `display.upscaler` | fsr1, taa, fsr3 | fsr1 | fsr1: FSR 1 below a render scale of 100; taa: temporal anti-aliasing and upscaling at every render scale, MSAA off (Temporal upscaling); fsr3: the same with AMD FSR 3.1's upscaler (AMD FSR 3.1; taa where the GPU lacks what it needs); read at start-up |
+| `display.frame_gen` | true, false | false | present a frame made between each two real ones (Frame generation); only with `display.upscaler` taa or fsr3; forces vertical sync and holds the game to half the refresh; applied at once |
+| `display.sharpness` | 0 .. 1 | 0.5 | RCAS sharpening: FSR 1's below a render scale of 100, the temporal upscaler's or FSR 3.1's own at every scale; 0 none |
 | `display.tonemap` | auto, none, agx, aces | auto | auto: AgX (with a little extra saturation) for modern, none for classic |
 | `display.exposure` | EV | 0 | the scene is scaled by 2^EV before the tonemap |
 | `display.shadows` | 0, 256 .. 8192 | 2048 | texels per side of each shadow cascade; 0 off; modern only |
@@ -1162,8 +1727,12 @@ viewer (`--zone`, `--model`) takes `--msaa`, `--tonemap`, `--exposure`, `--rende
 | `display.light_shadow_size` | 128 .. 1024 | 512 | texels per side of each face of a light's shadow cube |
 | `display.view_distance` | multiplier | 2.5 | the modern mode draws this many times further than the classic client (at most 12000 units), into haze; picking keeps the classic distance |
 | `display.ao` | 0, 1 | 1 | screen-space ambient occlusion; modern only; viewer `--no-ao` |
+| `display.depth_prepass` | 0, 1 | 0 | draw the zone's opaque geometry depth-only first, then colour it with the depth test equal; the current zone only, read when a zone loads; modern only; viewer `--depth-prepass` |
 | `display.distance_blur` | 0, 1 | 1 | the far distance's slight blur; modern only |
 | `display.neighbour_zones` | 0, 1 | 1 | the zone past an outdoor zone line drawn in the distance (Neighbour zones); modern only; `/neighbourzones [on \| off]` |
+| `display.horizon_hills` | 0, 1 | 1 | land round an outdoor zone past its edges (Horizon hills); modern only; viewer `--no-horizon` |
+| `display.smooth_ground` | 0, 1 | 1 | a classic zone's ground drawn smooth and curved (Smoothed ground); read as each zone loads; viewer `--no-smooth-ground` |
+| `display.tree_detail` | 50 to 200 | 100 | how far a texture pack's replacement models (generated trees) keep their nearer levels of detail, in percent of their own distances (Tree Detail Distance); viewer `--tree-detail` |
 | `display.target_ring_cues` | 0, 1 | 1 | the target ring's sweep on a new target and pulse while attacking (Target Ring Cues; The target ring) |
 | `display.find_trail_style` | 0, 1 | 0 | Find paths: 0 the gold ground line, 1 rainbow strands; Options > Display (gamepad: Interface), saved per character and changed immediately; docs/navigation.md "The trail" |
 | `display.target_ring_xray` | 0, 1 | 0 | the target ring's hidden part showing faintly through what stands in front (Target Ring Through Models) |
@@ -1210,10 +1779,13 @@ viewer (`--zone`, `--model`) takes `--msaa`, `--tonemap`, `--exposure`, `--rende
 5. **Post and content**: (done) bloom; (done) foliage wind; (done) a texture override folder for upscaled packs;
    (done) built HD packs with normal and roughness maps (tools/texpack);
    (done) colour grading; optional TAA.
-6. **Upscaling**: (done) a render scale with FSR 1 (EASU + RCAS); next the temporal groundwork every temporal
-   upscaler needs (sub-pixel jitter on the projection, kept off picking and the nameplates; a motion-vector target
-   written by every scene pipeline, with last frame's camera, bones, wind time and object matrices; history reset on
-   zone-in, teleport and resize; a negative texture LOD bias), then a TAA/TAAU of our own on it, then FSR 2/3.1
-   (MIT) as the temporal upscaler. MSAA is off while a temporal upscaler runs, so cut-outs lose alpha-to-coverage;
-   particles, spells, water and lava need a reactive mask rather than motion vectors. DLSS, XeSS and frame
-   generation are not planned.
+6. **Upscaling**: (done) a render scale with FSR 1 (EASU + RCAS); (done) the temporal groundwork: sub-pixel jitter
+   on the projection, kept off picking and the nameplates; camera motion vectors from the depth; history reset on
+   zone-in, camera cuts and resize; a TAA/TAAU of our own on it (`display.upscaler = taa`, Temporal upscaling);
+   (done) motion written by the scene pipelines (last frame's bones, wind time and object matrices) and a reactive
+   mask; (done) FSR 3.1 (MIT) as a second temporal upscaler (`display.upscaler = fsr3`, AMD FSR 3.1); next a negative
+   texture LOD bias. MSAA is off while a temporal upscaler runs, so cut-outs lose alpha-to-coverage;
+   particles, spells, water and lava need a reactive mask rather than motion vectors; (done) frame generation of our
+   own on the engine's motion and depth (`display.frame_gen`, Frame generation); next maybe a choice of more than one
+   in-between frame for very high refresh rates, or AMD FSR 3.1's frame generation should ours fall short. DLSS and
+   XeSS are not planned.

@@ -24,7 +24,9 @@ namespace {
 // (SelectOldestNew @0x5c3510; none: no row, an empty page); SelectIndex @0x5c3290 shows the story's page
 // (CStmlWnd::LoadPage of the file) and moves LastRead up to its date (SaveIni). Automatic writes its state; Close
 // hides the window. CDisplay::InitGameUI shows the window when there is a story newer than LastRead, Automatic is on
-// and the character is above level 1 (ShowAuto @0x5c34f0): EqApi's show_story_if_new.
+// and the character is above level 1 (ShowAuto @0x5c34f0): EqApi's show_story_if_new. Display is a CStmlWnd, which
+// follows a page's href links itself (as in the help window: file:///storyline/... from the game folder, a bare name
+// beside the page, web links not followed); the story window has no Back button, so the pages' own links lead back.
 class StoryWindow : public StockWindow {
 public:
     StoryWindow() : StockWindow("StoryWnd", false) {
@@ -50,6 +52,14 @@ public:
     void child(EqHost& host, std::string_view id, Child& out) override {
         if (id == "Display") out.text = text_;
         else if (id == "AutomaticButton") out.checked = automatic(host);
+    }
+    bool stml_link(EqHost& host, std::string_view id, int message, std::string_view data) override {
+        if (id != "Display" || message != -1) return false;
+        if (auto target = stml_href_path(page_, data)) {
+            page_ = *target;
+            text_ = load_stml_page(host.game, page_, nullptr);
+        }
+        return true;
     }
     const ListData* list(EqHost&, std::string_view id) override { return id == "StoryList" ? &list_ : nullptr; }
     bool list_click(EqHost& host, std::string_view id, int row, bool, int) override {
@@ -124,18 +134,20 @@ private:
     void select(EqHost& host, int row) {
         list_.selected = row;
         if (row < 0 || row >= static_cast<int>(stories_.size())) {
+            page_.clear();
             text_.clear();
             return;
         }
         const Story& s = stories_[static_cast<std::size_t>(row)];
         if (last_read(host) <= s.time && host.set_option) host.set_option("news_last_read", static_cast<int>(s.time));
-        text_ = load_stml_page(host.game, s.path, nullptr);
+        page_ = s.path;
+        text_ = load_stml_page(host.game, page_, nullptr);
     }
 
     std::vector<Story> stories_;
     std::int64_t newest_ = 0;
     ListData list_;
-    std::string text_;
+    std::string page_, text_; // the page shown (a story, or a page one of its links led to) and its text
 };
 
 } // namespace

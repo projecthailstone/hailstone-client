@@ -8,6 +8,7 @@
 
 #include <cmath>
 #include <stdexcept>
+#include <unordered_set>
 
 #include "net/packet_io.h"
 
@@ -766,8 +767,15 @@ std::optional<PlayerProfile> decode_player_profile(const AppPacket& p) {
         r.skip(320 + 343);
         v.character_id = u32();
         v.leadership_exp_on = u8() != 0; // leadAAActive
-        skip_counted(r, 4);  // LDoN points
-        u32();               // LDoN available
+        {
+            std::uint32_t n = u32(); // RoF2 sends six: unknown, then the five LDoN themes.
+            need(r, n, 4);
+            for (std::uint32_t i = 0; i < n; ++i) {
+                auto points = u32();
+                if (i > 0 && i <= v.adventure_points.size()) v.adventure_points[i - 1] = points;
+            }
+        }
+        v.adventure_points_available = u32();
         v.group_leadership_exp = r.f64();
         v.raid_leadership_exp = r.f64();
         v.group_leadership_points = u32();
@@ -792,7 +800,9 @@ std::optional<PlayerProfile> decode_player_profile(const AppPacket& p) {
             skip_u32(6);
         }
         v.aa_exp = u32();
-        skip_u32(4);
+        v.last_fellowship_join = u32();
+        v.fellowship_vitality_normal = r.le<std::uint64_t>();
+        v.fellowship_vitality_aa = u32();
         for (auto& c : v.auto_consent) c = u8(); // group, raid, guild autoconsent
         u8();       // unknown
         u32();      // level again
@@ -1527,6 +1537,7 @@ std::optional<RespawnWindow> decode_respawn_window(const AppPacket& p) {
         v.delay_ms = r.le<std::uint32_t>();
         auto count = r.le<std::uint32_t>();
         if (count > r.remaining() / 26) throw std::out_of_range("respawn option count exceeds packet");
+        std::unordered_set<std::uint32_t> ids;
         for (std::uint32_t i = 0; i < count; ++i) {
             RespawnOption o;
             o.id = r.le<std::uint32_t>();
@@ -1536,7 +1547,8 @@ std::optional<RespawnWindow> decode_respawn_window(const AppPacket& p) {
             o.z = r.f32();
             o.heading = r.f32();
             o.name = r.cstring();
-            o.type = r.le<std::uint8_t>();
+            o.validity = r.le<std::uint8_t>();
+            if (!ids.insert(o.id).second) throw std::out_of_range("duplicate respawn option id");
             v.options.push_back(std::move(o));
         }
         return v;

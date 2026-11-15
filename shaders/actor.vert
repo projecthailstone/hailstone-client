@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 // Skinned character models: every vertex follows up to four bones. The bone matrices
 // already include the instance's position, heading and scale.
@@ -7,7 +8,7 @@ layout(push_constant) uniform Push {
     mat4 view_proj;
     vec4 fog_color; // a: fog density
     vec4 fog; // start, end, alpha_ref, opacity
-    vec4 camera_pos;
+    vec4 camera_pos; // w: the part's native armor surface-table index (fragment shader)
     uint texture_index;
     uint bone_offset;
     uint tint; // 0xAARRGGBB; high byte 0 = none
@@ -29,6 +30,22 @@ layout(location = 1) out vec3 v_world;
 layout(location = 2) out float v_light;
 layout(location = 3) out float v_fog;
 layout(location = 4) out vec3 v_normal; // world space (the modern lighting, actor.frag)
+layout(location = 5) out vec4 v_now;    // the motion (shaders/motion.glsl): this frame's place, unjittered
+layout(location = 6) out vec4 v_then;   // and the last frame's
+
+#define MOTION_SET 1
+#include "motion.glsl"
+
+// The last frame's bones sit kPrevBones after this frame's (render/actor_renderer.h kMaxBones).
+const uint kPrevBones = 65536u;
+
+mat4 skin(uint base) {
+    mat4 bone = bones[base + in_bones.x] * in_weights.x;
+    if (in_weights.y > 0.0) bone += bones[base + in_bones.y] * in_weights.y;
+    if (in_weights.z > 0.0) bone += bones[base + in_bones.z] * in_weights.z;
+    if (in_weights.w > 0.0) bone += bones[base + in_bones.w] * in_weights.w;
+    return bone;
+}
 
 // The effects' fog (RegionC1 vs_1_1): per
 // vertex, f = clamp((|eye - pos| - FogStart) FogRangeInv fFogRange, 0, fFogRange)
@@ -44,11 +61,12 @@ float fog_factor(vec3 p) {
 
 void main() {
     // One bone (WLD, weights 1,0,0,0) or up to four (EQG).
-    mat4 bone = bones[pc.bone_offset + in_bones.x] * in_weights.x;
-    if (in_weights.y > 0.0) bone += bones[pc.bone_offset + in_bones.y] * in_weights.y;
-    if (in_weights.z > 0.0) bone += bones[pc.bone_offset + in_bones.z] * in_weights.z;
-    if (in_weights.w > 0.0) bone += bones[pc.bone_offset + in_bones.w] * in_weights.w;
+    mat4 bone = skin(pc.bone_offset);
     vec4 world = bone * vec4(in_position, 1.0);
+    if (temporal.info.x > 0.0)
+        motion_clips(world.xyz, (skin(pc.bone_offset + kPrevBones) * vec4(in_position, 1.0)).xyz, v_now, v_then);
+    else
+        v_now = v_then = vec4(0.0, 0.0, 0.0, 1.0);
     vec3 n = mat3(bone) * in_normal;
     float len = length(n);
     n = len > 1e-6 ? n / len : vec3(0.0, 0.0, 1.0);

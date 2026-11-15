@@ -26,6 +26,7 @@
 #include "game/spawn_animation.h"
 #include "game/world_state.h"
 #include "render/actor_layers.h"
+#include "render/actor_surface.h"
 #include "render/culling.h"
 #include "render/gpu.h"
 #include "render/scene_lighting.h"
@@ -72,6 +73,9 @@ struct ActorDraw {
     bool attached = false;
     glm::mat4 parent{1.0f};
     float alpha = 1.0f; // actor visibility supplied by its owner, independent of material opacity
+    // Who this is from frame to frame (a spawn's id + 1), for its motion under the temporal upscaler: its bones a frame
+    // ago are drawn beside this frame's (ActorRenderer::prepare). 0: none kept, it moves with the camera only.
+    std::uint64_t motion_key = 0;
 };
 
 struct ActorRenderStats {
@@ -93,6 +97,14 @@ struct ActorRenderStats {
 // (the camera's frustum; null: always), or when `shadows` can take it, within `shadow_reach` of `shadow_from` (0 or
 // less: everywhere), the reach beyond which ActorRenderer's shadow draws pass it over. A spawn neither in view nor
 // casting into a shadow shows nowhere: its animation still runs (prepare_spawns), only its bones are not posed.
+// Which of the actors' passes (opaque and alpha-tested, blended, additive) a draw_prepared call records. The scene
+// splits them round the grass: Opaque before it, Translucent (the blended and additive parts, which write no depth)
+// after it, so the grass does not cover a glass shield or a glow. All records the three at once.
+enum class ActorPhase : std::uint8_t { All, Opaque, Translucent };
+// The passes [first, end) `phase` records.
+struct ActorPassRange { int first = 0, end = 3; };
+ActorPassRange actor_phase_passes(ActorPhase phase);
+
 bool actor_needs_pose(const Frustum* view, const glm::vec3& center, float radius, bool shadows,
                       const glm::vec3& shadow_from, float shadow_reach);
 
@@ -104,8 +116,10 @@ public:
     struct Kept;
     // `kept`: the last zone's (release_kept). What of it the new library would not hand out the same (a mesh it does
     // not share, a texture its zone archives may change) is freed; the rest is drawn as it was.
+    // `scene` false: drawn into targets of the caller's own with the colour alone (the item previews), not the
+    // scene's (VkContext::scene_rendering).
     ActorRenderer(VkContext& vk, std::shared_ptr<const assets::CharacterLibrary> library,
-                  const std::filesystem::path& shader_dir, std::unique_ptr<Kept> kept = nullptr);
+                  const std::filesystem::path& shader_dir, std::unique_ptr<Kept> kept = nullptr, bool scene = true);
     ~ActorRenderer();
     ActorRenderer(const ActorRenderer&) = delete;
     ActorRenderer& operator=(const ActorRenderer&) = delete;
@@ -149,8 +163,10 @@ public:
     // poses (before VkContext::begin_scene), draw_prepared records the scene pass and returns the ids drawn.
     void prepare_spawns(const FrameInfo& frame, const glm::vec3& camera_pos, const game::WorldState& world,
                         std::uint32_t hide_id, float dt);
+    // `phase` splits it round the grass (ActorPhase); Translucent returns the ids the Opaque call found.
     const std::unordered_set<std::uint32_t>& draw_prepared(const FrameInfo& frame, const glm::mat4& view_proj,
-                                                           const glm::vec3& camera_pos, const game::ViewDistance& view);
+                                                           const glm::vec3& camera_pos, const game::ViewDistance& view,
+                                                           ActorPhase phase = ActorPhase::All);
     // The isometric camera's silhouette (shaders/actor_silhouette.frag): the prepared instances of the spawns `ids`
     // (the player, and its mount) as a flat colour where they are behind what is drawn already. Before
     // draw_prepared, after the zone and its objects, so the actors drawn after cover it where they are in sight.
@@ -284,6 +300,8 @@ private:
         std::uint32_t tint = 0; // 0xAARRGGBB, high byte 0 = none
         std::uint32_t texture2 = 0xffffffffu; // SkinMeshLuclin's tinted second layer, or none
         std::uint32_t normal_map = 0, rough_map = 0; // a texture pack's maps' slots (0 = none)
+        ActorSurface surface; // native EQG armor maps and highlight; other materials keep the old path
+        bool native_surface = false;
         bool two_sided = false;
         bool fog = true;
     };
@@ -332,6 +350,7 @@ private:
         bool masked = false;
         TextureUse use = TextureUse::Color;
         std::optional<assets::TextureMap> map;
+        bool environment = false; // a DDS cube converted to an octahedral 2D texture
         std::string key() const; // texture_slots_'s
     };
     // A texture read for the GPU: the image as it goes up as `use` (a colour texture's mips built already), or
@@ -349,6 +368,7 @@ private:
             Part part; // all but its texture slots
             TextureRef texture, normal, rough;
             std::optional<TextureRef> texture2;
+            std::optional<TextureRef> native_normal, environment;
         };
         std::vector<std::byte> vertices;
         std::vector<PartPlan> parts;
@@ -419,12 +439,14 @@ private:
     void rebuild_descriptors(std::uint32_t slot);
     VkDescriptorSet frame_set(const FrameInfo& frame); // the frame's set, brought up to date first
     void create_pipelines(const std::filesystem::path& shader_dir);
+    // Passes [first_pass, end_pass) of Pass.
     void record(const FrameInfo& frame, const glm::mat4& view_proj, const glm::vec3& camera_pos,
-                const game::ViewDistance& view);
+                const game::ViewDistance& view, int first_pass = 0, int end_pass = 3);
 
     struct Prepared {
         const GpuModel* gpu = nullptr;
         std::uint32_t bone_offset = 0;
+        std::uint32_t surface_offset = 0; // the model's first record in this frame's surface table; 0: old path
         bool eqg = false;
         glm::vec3 center{0.0f}; // the model origin and its bounding radius at its scale
         float radius = 0.0f;
@@ -436,7 +458,9 @@ private:
 
     VkContext& vk_;
     SceneLighting lighting_ = classic_full_bright();
-    std::unique_ptr<FrameBuffers> lighting_buffers_; // the SceneLighting per frame in flight (binding 2)
+    std::unique_ptr<FrameBuffers> lighting_buffers_; // SceneLighting and armor surfaces per frame (binding 1)
+    std::vector<std::byte> lighting_data_; // only the used surface-table prefix is copied each frame
+    bool surface_capacity_reported_ = false;
     std::shared_ptr<const assets::CharacterLibrary> library_;
     // The world's racedata tables, kept from prepare_spawns for choose_model's live model codes.
     std::shared_ptr<const game::HeightTables> height_tables_;
@@ -461,6 +485,7 @@ private:
     double clock_ = 0.0;
     std::minstd_rand rng_{0x5eed};
 
+    std::uint64_t shared_listener_ = 0; // VkContext::on_shared_textures_moved
     std::vector<Texture> textures_; // a freed slot holds no image (drawn white) until it is used again
     std::vector<std::uint32_t> free_textures_;
     std::unordered_map<std::string, TextureSlot> texture_slots_;
@@ -475,8 +500,14 @@ private:
     std::uint32_t max_textures_ = 0;
     std::array<std::uint32_t, VkContext::kFramesInFlight> descriptor_textures_{}; // textures written into each set
 
+    // Each frame's bones, then from kMaxBones on each instance's bones a frame ago at the same place (actor.vert's
+    // motion; this frame's where none were kept).
     static constexpr std::uint32_t kMaxBones = 65536;
     std::array<Buffer, VkContext::kFramesInFlight> bones_{};
+    // The bones drawn per motion_key: this frame's so far, and the last frame's (frame_bones_ is which frame).
+    std::unordered_map<std::uint64_t, std::vector<glm::mat4>> bones_now_, bones_before_;
+    std::uint64_t frame_bones_ = 0;
+    bool scene_ = true;
     std::array<void*, VkContext::kFramesInFlight> bones_mapped_{};
 
     VkSampler sampler_ = VK_NULL_HANDLE;

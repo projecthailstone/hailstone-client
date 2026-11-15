@@ -33,6 +33,7 @@
 #include <lua.hpp>
 
 #include "app/actions_ui.h"
+#include "app/skill_race.h"
 #include "core/ascii_case.h"
 #include "core/log.h"
 #include "app/lua_eq_windows.h"
@@ -240,8 +241,8 @@ Entry skill_entry(EqHost& h, std::uint32_t skill, bool combat) {
     e.kind = AbilityKind::Skill;
     e.id = static_cast<std::int32_t>(skill);
     e.key = game::ability_key(AbilityKind::Skill, e.id);
-    e.name = h.conn->skill_name(skill);
-    e.classes = skill_classes(h, skill);
+    e.name = skill == mech::skill::kSlam ? "Slam" : h.conn->skill_name(skill);
+    e.classes = skill == mech::skill::kSlam ? 0 : skill_classes(h, skill);
     e.beneficial = beneficial_skill(skill);
     e.description = std::string(game::skill_description(skill));
     e.combat = combat;
@@ -249,7 +250,8 @@ Entry skill_entry(EqHost& h, std::uint32_t skill, bool combat) {
     const auto now = static_cast<std::uint32_t>(net::GameConnection::now_ms());
     const std::uint32_t left = h.actions ? h.actions->skill_state().timers.remaining(*h.character, skill, now) : 0;
     e.remaining = static_cast<std::int32_t>((left + 999) / 1000);
-    e.reuse = mech::skill_table_entry(skill).reuse_ms / 1000;
+    // Slam shares Bash's combat timer; it has no separate entry in the 0..99 skill table.
+    e.reuse = mech::skill_table_entry(skill == mech::skill::kSlam ? mech::skill::kBash : skill).reuse_ms / 1000;
     e.button.type = game::HotButtonType::Skill;
     e.button.slot = e.id;
     e.button.label = e.name.substr(0, 63);
@@ -266,8 +268,10 @@ std::vector<Entry> all_entries(EqHost& h) {
     for (int n = 0; n < kCombatAbilities; ++n)
         if (c.combat_ability(n) && combat_ability_listed(c, n))
             if (auto e = discipline_entry(c, n)) out.push_back(std::move(*e));
+    const auto race = skill_race(c, *h.character);
     for (bool combat : {true, false})
-        for (std::uint32_t s : mech::usable_skills(*h.character, combat)) out.push_back(skill_entry(h, s, combat));
+        for (std::uint32_t s : mech::usable_skills(*h.character, combat, race))
+            out.push_back(skill_entry(h, s, combat));
     return out;
 }
 
@@ -291,7 +295,7 @@ std::optional<Entry> find(EqHost& h, const std::string& key) {
         return std::nullopt;
     case AbilityKind::Skill:
         for (bool combat : {true, false})
-            for (std::uint32_t s : mech::usable_skills(*h.character, combat))
+            for (std::uint32_t s : mech::usable_skills(*h.character, combat, skill_race(c, *h.character)))
                 if (s == static_cast<std::uint32_t>(p->id)) return skill_entry(h, s, combat);
         return std::nullopt;
     }
@@ -640,7 +644,7 @@ std::optional<Entry> by_name(EqHost& h, mq::AbilityKind kind, std::string_view n
         break;
     case mq::AbilityKind::Skill:
         for (bool combat : {true, false}) {
-            for (std::uint32_t s : mech::usable_skills(*h.character, combat)) {
+            for (std::uint32_t s : mech::usable_skills(*h.character, combat, skill_race(c, *h.character))) {
                 Entry e = skill_entry(h, s, combat);
                 if (names(e, name)) {
                     found = std::move(e);

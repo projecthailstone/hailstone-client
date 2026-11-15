@@ -24,7 +24,8 @@ function K.Centered(W, H, w, h) return W / 2 - w / 2, H * 0.42 - h / 2 end
 -- A text box: an inset, padded, scrolled area with the child's text. opts.plain: the text as lines (a book's
 -- page) rather than STML; opts.font; opts.color (the text's colour outside any <c>); opts.bg (the inset's colour);
 -- opts.border = false (no hairline: text that sits on the window itself); opts.empty (shown while there is no text).
--- w, h as for ui.BeginChild (0: the rest; negative: leave that much). Links go to the window (eq.StmlLink).
+-- w, h as for ui.BeginChild (0: the rest; negative: leave that much). Links go to the window (eq.StmlLink). A new
+-- text is shown from its top.
 local cache = {}
 function K.TextBox(win, id, w, h, opts)
   opts = opts or {}
@@ -32,6 +33,7 @@ function K.TextBox(win, id, w, h, opts)
   local byId = cache[win]
   if not byId then byId = {}; cache[win] = byId end
   local c = byId[id]
+  local changed = c and c.raw ~= raw
   if not c or c.raw ~= raw or c.plain ~= opts.plain then
     local lines = nil
     if not opts.plain then lines = stml.Lines(raw, opts.color) end
@@ -47,6 +49,7 @@ function K.TextBox(win, id, w, h, opts)
   ui.PushStyleVar(ui.StyleVar.WindowPadding, 10 * s, 8 * s)
   ui.BeginChild("##text" .. id, w or 0, h or 0, true)
   ui.PopStyleVar()
+  if changed then ui.SetScrollY(0) end -- a new text (a link followed to another page) starts at its top
   if opts.font then ui.PushFont(opts.font) end
   if opts.plain then
     local col = opts.color or C.text

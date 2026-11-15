@@ -1,8 +1,8 @@
 #pragma once
 
 // The performance window (developer UI, Ctrl+Shift+P or ui.perf_window=1 in hailstone.ini): the frame rate and
-// frame times, where each frame's time goes (the main loop's phases), the renderers' counts, GPU and process
-// memory, and the world and zone sessions' traffic.
+// frame times, where each frame's time goes (the main loop's phases), frame generation's rates and costs, the
+// renderers' counts, GPU and process memory, and the world and zone sessions' traffic.
 
 #include <array>
 #include <chrono>
@@ -17,6 +17,7 @@
 
 namespace hailstone::net { class GameConnection; struct SessionStats; }
 namespace hailstone::render { struct ZoneRenderStats; struct ActorRenderStats; class VkContext; }
+namespace hailstone { class SharedFileCache; }
 
 namespace hailstone::app {
 
@@ -72,11 +73,22 @@ private:
     std::size_t head_ = 0;       // next slot to write once full
 };
 
+// The frame rates over a history of frames: `ms` each real frame's time, `presented` how many images it put on the
+// screen (2 with an in-between frame from frame generation, else 1; same length). Rendered counts real frames,
+// displayed every image; `generated_share` is the share of real frames that had an in-between frame.
+struct FrameRates {
+    float rendered_fps = 0.0f;
+    float displayed_fps = 0.0f;
+    float generated_share = 0.0f;
+};
+FrameRates frame_rates(const std::vector<float>& ms, const std::vector<std::uint8_t>& presented);
+
 struct PerfInputs {
     const render::ZoneRenderStats* zone = nullptr;
     const render::ActorRenderStats* actors = nullptr;
     const net::GameConnection* conn = nullptr;
     const render::VkContext* gpu = nullptr; // the GPU's name and memory heaps
+    const SharedFileCache* shared_files = nullptr;
     std::string zone_name;
     std::size_t spawns = 0;
     glm::vec3 camera{0.0f};
@@ -89,6 +101,8 @@ public:
     void begin_frame();
     // At the end of `phase`: the time since the last mark (or begin_frame) is charged to it.
     void mark(FramePhase phase);
+    // After the frame is presented: how many images it put on the screen (VkContext::frames_presented).
+    void set_presented(std::uint32_t images) { current_presented_ = static_cast<std::uint8_t>(images); }
     void draw(const PerfInputs& in);
 
     void toggle() { open_ = !open_; }
@@ -118,8 +132,10 @@ private:
     Clock::time_point started_ = Clock::now();
     std::array<float, kFrames> frame_ms_{};
     std::array<PhaseTimes, kFrames> phase_ms_{};
+    std::array<std::uint8_t, kFrames> presented_{};
     PhaseTimes current_{};
     SectionAverages sections_;
+    std::uint8_t current_presented_ = 1;
     std::size_t head_ = 0;  // next slot to write
     std::size_t count_ = 0; // filled slots
     NetRate world_rate_, zone_rate_;

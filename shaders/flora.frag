@@ -29,8 +29,14 @@ layout(location = 2) in vec3 v_world;
 layout(location = 3) flat in vec3 v_tint;
 layout(location = 4) flat in uint v_texture;
 layout(location = 5) in float v_root;
+layout(location = 6) in vec4 v_now;
+layout(location = 7) in vec4 v_then;
 
 layout(location = 0) out vec4 o_color;
+layout(location = 1) out vec2 o_motion; // the plants' own motion in the wind (render/vk_context.h SceneOutput)
+
+#define MOTION_SET 1
+#include "motion.glsl"
 
 // The sun's shadow at a blade: shadow_visibility's cascade and fade with one hardware-filtered comparison (grass is
 // small and drawn by the thousand; its 3 x 3 grid would cost nine).
@@ -47,6 +53,7 @@ float blade_shadow(vec3 p) {
 }
 
 void main() {
+    o_motion = motion_uv(v_now, v_then);
     // The isometric camera's cut (game/iso_occlusion.h).
     if (reveal_discard(v_world, gl_FragCoord.xy, lighting.reveal_origin, lighting.reveal_axis, lighting.reveal_shape,
                        lighting.reveal_roof))

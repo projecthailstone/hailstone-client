@@ -51,6 +51,10 @@ struct DestroyResult {
 // may not be destroyed.", needs ItemBase_IsNoDestroy, which RoF2's item data here does not carry.)
 DestroyResult destroy_held_decision(const DestroyInput& in);
 
+// Parse an item ID for the plugin-safe /destroycursor and /stowcursor commands. No signs, zero,
+// trailing junk or overflow: malformed commands must never destroy what is held.
+std::optional<std::uint32_t> destroy_cursor_item_id(std::string_view argument);
+
 // PcZoneClient::DestroyHeldItemOrMoney's coin part: OP_MoveCoin {cursor 0, to -1, type, type, amount} for the highest
 // coin on the cursor (wire types 3 platinum .. 0 copper), then every cursor coin cleared. nullopt: no coin held.
 struct CoinDestroy {

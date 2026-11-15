@@ -32,7 +32,15 @@ layout(location = 1) in vec3 v_world;
 layout(location = 2) in float v_fog; // oFog (object.vert)
 layout(location = 3) in vec3 v_normal;
 
+layout(location = 4) in vec4 v_now;
+layout(location = 5) in vec4 v_then;
+
 layout(location = 0) out vec4 o_color;
+layout(location = 1) out vec2 o_motion;   // the opaque pass's (render/vk_context.h SceneOutput)
+layout(location = 2) out float o_reactive; // the blended and additive passes'
+
+#define MOTION_SET 1
+#include "motion.glsl"
 
 void main() {
     // The isometric camera's cut (game/iso_occlusion.h).
@@ -75,14 +83,13 @@ void main() {
                                      lighting.light.rgb * (sun * water_sun),
                                      rough_slot != 0u ? mix(0.5, 1.0, texture(textures[rough_slot], v_uv).r) : 0.85);
         // The weather (shaders/weather.glsl): snow on the roofs, ledges and boughs, the rain's soak; no puddles.
-        float footprint = length(fwidth(v_world));
         if (lighting.weather.x > 0.0 || lighting.weather.y > 0.0) {
             float open = sky_open(shadow_map, lighting.cover, lighting.cover_params, lighting.shadow_params.y, v_world + n * 0.5);
             if (open > 0.0) {
                 vec3 horizon = lighting.haze.z > 0.5 ? lighting.haze_color.rgb : to_linear(pc.fog_color.rgb);
                 surface = weather_surface(surface, to_linear(vec3(0.88, 0.9, 0.94)) * max(light, vec3(lighting.params.w)),
                                           v_world, sn, normalize(lighting.camera.xyz - v_world), lighting.weather, open,
-                                          horizon, lighting.sky.rgb, lighting.time.x, footprint, false, 1.0);
+                                          horizon, lighting.sky.rgb, 1.0);
             }
         }
         color = apply_haze(surface, v_world, lighting.camera,
@@ -94,4 +101,6 @@ void main() {
         color = to_linear(mix(pc.fog_color.rgb, tex.rgb * pc.camera_pos.w, v_fog));
     }
     o_color = vec4(color, out_alpha);
+    o_motion = motion_uv(v_now, v_then);
+    o_reactive = reactive_of(o_color);
 }

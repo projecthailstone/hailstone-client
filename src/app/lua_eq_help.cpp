@@ -33,6 +33,20 @@ std::string load_stml_page(const GameDir* game, const std::string& path, std::st
     return html;
 }
 
+std::optional<std::string> stml_href_path(const std::string& page, std::string_view href) {
+    std::string target(href);
+    if (target.rfind("file:///", 0) == 0) {
+        target = target.substr(8);
+    } else if (target.find(':') != std::string::npos) {
+        return std::nullopt; // a web page: not followed here
+    } else if (auto slash = page.find_last_of('/'); slash != std::string::npos) {
+        target = page.substr(0, slash + 1) + target;
+    }
+    for (char& c : target)
+        if (c == '\\') c = '/';
+    return target;
+}
+
 namespace {
 
 // CHelpWnd @0x54e8a0: children Display (an STML box), BackButton,
@@ -76,18 +90,10 @@ public:
     }
     bool stml_link(EqHost& host, std::string_view id, int message, std::string_view data) override {
         if (id != "Display" || message != -1) return false;
-        std::string target(data);
-        if (target.rfind("file:///", 0) == 0) {
-            target = target.substr(8);
-        } else if (target.find(':') != std::string::npos) {
-            return true; // a web page: not followed here
-        } else if (auto slash = page_.find_last_of('/'); slash != std::string::npos) {
-            target = page_.substr(0, slash + 1) + target;
-        }
-        for (char& c : target)
-            if (c == '\\') c = '/';
+        auto target = stml_href_path(page_, data);
+        if (!target) return true;
         history_.push_back(page_);
-        load(host, target);
+        load(host, *target);
         back_enabled_ = !history_.empty();
         return true;
     }

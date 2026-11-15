@@ -105,18 +105,25 @@ local function filtersMenu(slot)
     end
   end
   drawGroup(0, rootName)
+  ui.EndMenu()
+end
+
+local function hitModesMenu()
   if ui.BeginMenu("Hit Modes") then
-    for i, h in ipairs(eq.ChatHitModes()) do
-      if ui.BeginMenu(h.name .. "##hit" .. i) then
+    local modes = eq.ChatHitModes()
+    local function drawMode(h)
+      local id = h.id
+      if ui.BeginMenu(h.name .. "##hit" .. id) then
         for m, label in ipairs(h.modes) do
-          if ui.MenuItem(label .. "##hitmode" .. i .. m, h.mode == m - 1) then eq.ChatSetHitMode(i, m - 1) end
+          if ui.MenuItem(label .. "##hitmode" .. id .. m, h.mode == m - 1) then eq.ChatSetHitMode(id, m - 1) end
         end
         ui.EndMenu()
       end
     end
+    for i, h in ipairs(modes) do if i ~= 7 then drawMode(h) end end
+    if modes[7] then drawMode(modes[7]) end
     ui.EndMenu()
   end
-  ui.EndMenu()
 end
 
 local function menu(slot, c, w)
@@ -131,6 +138,7 @@ local function menu(slot, c, w)
     if ui.MenuItem("Always Chat Here", here) then eq.ChatSetAlwaysHere(slot, not here) end
     ui.Separator()
     filtersMenu(slot)
+    hitModesMenu()
     local _, _, current = eq.ChatInfo(slot)
     if not (w.tabs[w.tab] or {}).tell and ui.BeginMenu("Default Channel") then
       for i, name in ipairs(eq.ChatDefaultChannels()) do

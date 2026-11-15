@@ -44,6 +44,13 @@ TEST_CASE("item options: CInventoryWnd::DestroyHeld") {
     CHECK(d->amount == 3);
 }
 
+TEST_CASE("item options: guarded cursor destroy command accepts only exact IDs") {
+    CHECK(game::destroy_cursor_item_id("123") == 123u);
+    CHECK(game::destroy_cursor_item_id(" 4294967295 ") == 4294967295u);
+    for (const auto& invalid : {"", "0", "-1", "+1", "123x", "123 456", "4294967296", "0x7b"})
+        CHECK_FALSE(game::destroy_cursor_item_id(invalid).has_value());
+}
+
 TEST_CASE("item options: Loot All and no-drop questions") {
     CHECK(game::loot_all_asks(false, 1));
     CHECK_FALSE(game::loot_all_asks(true, 1)); // the player's own corpse

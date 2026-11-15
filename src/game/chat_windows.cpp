@@ -261,6 +261,16 @@ std::uint32_t hit_mode_eqstr(int category, int mode) {
 
 std::uint32_t hit_mode_all_eqstr(int mode) { return 6044 + static_cast<std::uint32_t>(mode); }
 
+std::string_view spell_hit_category_name(int category) {
+    switch (category) {
+    case 0: return "Direct Spell Damage";
+    case 1: return "Damage Over Time";
+    case 2: return "Healing";
+    case 3: return "Healing Over Time";
+    default: return {};
+    }
+}
+
 std::string tell_menu_text(std::string name, const std::string& tell_word) {
     char c = '/';
     if (name.find('.') != std::string::npos) {

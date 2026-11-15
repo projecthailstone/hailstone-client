@@ -145,13 +145,21 @@ void GameConnection::reload_game_files() {
 GameConnection::~GameConnection() { disconnect(); }
 
 void GameConnection::fail(std::string message) {
+    reset_fellowship();
     reset_achievements();
     reset_rewards();
     log::warn("connection: {}", message);
     capture_bank();
     error_ = std::move(message);
     state_ = ConnectionState::Disconnected;
+    respawn_.reset();
+    clear_hover_rez();
+    respawn_spawn_pending_ = false;
+    respawn_placement_.reset();
+    discard_questions([](const Confirmation& c) { return c.id == kConfirmRezz; });
     reset_tribute_donations();
+    reset_tribute_bonuses();
+    reset_guild_permissions(kTributeNone);
     world_drop_pending_ = false;
     zone_exit_ = ZoneExit::None;
     if (zone_session_) zone_session_->disconnect();
@@ -159,25 +167,33 @@ void GameConnection::fail(std::string message) {
 }
 
 void GameConnection::chat(ChatEvent::Kind kind, std::string text, std::uint32_t rgb, std::uint32_t color,
-                          std::string peer) {
+                          std::string peer, std::optional<std::string> display_text) {
     if (options_.hooks) { // OnIncomingChat, OnFilterChat (a server's client may drop lines in dsp_chat)
-        plugin::ChatLine line{std::move(text), rgb, static_cast<int>(kind)};
+        // A deliberate difference from MQ, whose hook hangs off dsp_chat and sees a hit line as displayed: hooks get
+        // the full sentence whatever the hit mode (docs/plugins.md), so a parser matches one form.
+        plugin::ChatLine line{text, rgb, static_cast<int>(kind)};
         line.from_code = !plugin::caller_name().empty();
         line.origin_caps = plugin::caller_caps();
         if (options_.hooks->chat(line) == plugin::Flow::Drop) return;
+        // A hook's replacement is authoritative; a precomputed abbreviation no longer describes it.
+        if (line.text != text) display_text.reset();
         text = std::move(line.text);
         rgb = line.color;
     }
+    // Hit modes change presentation only: logs and incoming-chat parsers retain the complete sentence.
     log::info("chat: {}", text);
     if (chat_logging()) write_chat_log(text); // dsp_chat's OutputTextToLog (Log on)
-    chat_.push_back({kind, std::move(text), rgb, color, std::move(peer)});
+    chat_.push_back({kind, display_text ? std::move(*display_text) : std::move(text), rgb, color, std::move(peer)});
     if (chat_.size() > 500) chat_.pop_front();
 }
 
 void GameConnection::start(const WorldTicket& ticket) {
+    reset_fellowship();
     reset_achievements();
     reset_rewards();
     reset_tribute_donations();
+    reset_tribute_bonuses();
+    reset_guild_permissions(kTributeNone);
     ticket_ = ticket;
     camped_out_.reset();
     link_death_.reset();
@@ -321,8 +337,10 @@ void GameConnection::update() {
     attack_hold_tick();
     apply_poison_tick();
     guild_invite_tick();
+    fellowship_invite_tick();
     guild_bank_tick();
     real_estate_tick();
+    adventure_frame();
     if (alarm_due_ms_ && now_ms() >= alarm_due_ms_) {
         alarm_due_ms_ = 0;
         ui_message("Your alarm has gone off."); // this client's line (the original's is not decoded)
@@ -362,8 +380,7 @@ void GameConnection::update() {
         send_position(false);
         update_afk();
         update_spells();
-        update_merchant();
-        update_bank();
+        update_npc_interactions();
         update_loot();
         update_merc();
         update_inspect();
@@ -660,6 +677,9 @@ void GameConnection::handle_world(const AppPacket& p) {
         controlled_boat_ = standing_on_ = 0;
         spell_book_open_ = false; // MoveToZone closes the book
         respawn_.reset();
+        clear_hover_rez();
+        respawn_spawn_pending_ = false;
+        respawn_placement_.reset();
         pstatus_.dead = false;
         pstatus_.owner_status = 0;
         pstatus_.stand_state = 100;
@@ -681,12 +701,19 @@ void GameConnection::handle_world(const AppPacket& p) {
         doors_.clear();
         ground_objects_.clear();
         world_container_.reset();
+        world_container_requested_.reset();
         close_tradeskill();
         switch_clock_ = {};
         reset_group_for_zone();
         reset_social_for_zone();
+        reset_fellowship(true);
         reset_commerce_for_zone();
         reset_tribute_donations();
+        reset_tribute_bonuses();
+        // The guild's confirmed rank permissions and names stay: the membership has not changed, and EQEmu's
+        // zone-in sends every rank's permissions and the names again (SendGuildRanks / SendGuildRankNames). A
+        // staged table for a guild the GuildID appearance never confirmed is dropped; the next zone resends it.
+        pending_guild_permissions_.reset();
         reset_progress_for_zone();
         reset_achievements();
         reset_rewards();
@@ -702,10 +729,8 @@ void GameConnection::handle_world(const AppPacket& p) {
         guild_bank_.banker = 0;
         guild_bank_.pending = 0;
         guild_bank_.selected = -1;
-        adventure_.recruiter = 0;
-        adventure_.offer.clear();
+        reset_adventure_for_zone();
         guild_tribute_.master_id = 0;
-        guild_platinum_pending_ = 0;
         state_ = ConnectionState::ZoneConnecting;
         status_ = "Connecting to the zone server";
         break;
@@ -799,6 +824,8 @@ std::optional<ServerProfile> GameConnection::saved_server() const {
 
 void GameConnection::enter_world(const std::string& name, bool return_home) {
     if (state_ != ConnectionState::CharacterSelect) return;
+    adventure_ = {};
+    recruiter_state_ = 0;
     character_ = name;
     {
         // The files an earlier build kept in characters/<name>/ of the profile, copied once to the world's folder.
@@ -860,6 +887,7 @@ void GameConnection::smooth(float dt, const game::WorldState::FloorFn& floor,
 void GameConnection::smooth_vehicles(float dt) { world_.smooth_vehicles(dt, steady_seconds()); }
 
 void GameConnection::apply_spawn(const Spawn& s) {
+    if (world_.spawns.contains(s.spawn_id)) forget_leadership_spawn(s.spawn_id);
     game::Spawn& out = world_.spawns[s.spawn_id];
     ++world_.spawn_set_serial; // a full same-id replacement also retires the previous identity
     out.id = s.spawn_id;
@@ -886,7 +914,8 @@ void GameConnection::apply_spawn(const Spawn& s) {
     out.walk_speed = s.walk_speed;
     out.run_speed = s.run_speed;
     set_spawn_motion(out, s.motion);
-    out.fly_mode = s.fly_mode;
+    out.fly_mode = s.fly_mode; // UnSerializeSpawn's PlayerPhysics_SetFlyMode
+    ++out.fly_mode_sets;
     out.hp_percent = s.hp_percent;
     out.stand_state = s.stand_state ? s.stand_state : 100;
     out.targetable = s.targetable;
@@ -1253,11 +1282,14 @@ void GameConnection::handle_zone(const AppPacket& p) {
     }
     Op op = from_wire(p.opcode);
     handle_ability(op, p); // only looks (net/game_connection_abilities.cpp)
+    if (handle_fellowship(p)) return;
     switch (op) {
     case Op::PlayerProfile:
         profile_ = decode_player_profile(p);
         if (profile_) drunkenness_ = static_cast<std::int32_t>(std::min(profile_->intoxication, 200u));
         if (profile_) {
+            fellowship_.vitality.normal = profile_->fellowship_vitality_normal;
+            fellowship_.vitality.aa = profile_->fellowship_vitality_aa;
             pstatus_.hp = profile_->cur_hp;
             pstatus_.mana = profile_->mana;
             pstatus_.endurance = profile_->endurance;
@@ -1279,9 +1311,15 @@ void GameConnection::handle_zone(const AppPacket& p) {
                 leadership_.ranks[i] = profile_->leadership_ranks[i];
             tribute_.points = static_cast<std::int32_t>(profile_->tribute_points);
             tribute_.career = static_cast<std::int32_t>(profile_->career_tribute_points);
+            adventure_.points.available = profile_->adventure_points_available;
+            adventure_.points.theme = profile_->adventure_points;
             for (std::size_t i = 0; i < tribute_.settings.tributes.size() && i < profile_->tributes.size(); ++i) {
                 tribute_.settings.tributes[i] = profile_->tributes[i].first;
                 tribute_.settings.tiers[i] = profile_->tributes[i].second;
+            }
+            if (guild_.guild_id != profile_->guild_id) {
+                reset_guild_tribute_bonuses(profile_->guild_id);
+                reset_guild_permissions(profile_->guild_id);
             }
             guild_.guild_id = profile_->guild_id;
             guild_.rank = profile_->guild_rank;
@@ -1295,8 +1333,12 @@ void GameConnection::handle_zone(const AppPacket& p) {
     case Op::NewSpawn: {
         auto s = decode_spawn(p);
         if (!s) { log::debug("undecodable spawn ({} bytes)", p.data.size()); break; }
+        // The old ID still belongs to our corpse. A stale living record for that ID cannot publish a respawn.
+        if (respawn_spawn_pending_ && s->spawn_id == world_.player_id && s->npc == 0 && s->name == character_)
+            break;
         apply_spawn(*s);
-        if (!own_spawn_seen_ && s->name == character_) {
+        if ((!own_spawn_seen_ || respawn_spawn_pending_) && s->npc == 0 && s->spawn_id != 0 && s->name == character_) {
+            const bool respawning = respawn_spawn_pending_;
             world_.player_id = s->spawn_id;
             invis_state_ = s->invis;
             own_spawn_seen_ = true;
@@ -1310,7 +1352,30 @@ void GameConnection::handle_zone(const AppPacket& p) {
             position_ = game::server_to_world({s->motion.x, s->motion.y, s->motion.z});
             heading_ = s->motion.heading;
             motion_known_ = true;
-            maybe_request_client_spawn();
+            if (respawning) {
+                // The corpse keeps the previous ID. Only this living, matching own spawn can release the
+                // same-zone respawn wait, and both network motion and the app's physics must use its placement.
+                respawn_spawn_pending_ = false;
+                world_.controlled_id = 0;
+                standing_on_ = controlled_boat_ = 0;
+                velocity_ = glm::vec3(0.0f);
+                moving_ = false;
+                speed_run_ = 0.0f;
+                motion_dirty_ = true;
+                position_tracker_.flush();
+                pstatus_.dead = false;
+                pstatus_.owner_status = 0;
+                pstatus_.stand_state = s->stand_state ? s->stand_state : kStandStanding;
+                respawn_placement_ = RespawnPlacement{position_, heading_};
+                if (profile_) {
+                    profile_->x = s->motion.x;
+                    profile_->y = s->motion.y;
+                    profile_->z = s->motion.z;
+                    profile_->heading = heading_;
+                }
+            } else {
+                maybe_request_client_spawn();
+            }
         }
         break;
     }
@@ -1376,6 +1441,7 @@ void GameConnection::handle_zone(const AppPacket& p) {
             // (CTradeWnd_CancelAndClose, which sends OP_CancelTrade). EQEmu tells only the player who left.
             if (trade_ && trade_->partner_id == *id) trade_cancel();
             spawn_leaving(*id);
+            forget_leadership_spawn(*id);
             if (world_.spawns.erase(*id)) ++world_.spawn_set_serial;
             forget_pet_spawn(*id);
             // msgEQRmPlayer @0x4b8380: the target leaving stops auto attack and clears the target (no OP_TargetMouse).
@@ -1774,6 +1840,13 @@ void GameConnection::handle_zone(const AppPacket& p) {
         auto t = tl ? decode_translocate(p) : std::nullopt;
         auto rz = tl ? std::nullopt : decode_rezz_request(p);
         if (!t && !rz) break;
+        if (rz) {
+            if (respawn_spawn_pending_ || (respawn_ && respawn_chosen_)) break;
+            clear_hover_rez();
+            // A new server resurrection offer replaces the old one; queued dialogs must not answer superseded
+            // corpse/spell data after the current offer has been accepted or the hover timeout has completed.
+            discard_questions([](const Confirmation& c) { return c.id == kConfirmRezz; });
+        }
         std::uint32_t zone = t ? t->zone : rz->zone;
         std::string where = game::zone_long_name(zone);
         if (where.empty()) where = std::format("zone {}", zone);
@@ -1862,7 +1935,13 @@ void GameConnection::handle_zone(const AppPacket& p) {
     case Op::FormattedMessage:
         if (auto m = decode_formatted_message(p)) {
             if (m->string_id == 1383) duel_decline_message(m->args); // EQEmu's DUEL_DECLINE
-            chat(ChatEvent::Kind::System, strings_.format(m->string_id, m->args), 0, m->type);
+            auto full = strings_.format(m->string_id, m->args);
+            std::optional<std::string> display;
+            if (auto line = game::spell_message_hit_report(m->string_id, m->args)) {
+                auto mode = spell_hit_modes_[static_cast<std::size_t>(line->kind)];
+                display = game::report_spell_hit_line(*line, full, mode);
+            }
+            chat(ChatEvent::Kind::System, std::move(full), 0, m->type, {}, std::move(display));
             if (m->string_id > 0x1d4 && m->string_id < 0x1d9) context_tip(0x1e); // msgTokenText: the faction tip
         }
         break;
@@ -1932,6 +2011,7 @@ void GameConnection::handle_zone(const AppPacket& p) {
                 chat(ChatEvent::Kind::System, "Zoning...");
                 send_zone(encode_delete_own_spawn(world_.player_id));
                 state_ = ConnectionState::Zoning;
+                reset_fellowship(true);
                 reset_achievements();
                 reset_rewards();
                 status_ = "Leaving the zone";
@@ -1974,8 +2054,14 @@ void GameConnection::report_successful_hit(const CombatDamage& d, bool reported)
     if (d.type == 231) {
         // A spell hit: ReportSuccessfulHit's spell branch.
         if (const auto* sp = spell_table_->get(d.spell_id))
-            if (auto line = game::spell_hit_message(strings_, world_, *sp, d.target, d.damage))
-                chat(ChatEvent::Kind::Spell, *line);
+            if (auto full = game::spell_hit_message(strings_, world_, *sp, d.target, d.damage)) {
+                std::optional<std::string> display;
+                if (auto line = game::spell_damage_hit_report(world_, *sp, d.target, d.damage)) {
+                    auto mode = spell_hit_modes_[static_cast<std::size_t>(line->kind)];
+                    display = game::report_spell_hit_line(*line, *full, mode);
+                }
+                chat(ChatEvent::Kind::Spell, std::move(*full), 0, 0, {}, std::move(display));
+            }
     } else if (game::is_environment_hit(d.type)) {
         // The environmental branch (game/combat.h environment_hit): its line, fall_hit, and the victim's Hit1..4
         // when there is damage (the shared tail @0x5311ee; no FlshHit for these types).
@@ -2098,6 +2184,8 @@ std::optional<ChatEvent> GameConnection::poll_chat() {
 
 void GameConnection::set_player_motion(const glm::vec3& position, float heading, const glm::vec3& velocity,
                                        bool moving) {
+    // During hover the player ID belongs to the corpse; local physics must not move its server-owned pose.
+    if (pstatus_.dead) return;
     // Against the place last sent, not last frame's: at a high frame rate a slow walk (sneaking, snared) moves less
     // than 0.01 a frame and would never be reported.
     if (glm::distance(position, last_sent_position_) > 0.01f || moving != moving_) motion_dirty_ = true;
@@ -2240,6 +2328,7 @@ void GameConnection::leave_zone_dropped() {
         if (raid_.active) raid_.target.clear();
         raid_.clear();
         raid_.inviter.clear(); // ResetRaid's state 1 ends an invitation too
+        reset_fellowship();
         capture_bank();
         state_ = ConnectionState::Disconnected;
         error_ = "Camped out.";
@@ -2248,6 +2337,10 @@ void GameConnection::leave_zone_dropped() {
 }
 
 void GameConnection::start_zone_change(const ZoneChange& request) {
+    if (respawn_ || respawn_spawn_pending_) {
+        clear_hover_rez();
+        discard_questions([](const Confirmation& c) { return c.id == kConfirmRezz; });
+    }
     send_zone(encode(request));
     zone_change_request_ = request;
     zone_change_pending_ = true;
@@ -2283,10 +2376,17 @@ void GameConnection::simulate_link_loss() {
 }
 
 void GameConnection::disconnect() {
+    reset_fellowship();
     capture_bank();
     reset_achievements();
     reset_rewards();
+    respawn_.reset();
+    clear_hover_rez();
+    respawn_spawn_pending_ = false;
+    respawn_placement_.reset();
     reset_tribute_donations();
+    reset_tribute_bonuses();
+    reset_guild_permissions(kTributeNone);
     release_eye_control();
     blood_spurts_.clear();
     world_drop_pending_ = false;
@@ -2486,14 +2586,14 @@ void GameConnection::report_hit(const game::HitLine& line, std::uint32_t source,
     // ReportSuccessfulHit's pet flag: the attacker is the player's pet (PetID).
     const bool by_my_pet = source != 0 && source == pets_.focused;
     if (!game::hit_line_shown(line, by_my_pet, chat_filters_, report)) return;
-    // ReportHit_*: the category's display mode picks the full, short or number-only line.
+    // ReportHit_* @0x4f7d70..0x4f8270: choose the display form but log the original full input independently.
     auto mode = hit_modes_[static_cast<std::size_t>(line.kind)];
     // their user colours: 265 your hits, 267 your misses, 266 / 268 you hit / missed, 279 / 280 others, 328 the pet's
     static constexpr std::uint32_t kColors[] = {265, 267, 266, 268, 279, 280};
     const bool others = line.kind == game::HitReport::OthersHits || line.kind == game::HitReport::OthersMisses;
     if (auto text = game::report_hit_line(strings_, line, mode))
-        chat(ChatEvent::Kind::Combat, *text, 0,
-             others && by_my_pet ? 0x148u : kColors[static_cast<std::size_t>(line.kind)]);
+        chat(ChatEvent::Kind::Combat, line.text, 0,
+             others && by_my_pet ? 0x148u : kColors[static_cast<std::size_t>(line.kind)], {}, std::move(*text));
 }
 
 bool GameConnection::set_stand_state(std::uint32_t state, bool room_to_stand) {
@@ -2598,7 +2698,8 @@ void GameConnection::handle_combat(Op op, const AppPacket& p) {
         break;
     case Op::ManaUpdate:
     case Op::EnduranceUpdate:
-        if (auto u = decode_points_update(p); u && u->spawn_id == me) {
+        if (auto u = decode_points_update(p); u && (u->spawn_id == me ||
+            (u->spawn_id == 0 && pstatus_.dead && (respawn_ || respawn_spawn_pending_)))) {
             if (op == Op::ManaUpdate) {
                 pstatus_.mana = u->current;
                 pstatus_.max_mana = u->maximum;
@@ -2728,7 +2829,10 @@ void GameConnection::handle_combat(Op op, const AppPacket& p) {
                 case 3: s->invis_rank = static_cast<std::int32_t>(a->parameter); break;
                 case 5: s->light_type = static_cast<std::uint8_t>(a->parameter); break;
                 case 18: s->linkdead = a->parameter != 0; break;
-                case 19: s->fly_mode = static_cast<std::uint8_t>(a->parameter); break; // PlayerPhysics_SetFlyMode
+                case 19: // PlayerPhysics_SetFlyMode
+                    s->fly_mode = static_cast<std::uint8_t>(a->parameter);
+                    ++s->fly_mode_sets;
+                    break;
                 case 20: s->gm = a->parameter != 0; break;
                 case 21:
                     s->anon = static_cast<std::uint8_t>(a->parameter);
@@ -2740,9 +2844,15 @@ void GameConnection::handle_combat(Op op, const AppPacket& p) {
                     auto line = game::guild_id_appearance_line(guild_, id == me, s->guild_id, a->parameter, s->name);
                     if (line.eqstr && profile_) system(line.eqstr, line.args, 0x111);
                     if (id == me && guild_.guild_id != a->parameter) {
+                        reset_guild_tribute_bonuses(a->parameter);
+                        reset_guild_permissions(a->parameter);
+                        // A new guild's rank must arrive before it can authorize the staged permissions. Keep
+                        // GuildStatus's native history for rank-change chat; without membership no action is allowed.
+                        if (a->parameter && a->parameter != 0xffffffff) {
+                            guild_.rank = 0;
+                            s->guild_rank = 0;
+                        }
                         // another guild's ranks, names, page and channel
-                        guild_.permissions.clear();
-                        guild_.rank_names = {};
                         guild_.url.clear();
                         guild_.channel.clear();
                         guild_.guild_id = a->parameter;
@@ -2796,9 +2906,24 @@ void GameConnection::handle_combat(Op op, const AppPacket& p) {
         break;
     case Op::RespawnWindow:
         // Handle_OP_RespawnWindow: CRespawnWnd filled and shown; Select waits for the delay.
-        respawn_ = decode_respawn_window(p);
-        respawn_shown_ms_ = now_ms();
-        respawn_chosen_ = false;
+        // A malformed packet must not discard a valid window or unlock a selection already sent. Once the server
+        // acknowledged a same-zone respawn, only the new own spawn can complete it, not another window.
+        if (!respawn_spawn_pending_)
+            if (auto window = decode_respawn_window(p)) {
+                const bool chosen = respawn_ && respawn_chosen_;
+                if (!respawn_) {
+                    respawn_session_ = core::next_process_serial();
+                    clear_hover_rez();
+                }
+                respawn_ = std::move(window);
+                // A refreshed server list must not apply local consent to a different or withdrawn destination.
+                const auto* rez = respawn_resurrection_option();
+                if (hover_rez_choice_ && (!rez || *hover_rez_choice_ != *rez)) clear_hover_rez();
+                respawn_shown_ms_ = respawn_now_ms();
+                respawn_chosen_ = chosen;
+                log::info("hover respawn window: {} options, {} ms left, default {}", respawn_->options.size(),
+                          respawn_->time_remaining_ms, respawn_->selected);
+            }
         break;
     default:
         break;

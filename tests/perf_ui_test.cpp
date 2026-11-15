@@ -83,3 +83,18 @@ TEST_CASE("perf: frame sections add up by name and are emptied when taken") {
     CHECK(bytes[0].second == 150);
     CHECK(fs::take_bytes().empty());
 }
+
+TEST_CASE("perf: frame generation's rates count every image displayed against the real frames") {
+    // Four real frames of 20 ms: three had an in-between frame.
+    const FrameRates r = frame_rates({20.0f, 20.0f, 20.0f, 20.0f}, {2, 2, 1, 2});
+    CHECK(r.rendered_fps == doctest::Approx(50.0f));
+    CHECK(r.displayed_fps == doctest::Approx(87.5f));
+    CHECK(r.generated_share == doctest::Approx(0.75f));
+    // Without frame generation both rates are the same.
+    const FrameRates off = frame_rates({10.0f, 10.0f}, {1, 1});
+    CHECK(off.displayed_fps == doctest::Approx(off.rendered_fps));
+    CHECK(off.generated_share == doctest::Approx(0.0f));
+    // Nothing yet, or histories that do not match: no rates.
+    CHECK(frame_rates({}, {}).rendered_fps == 0.0f);
+    CHECK(frame_rates({10.0f}, {}).displayed_fps == 0.0f);
+}

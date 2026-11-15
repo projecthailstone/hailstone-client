@@ -308,7 +308,8 @@ std::shared_ptr<const assets::PfsArchive> WorldObjects::archive(const std::strin
     std::shared_ptr<const assets::PfsArchive> a;
     if (auto path = game_.find(file)) {
         try {
-            a = std::make_shared<const assets::PfsArchive>(assets::PfsArchive::open(*path, assets::PfsArchive::storage_for(game_, *path)));
+            a = std::make_shared<const assets::PfsArchive>(assets::PfsArchive::open(
+                *path, assets::PfsArchive::storage_for(game_, *path), game_.shared_file_cache()));
         } catch (const std::exception& e) {
             log::warn("{}: {}", file, e.what());
         }
@@ -425,13 +426,16 @@ void WorldObjects::update(const net::GameConnection& conn) {
     floor_changed_ = false;
 
     instances_.clear();
+    // Each keyed for its motion under the temporal upscaler (a door swinging, the placement ghost following the cursor).
+    using Objects = render::ObjectRenderer;
     for (const auto& [id, p] : doors_)
-        if (p.model && p.visible) instances_.push_back({p.model->gpu, p.transform});
+        if (p.model && p.visible) instances_.push_back({p.model->gpu, p.transform, Objects::make_motion_key(1, id)});
     for (const auto& [id, p] : objects_)
-        if (p.model) instances_.push_back({p.model->gpu, p.transform});
+        if (p.model) instances_.push_back({p.model->gpu, p.transform, Objects::make_motion_key(2, id)});
     for (const auto& [id, p] : placed_)
-        if (p.model) instances_.push_back({p.model->gpu, p.transform});
-    if (ghost_ && ghost_->model) instances_.push_back({ghost_->model->gpu, ghost_->transform});
+        if (p.model) instances_.push_back({p.model->gpu, p.transform, Objects::make_motion_key(3, id)});
+    if (ghost_ && ghost_->model)
+        instances_.push_back({ghost_->model->gpu, ghost_->transform, Objects::make_motion_key(4, 0)});
 }
 
 const WorldObjects::Model* WorldObjects::placed_model(const std::string& tag) {
@@ -471,7 +475,7 @@ void WorldObjects::set_missiles(const std::vector<game::Missile>& missiles,
         t = glm::rotate(t, m.heading * kUnit, glm::vec3(0, 0, 1));
         t = glm::rotate(t, -m.tilt * kUnit, glm::vec3(0, 1, 0));
         t = glm::scale(t, glm::vec3(m.actor_scale));
-        instances_.push_back({model->gpu, t});
+        instances_.push_back({model->gpu, t, render::ObjectRenderer::make_motion_key(5, m.serial)});
         if (model->emitters) {
             const std::uint32_t id = kMissileActorBit | m.serial;
             missile_actors_.push_back({id, model->emitters.get()});

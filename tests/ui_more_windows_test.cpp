@@ -364,6 +364,46 @@ TEST_CASE("Story window: storyline\\story*.txt newest first, the oldest unread s
     CHECK(opts["news_automatic"] == 1);
 }
 
+// The storyline pages a server ships beside its stories (the guides' index pages lead into folders of pages): a
+// file:/// link from the game folder, a bare name beside the page shown, a web link not followed. No game folder
+// needed: the pages are written to a scratch one.
+TEST_CASE("Story window: a page's href links are followed, web links are not") {
+    hailstone::test::ScratchDir scratch("ui_more_windows_story_links");
+    const fs::path root = scratch.path() / "game";
+    fs::create_directories(root / "storyline" / "Epic");
+    std::ofstream(root / "storyline" / "storyEpicsGuide.txt")
+        << "Epic Weapon Guides\n<a href=\"file:///storyline/Epic/BardEpic.txt\">Bard</a> <a href=\"http://example.com/\">web</a>\n";
+    std::ofstream(root / "storyline" / "Epic" / "BardEpic.txt") << "Bard epic page <a href=\"ClericEpic.txt\">next</a>\n";
+    std::ofstream(root / "storyline" / "Epic" / "ClericEpic.txt") << "Cleric epic page\n";
+    GameDir game(root);
+    Harness t(game);
+    std::map<std::string, int> opts;
+    t.host.find_option = [&](std::string_view o) -> std::optional<int> {
+        auto it = opts.find(std::string(o));
+        return it == opts.end() ? std::optional<int>(0) : std::optional<int>(it->second);
+    };
+    t.host.set_option = [&](std::string_view o, int v) { opts[std::string(o)] = v; };
+    t.api->show("StoryWnd", true);
+    REQUIRE(t.api->list_texts("StoryWnd", "StoryList").size() == 1); // (the pages in folders are not stories)
+    CHECK(t.api->click_list("StoryWnd", "StoryList", 0, 0));
+    auto guide = t.api->child_text("StoryWnd", "Display");
+    REQUIRE(guide);
+    CHECK(guide->find("Epic Weapon Guides") != std::string::npos);
+    CHECK(t.api->stml_link("StoryWnd", "Display", -1, "http://example.com/")); // taken, not followed
+    CHECK(t.api->child_text("StoryWnd", "Display") == guide);
+    CHECK(t.api->stml_link("StoryWnd", "Display", -1, "file:///storyline/Epic/BardEpic.txt"));
+    auto bard = t.api->child_text("StoryWnd", "Display");
+    REQUIRE(bard);
+    CHECK(bard->find("Bard epic page") != std::string::npos);
+    CHECK(t.api->stml_link("StoryWnd", "Display", -1, "ClericEpic.txt")); // beside the page shown
+    auto cleric = t.api->child_text("StoryWnd", "Display");
+    REQUIRE(cleric);
+    CHECK(cleric->find("Cleric epic page") != std::string::npos);
+    CHECK_FALSE(t.api->stml_link("StoryWnd", "Display", 27, "x")); // a WndNotify link: no handler
+    CHECK(t.api->click_list("StoryWnd", "StoryList", 0, 0)); // the story again
+    CHECK(t.api->child_text("StoryWnd", "Display") == guide);
+}
+
 TEST_CASE("Server select (stock page): the worlds, Play, the last world's quick connect, Logout") {
     const GameDir* game = test::game_dir();
     if (!game) return;

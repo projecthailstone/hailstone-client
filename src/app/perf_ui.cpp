@@ -11,6 +11,7 @@
 
 #include "core/frame_sections.h"
 #include "core/log.h"
+#include "core/shared_file_cache.h"
 #include "net/game_connection.h"
 #include "platform/process.h"
 #include "render/actor_renderer.h"
@@ -123,6 +124,21 @@ std::vector<SectionAverages::Row> SectionAverages::rows() const {
     return out;
 }
 
+FrameRates frame_rates(const std::vector<float>& ms, const std::vector<std::uint8_t>& presented) {
+    FrameRates r;
+    const float total = std::accumulate(ms.begin(), ms.end(), 0.0f);
+    if (ms.empty() || total <= 0.0f || presented.size() != ms.size()) return r;
+    std::uint64_t images = 0, with_generated = 0;
+    for (std::uint8_t p : presented) {
+        images += p;
+        with_generated += p > 1 ? 1u : 0u;
+    }
+    r.rendered_fps = 1000.0f * static_cast<float>(ms.size()) / total;
+    r.displayed_fps = 1000.0f * static_cast<float>(images) / total;
+    r.generated_share = static_cast<float>(with_generated) / static_cast<float>(ms.size());
+    return r;
+}
+
 void PerfUi::begin_frame() {
     auto now = Clock::now();
     if (frames_++ > 0) {
@@ -138,11 +154,13 @@ void PerfUi::begin_frame() {
             frame_ms_[head_] = frame;
             phase_ms_[head_] = current_;
             sections_.add(std::move(sections), std::move(bytes));
+            presented_[head_] = current_presented_;
             head_ = (head_ + 1) % kFrames;
             count_ = std::min(count_ + 1, kFrames);
         }
     }
     current_.fill(0.0f);
+    current_presented_ = 1;
     frame_start_ = last_mark_ = now;
 }
 
@@ -202,7 +220,14 @@ void PerfUi::draw(const PerfInputs& in) {
 
     // The history in time order, oldest first.
     std::vector<float> ms(count_);
-    for (std::size_t i = 0; i < count_; ++i) ms[i] = frame_ms_[(head_ + kFrames - count_ + i) % kFrames];
+    std::vector<std::uint8_t> presented(count_);
+    for (std::size_t i = 0; i < count_; ++i) {
+        ms[i] = frame_ms_[(head_ + kFrames - count_ + i) % kFrames];
+        presented[i] = presented_[(head_ + kFrames - count_ + i) % kFrames];
+    }
+    const std::optional<render::FrameGenStats> fg =
+        in.gpu ? std::optional<render::FrameGenStats>(in.gpu->frame_gen_stats()) : std::nullopt;
+    const FrameRates rates = frame_rates(ms, presented);
 
     if (!ms.empty()) {
         float sum = std::accumulate(ms.begin(), ms.end(), 0.0f);
@@ -217,6 +242,10 @@ void PerfUi::draw(const PerfInputs& in) {
                           static_cast<float>(worst);
         float last = ms.back();
 
+        if (fg && fg->active)
+            ImGui::Text("%.1f FPS rendered, %.1f displayed  (%.2f ms avg)", avg > 0.0f ? 1000.0f / avg : 0.0f,
+                        rates.displayed_fps, avg);
+        else
         ImGui::Text("%.1f FPS  (%.2f ms avg)", avg > 0.0f ? 1000.0f / avg : 0.0f, avg);
         ImGui::TextDisabled("last %zu frames: min %.2f, max %.2f, p99 %.2f ms; 1%% low %.1f FPS", ms.size(), *lo, *hi,
                             p99, worst_avg > 0.0f ? 1000.0f / worst_avg : 0.0f);
@@ -237,6 +266,44 @@ void PerfUi::draw(const PerfInputs& in) {
         ImGui::SetTooltip("Write each frame of %.0f ms or more (2.5 times the typical frame, 20 ms at least)\n"
                           "to the log with where its time went.",
                           static_cast<double>(std::max(20.0f, typical_ms_ * 2.5f)));
+
+    if (fg && (fg->requested || fg->active) &&
+        ImGui::CollapsingHeader("Frame generation", ImGuiTreeNodeFlags_DefaultOpen) &&
+        ImGui::BeginTable("framegen", 2, kTable)) {
+        if (!fg->active) {
+            row("State", "%s", fg->no_motion ? "off: needs the Temporal or AMD FSR 3.1 upscaler (FSR 1 has no motion)"
+                                             : "asked for, not running (no 3D scene yet)");
+        } else {
+            row("State", "on");
+            if (!ms.empty()) {
+                row("Frame rate", "%.1f rendered -> %.1f displayed (%.2fx)", rates.rendered_fps, rates.displayed_fps,
+                    rates.rendered_fps > 0.0f ? rates.displayed_fps / rates.rendered_fps : 0.0f);
+                row("Shown every", "%.2f ms avg",
+                    rates.displayed_fps > 0.0f ? 1000.0f / rates.displayed_fps : 0.0f);
+                row("Generated", "%.1f%% of the last %zu real frames", rates.generated_share * 100.0f,
+                    ms.size());
+            }
+            row("  total", "%llu generated, %llu real frames", static_cast<unsigned long long>(fg->generated),
+                static_cast<unsigned long long>(fg->real));
+            row("  skipped", "%llu at cuts and resizes, %llu no free image",
+                static_cast<unsigned long long>(fg->skipped_cut),
+                static_cast<unsigned long long>(fg->skipped_no_image));
+            row("Pacing", "%s, %u images (min %u), %s", fg->present_mode, fg->images, fg->min_images,
+                fg->waits ? "paced" : "unpaced: too few images");
+            row("  vsync wait", "%.2f ms last frame (in Present)", static_cast<double>(fg->pacing_wait_ms));
+            if (fg->gpu_ms >= 0.0f)
+                row("GPU", "%.3f ms (motion, in-between, 2 composites)",
+                    static_cast<double>(fg->gpu_ms));
+            else
+                row("GPU", "not measured yet (or no timestamps)");
+            if (fg->gpu_real_ms >= 0.0f)
+                row("  real alone", "%.3f ms (its composite)", static_cast<double>(fg->gpu_real_ms));
+        }
+        ImGui::EndTable();
+        if (fg->active)
+            ImGui::TextDisabled("The graph and phases are real frames; the vsync wait for the in-between frame's\n"
+                                "image is in Present.");
+    }
 
     if (ImGui::CollapsingHeader("Frame phases (avg of the last 60 frames, and the slowest)", ImGuiTreeNodeFlags_DefaultOpen) &&
         count_ > 0) {
@@ -336,6 +403,13 @@ void PerfUi::draw(const PerfInputs& in) {
             row("Process (resident)", "%s", bytes_text(static_cast<double>(*rss)).c_str());
         if (auto commit = platform::private_commit_memory())
             row("Process (private commit)", "%s", bytes_text(static_cast<double>(*commit)).c_str());
+        if (in.shared_files) {
+            const auto cache = in.shared_files->stats();
+            row("Shared asset backing", "%s", bytes_text(static_cast<double>(cache.mapped_bytes)).c_str());
+            row("Shared asset loads", "%llu hits, %llu built, %llu private fallbacks, %llu evicted",
+                static_cast<unsigned long long>(cache.hits), static_cast<unsigned long long>(cache.builds),
+                static_cast<unsigned long long>(cache.fallbacks), static_cast<unsigned long long>(cache.evictions));
+        }
         if (in.gpu) {
             row("GPU", "%s", in.gpu->gpu_name().c_str());
             const auto heaps = in.gpu->heap_use();

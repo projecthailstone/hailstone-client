@@ -4,18 +4,7 @@
 // None of it reaches under cover (sky_open, render/cover_map.h). Shared by the zone, its objects and the characters.
 // After lighting.glsl.
 
-float weather_hash(vec2 p) {
-    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-    p3 += dot(p3, p3.yzx + 33.33);
-    return fract((p3.x + p3.y) * p3.z);
-}
-
-float weather_noise(vec2 p) {
-    vec2 i = floor(p), f = fract(p);
-    vec2 u = f * f * (3.0 - 2.0 * f);
-    return mix(mix(weather_hash(i), weather_hash(i + vec2(1, 0)), u.x),
-               mix(weather_hash(i + vec2(0, 1)), weather_hash(i + vec2(1, 1)), u.x), u.y);
-}
+#include "puddle_cover.glsl"
 
 // The sky seen in direction r: the horizon's colour (the haze's), a little deeper overhead.
 vec3 weather_sky(vec3 r, vec3 horizon, vec3 sky) {
@@ -28,16 +17,6 @@ float snow_cover(float snow, vec3 p, vec3 n, float open) {
     if (s <= 0.0) return 0.0;
     float drift = weather_noise(p.xy * 0.15) * 0.6 + weather_noise(p.xy * 0.6) * 0.4;
     return s * smoothstep(0.75 - snow * 0.6, 0.95 - snow * 0.5, drift + 0.3);
-}
-
-// How much of a level surface at p stands under water (0..1): slow noise picks the low spots, which fill first and
-// spread as the puddles grow, to about a quarter of the ground in a long storm.
-float puddle_cover(float puddles, vec3 p, vec3 n, float open) {
-    float level = smoothstep(0.93, 0.985, n.z) * open;
-    if (puddles <= 0.0 || level <= 0.0) return 0.0;
-    float low = weather_noise(p.xy * 0.045) * 0.65 + weather_noise(p.xy * 0.17 + 5.3) * 0.35;
-    float edge = 0.86 - 0.24 * puddles;
-    return level * smoothstep(edge, edge + 0.05, low);
 }
 
 // The rings the drops make on standing water: the surface's slope (dh/dx, dh/dy) at p, time t. Two jittered grids of
@@ -69,31 +48,49 @@ vec2 rain_ripples(vec2 p, float t, float rain, float footprint) {
 }
 
 // A lit surface `color` (linear) under the weather at world point p, facing n, seen along `view` (to the eye); `snow_lit`
-// is white snow lit there; `open` its sky_open. `horizon` and `sky` colour the reflections (weather_sky); `pools` lets
-// water stand on it (the ground's level surfaces); `sheen` scales the wet look (the characters' is lighter).
+// is white snow lit there; `open` its sky_open. `horizon` and `sky` colour the reflections (weather_sky); `sheen`
+// scales the wet look (the characters' is lighter).
 vec3 weather_surface(vec3 color, vec3 snow_lit, vec3 p, vec3 n, vec3 view, vec4 weather, float open, vec3 horizon,
-                     vec3 sky, float t, float footprint, bool pools, float sheen) {
+                     vec3 sky, float sheen) {
     float snow = snow_cover(weather.y, p, n, open);
     if (snow > 0.0) color = mix(color, snow_lit, snow * 0.9);
     float wet = weather.x * mix(0.35, 1.0, smoothstep(0.55, 0.9, n.z)) * (1.0 - snow) * open * sheen;
-    float pool = pools ? puddle_cover(weather.w, p, n, open) * (1.0 - snow) : 0.0;
-    if (wet <= 0.0 && pool <= 0.0) return color;
-    if (wet > 0.0) {
-        vec3 r = reflect(-view, n);
-        float fresnel = 0.04 + 0.96 * pow(1.0 - clamp(dot(n, view), 0.0, 1.0), 5.0);
-        color = color * mix(1.0, 0.6, wet) +
-                weather_sky(normalize(vec3(r.xy, max(r.z, 0.02))), horizon, sky) * fresnel * wet * 0.7;
-    }
-    if (pool > 0.0) {
-        // Standing water: the ground under it darker, the sky in it nearly a mirror's, broken by the rings, whose
-        // crests catch the sky's light.
-        vec2 slope = rain_ripples(p.xy, t, weather.z, footprint);
-        vec3 wn = normalize(vec3(-slope, 1.0));
-        vec3 r = reflect(-view, wn);
-        float fresnel = 0.15 + 0.85 * pow(1.0 - clamp(dot(wn, view), 0.0, 1.0), 4.0);
-        vec3 seen = weather_sky(normalize(vec3(r.xy, max(r.z, 0.02))), horizon, sky);
-        vec3 water = color * 0.25 * (1.0 - fresnel) + seen * (fresnel * 1.7 + length(slope) * 5.0);
-        color = mix(color, water, pool);
-    }
-    return color;
+    if (wet <= 0.0) return color;
+    vec3 r = reflect(-view, n);
+    float fresnel = 0.04 + 0.96 * pow(1.0 - clamp(dot(n, view), 0.0, 1.0), 5.0);
+    return color * mix(1.0, 0.6, wet) +
+           weather_sky(normalize(vec3(r.xy, max(r.z, 0.02))), horizon, sky) * fresnel * wet * 0.7;
+}
+
+// Standing water on the ground (puddle_cover), after weather_surface: `face` is the triangle's own normal, `t` the
+// time, `footprint` a pixel's size in world units (rain_ripples), `to_light` and `sun` the sun's or moon's direction
+// and shadowed light, for its glint. Shallow water at the shore shows the soaked ground through it; deeper in, the
+// water's reflection takes over as a mirror's does (Schlick, water's 2 %), so it reads dark seen from above and
+// holds the sky at a low angle. The drops ring it while it rains, their crests catching the light.
+vec3 puddle_surface(vec3 color, vec3 p, vec3 n, vec3 face, vec3 view, vec4 weather, float open, vec3 horizon, vec3 sky,
+                    float t, float footprint, vec3 to_light, vec3 sun) {
+    vec3 cover = puddle_cover(weather.w, p, n, face, open);
+    float keep = 1.0 - snow_cover(weather.y, p, n, open);
+    float pool = cover.x * keep;
+    float rim = cover.z * keep;
+    if (pool <= 0.0 && rim <= 0.0) return color;
+    // The damp ground round the water, darker still than the soak.
+    color *= 1.0 - 0.3 * rim;
+    if (pool <= 0.0) return color;
+    vec2 slope = rain_ripples(p.xy, t, weather.z, footprint);
+    vec3 wn = normalize(vec3(-slope, 1.0));
+    float nv = clamp(dot(wn, view), 0.0, 1.0);
+    float fresnel = 0.02 + 0.98 * pow(1.0 - nv, 5.0);
+    // A real overcast sky is many times brighter than the ground it lights; the sky colour here is not, so the
+    // reflection is lifted to hold the puddle's contrast.
+    fresnel = min(fresnel * 2.5, 0.75);
+    vec3 r = reflect(-view, wn);
+    vec3 seen = weather_sky(normalize(vec3(r.xy, max(r.z, 0.02))), horizon, sky);
+    // What lies under it: the ground, darker and richer as the water deepens over it.
+    vec3 under = color * mix(0.55, 0.2, cover.y);
+    float mirror = mix(0.4, 1.0, cover.y);
+    vec3 glint = sun * (pow(max(dot(r, to_light), 0.0), 600.0) * 30.0 + pow(max(dot(r, to_light), 0.0), 40.0) * 0.4);
+    vec3 water = under * (1.0 - fresnel * mirror) + (seen * 0.9 + glint) * fresnel * mirror +
+                 seen * length(slope) * 2.5;
+    return mix(color, water, pool);
 }

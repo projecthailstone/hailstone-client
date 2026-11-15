@@ -54,7 +54,7 @@ ObjectRenderer::ObjectRenderer(VkContext& vk, const std::filesystem::path& shade
 
     for (std::size_t i = 0; i < instances_.size(); ++i) {
         VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-        bi.size = sizeof(glm::mat4) * kMaxInstances;
+        bi.size = sizeof(glm::mat4) * kMaxInstances * 2;
         bi.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         VmaAllocationCreateInfo ai{};
         ai.usage = VMA_MEMORY_USAGE_AUTO;
@@ -306,8 +306,23 @@ void ObjectRenderer::prepare(const FrameInfo& frame, std::span<const Instance> i
     rebuild_descriptors(frame.frame_slot);
     auto* mats = static_cast<glm::mat4*>(instances_mapped_[frame.frame_slot]);
     std::size_t count = std::min<std::size_t>(instances.size(), kMaxInstances);
+    // The temporal upscaler's motion: a new frame makes this frame's transforms the last frame's.
+    const bool motion = vk_.scene_motion();
+    if (motion && frame_transforms_ != vk_.frames_begun()) {
+        frame_transforms_ = vk_.frames_begun();
+        std::swap(transforms_now_, transforms_before_);
+        transforms_now_.clear();
+    }
     for (std::size_t i = 0; i < count; ++i) {
         mats[i] = instances[i].transform;
+        if (motion) {
+            glm::mat4 before = instances[i].transform;
+            if (const std::uint64_t key = instances[i].motion_key) {
+                if (auto it = transforms_before_.find(key); it != transforms_before_.end()) before = it->second;
+                transforms_now_[key] = instances[i].transform;
+            }
+            mats[kMaxInstances + i] = before;
+        }
         int m = instances[i].model;
         if (m < 0 || static_cast<std::size_t>(m) >= models_.size()) continue;
         const GpuModel& g = models_[static_cast<std::size_t>(m)];
@@ -316,7 +331,12 @@ void ObjectRenderer::prepare(const FrameInfo& frame, std::span<const Instance> i
                              instances[i].transform});
     }
     // VMA may place the buffer in host-visible memory that is not coherent; a no-op where it is.
-    if (count) vmaFlushAllocation(vk_.allocator(), instances_[frame.frame_slot].allocation, 0, sizeof(glm::mat4) * count);
+    if (count) {
+        vmaFlushAllocation(vk_.allocator(), instances_[frame.frame_slot].allocation, 0, sizeof(glm::mat4) * count);
+        if (motion)
+            vmaFlushAllocation(vk_.allocator(), instances_[frame.frame_slot].allocation,
+                               sizeof(glm::mat4) * kMaxInstances, sizeof(glm::mat4) * count);
+    }
 }
 
 void ObjectRenderer::draw_prepared(const FrameInfo& frame, const glm::mat4& view_proj, const glm::vec3& camera_pos,
@@ -500,11 +520,7 @@ void ObjectRenderer::create_pipelines(const std::filesystem::path& shader_dir) {
     VkPipelineDynamicStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
     ds.dynamicStateCount = 4;
     ds.pDynamicStates = dyn;
-    VkFormat color_format = vk_.scene_format();
-    VkPipelineRenderingCreateInfo ri{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    ri.colorAttachmentCount = 1;
-    ri.pColorAttachmentFormats = &color_format;
-    ri.depthAttachmentFormat = vk_.depth_format();
+    VkPipelineRenderingCreateInfo ri = vk_.scene_rendering();
 
     // Multisampled, the opaque pass turns the alpha test into coverage: alpha-to-coverage, and the fragment
     // shader's constant_id 0 makes its alpha the coverage (shaders/zone.frag, actor.frag, object.frag).
@@ -540,9 +556,10 @@ void ObjectRenderer::create_pipelines(const std::filesystem::path& shader_dir) {
             ba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
             ba.alphaBlendOp = VK_BLEND_OP_ADD;
         }
-        VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-        cb.attachmentCount = 1;
-        cb.pAttachments = &ba;
+        // The opaque pass draws the objects' own motion (a door swinging); the blended and additive ones the
+        // reactive mask.
+        const SceneBlends blends = vk_.scene_blends(ba, pass == 0 ? SceneOutput::Motion : SceneOutput::Reactive);
+        const VkPipelineColorBlendStateCreateInfo cb = blends.info();
         VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
         info.pNext = &ri;
         info.stageCount = 2;

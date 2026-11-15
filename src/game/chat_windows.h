@@ -79,10 +79,13 @@ inline constexpr std::uint32_t kStrDefaultChannelSet = 3138, kStrDefaultChannelN
 // Abbreviated 15035 and Number Only 15036 (Miss Only 15037 for the miss categories), then ALL (13205) over all
 // eight modes. Picking a category's mode says "%s %s" (the category, the mode; dsp_chat colour 0x111); ALL says
 // eqstr 6044..6046 in the window (colour 10).
+// Hailstone adds four spell categories before ALL; their settings are separate SpellHitMode0..3 keys.
 inline constexpr std::uint32_t kStrHitModes = 15038;
 std::uint32_t hit_category_eqstr(int category);
 std::uint32_t hit_mode_eqstr(int category, int mode); // category 6: ALL's submenu
 std::uint32_t hit_mode_all_eqstr(int mode);
+// Hailstone's spell hit modes, in SpellHitReport order. These have no RoF2 menu/string-table entries.
+std::string_view spell_hit_category_name(int category);
 
 // The rest of the chat window's menu (InitContextMenu's last part): Window 6643, Scrollbar 6047, New Chat Window
 // 6644, Rename Window 3140 (CTextEntryWnd with eqstr 3141, 15 characters), Always Chat Here 15009 (eqstr 15010 /

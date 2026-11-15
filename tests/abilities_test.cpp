@@ -233,6 +233,111 @@ TEST_CASE("CanIHit: range and facing with the original's messages") {
     CHECK(bearing(0, 0, 0, 10) == doctest::Approx(127.875).epsilon(0.001));
 }
 
+TEST_CASE("UseSkill: large player races use shieldless Bash through their innate Slam") {
+    for (std::uint32_t race : {2u, 9u, 10u, 90u, 92u, 93u}) {
+        Fixture f;
+        f.sheet.race = race;
+        f.sheet.skills[skill::kBash] = 5;
+        SkillContext c = f.context(1000000);
+        c.form_slam = slam_innate(f.sheet.race);
+        c.target = Fixture::rat(10.0f);
+        SkillState st;
+        SkillResult r = use_skill(c, st, skill::kBash);
+        REQUIRE(r.messages.empty()); // No shield error.
+        REQUIRE(r.sends.size() == 1);
+        CHECK(r.sends[0].kind == SkillSend::Kind::CombatAbility);
+        CHECK(r.sends[0].skill == skill::kBash); // Slam sends the Bash attack.
+        CHECK_FALSE(st.timers.is_available(skill::kSlam));
+        CHECK_FALSE(st.timers.is_available(skill::kBash));
+        CHECK(can_use_combat_skill(c, skill::kBash));
+        const auto native = usable_skills(f.ch, true);
+        CHECK(std::find(native.begin(), native.end(), skill::kSlam) != native.end());
+        const auto non_combat = usable_skills(f.ch, false);
+        CHECK(std::find(non_combat.begin(), non_combat.end(), skill::kSlam) == non_combat.end());
+    }
+}
+
+TEST_CASE("UseSkill: racial Slam works even without a trained Bash skill") {
+    Fixture f;
+    f.sheet.race = 2;
+    f.sheet.class_id = 8; // Barbarian Bard: Slam is racial, not class-trained.
+    SkillContext c = f.context(1000000);
+    c.form_slam = slam_innate(f.sheet.race);
+    c.target = Fixture::rat(10.0f);
+    SkillState st;
+    const SkillResult r = use_skill(c, st, skill::kSlam);
+    REQUIRE(r.messages.empty());
+    REQUIRE(r.sends.size() == 1);
+    CHECK(r.sends[0].kind == SkillSend::Kind::CombatAbility);
+    CHECK(r.sends[0].skill == skill::kBash);
+    CHECK_FALSE(st.timers.is_available(skill::kBash));
+    const auto skills = usable_skills(f.ch, true);
+    CHECK(std::find(skills.begin(), skills.end(), skill::kSlam) != skills.end());
+}
+
+TEST_CASE("UseSkill: Barbarian illusion grants shieldless Bash and Slam to a Dark Elf Bard") {
+    Fixture f;
+    f.sheet.race = 6; // Profile is Dark Elf; the local spawn is now Barbarian (2).
+    f.sheet.class_id = 8;
+    SkillContext c = f.context(1000000);
+    c.form_slam = slam_innate(2);
+    c.target = Fixture::rat(10.0f);
+    SkillState st;
+    const SkillResult bash = use_skill(c, st, skill::kBash);
+    REQUIRE(bash.messages.empty());
+    REQUIRE(bash.sends.size() == 1);
+    CHECK(bash.sends[0].kind == SkillSend::Kind::CombatAbility);
+    CHECK(bash.sends[0].skill == skill::kBash);
+    CHECK(can_use_combat_skill(c, skill::kBash));
+    const auto skills = usable_skills(f.ch, true, 2);
+    CHECK(std::find(skills.begin(), skills.end(), skill::kSlam) != skills.end());
+    const auto original = usable_skills(f.ch, true);
+    CHECK(std::find(original.begin(), original.end(), skill::kSlam) == original.end());
+
+    SkillState slam_state;
+    const SkillResult slam = use_skill(c, slam_state, skill::kSlam);
+    REQUIRE(slam.messages.empty());
+    REQUIRE(slam.sends.size() == 1);
+    CHECK(slam.sends[0].skill == skill::kBash);
+    CHECK_FALSE(slam_state.timers.is_available(skill::kBash));
+}
+
+TEST_CASE("UseSkill: each large-race illusion exposes Slam regardless of base race") {
+    Fixture f;
+    f.sheet.race = 6; // Dark Elf without innate Slam.
+    for (std::uint32_t race : {2u, 9u, 10u, 90u, 92u, 93u}) {
+        SkillContext c = f.context(1000000);
+        c.form_slam = slam_innate(race);
+        c.target = Fixture::rat(10.0f);
+        SkillState state;
+        const SkillResult r = use_skill(c, state, skill::kBash);
+        REQUIRE(r.messages.empty());
+        REQUIRE(r.sends.size() == 1);
+        CHECK(r.sends[0].skill == skill::kBash);
+        const auto skills = usable_skills(f.ch, true, race);
+        CHECK(std::find(skills.begin(), skills.end(), skill::kSlam) != skills.end());
+    }
+}
+
+TEST_CASE("UseSkill: an illusion into a small race removes innate Slam until it ends") {
+    Fixture f;
+    f.sheet.race = 2; // Native Barbarian disguised as Dark Elf (6).
+    f.sheet.skills[skill::kBash] = 5;
+    SkillContext c = f.context(1000000);
+    c.form_slam = slam_innate(6);
+    c.target = Fixture::rat(10.0f);
+    SkillState st;
+    const SkillResult bash = use_skill(c, st, skill::kBash);
+    REQUIRE(bash.messages.size() == 1);
+    CHECK(bash.messages[0].eqstr == 12394); // Requires a shield in the current form.
+    CHECK(bash.sends.empty());
+    CHECK_FALSE(can_use_combat_skill(c, skill::kBash));
+    const auto disguised = usable_skills(f.ch, true, 6);
+    CHECK(std::find(disguised.begin(), disguised.end(), skill::kSlam) == disguised.end());
+    const auto original = usable_skills(f.ch, true, 2);
+    CHECK(std::find(original.begin(), original.end(), skill::kSlam) != original.end());
+}
+
 TEST_CASE("UseSkill: bash needs a shield, taunt needs an NPC in melee range") {
     Fixture f;
     f.sheet.skills[skill::kBash] = 5;
@@ -385,7 +490,7 @@ TEST_CASE("key map: the original's defaults, names and ini round trip") {
     // the welcome screen's key has none.
     for (KeyCommand c : {KeyCommand::CMD_TOGGLE_CLAIM_WIN, KeyCommand::CMD_VOTE_RESULTS, KeyCommand::CMD_HISTORIC_ALERTS,
                          KeyCommand::CMD_SOCIAL_SHARE, KeyCommand::CMD_MARKETPLACE_GOLD,
-                         KeyCommand::CMD_REAL_ESTATE_LEAVE, KeyCommand::TOGGLE_FELLOWSHIPWIN,
+                         KeyCommand::CMD_REAL_ESTATE_LEAVE,
                          KeyCommand::CMD_TOGGLE_TICKET_WND, KeyCommand::CMD_WELCOMESCREEN}) {
         int i = static_cast<int>(c);
         CHECK(key_command_dropped(i));
@@ -394,6 +499,8 @@ TEST_CASE("key map: the original's defaults, names and ini round trip") {
     }
     // The Marketplace window's key stays (no default key in the original): the window speaks the original's opcodes.
     CHECK_FALSE(key_command_dropped(static_cast<int>(KeyCommand::CMD_MARKETPLACE)));
+    CHECK_FALSE(key_command_dropped(static_cast<int>(KeyCommand::TOGGLE_FELLOWSHIPWIN)));
+    CHECK(std::find(listed_commands().begin(), listed_commands().end(), static_cast<int>(KeyCommand::TOGGLE_FELLOWSHIPWIN)) != listed_commands().end());
     CHECK_FALSE(km.binding(static_cast<int>(KeyCommand::CMD_MARKETPLACE), 0).bound());
     CHECK_FALSE(key_command_dropped(static_cast<int>(KeyCommand::CMD_MERCENARIES)));
     CHECK_FALSE(key_command_dropped(static_cast<int>(KeyCommand::CMD_ACHIEVEMENT_WINDOW)));

@@ -19,6 +19,7 @@ layout(location = 1) in vec3 v_world;
 layout(location = 4) in vec3 v_normal;
 
 layout(location = 0) out vec4 out_color;
+layout(location = 2) out float o_reactive; // the temporal upscaler's reactive mask (render/vk_context.h SceneOutput)
 
 void main() {
     float len = length(v_normal);
@@ -27,4 +28,5 @@ void main() {
     float rim = 1.0 - abs(dot(n, to_eye));
     float a = pc.fog_color.a * (0.35 + 0.65 * rim * rim);
     out_color = vec4(pc.fog_color.rgb * a, a); // premultiplied
+    o_reactive = clamp(a, 0.0, 1.0) * 0.9;
 }

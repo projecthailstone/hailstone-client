@@ -513,11 +513,7 @@ void ParticleRenderer::create_pipelines(const std::filesystem::path& shader_dir)
     VkPipelineDynamicStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
     ds.dynamicStateCount = 2;
     ds.pDynamicStates = dyn;
-    VkFormat color_format = vk_.scene_format();
-    VkPipelineRenderingCreateInfo ri{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    ri.colorAttachmentCount = 1;
-    ri.pColorAttachmentFormats = &color_format;
-    ri.depthAttachmentFormat = vk_.depth_format();
+    VkPipelineRenderingCreateInfo ri = vk_.scene_rendering();
     // Variants 0..1 classic (1 additive); 2 the modern stream: premultiplied (an additive particle gives alpha 0).
     // None writes depth.
     for (int variant = 0; variant < 3; ++variant) {
@@ -535,9 +531,8 @@ void ParticleRenderer::create_pipelines(const std::filesystem::path& shader_dir)
         ba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
         ba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
         ba.alphaBlendOp = VK_BLEND_OP_ADD;
-        VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-        cb.attachmentCount = 1;
-        cb.pAttachments = &ba;
+        const SceneBlends blends = vk_.scene_blends(ba, SceneOutput::Reactive);
+        const VkPipelineColorBlendStateCreateInfo cb = blends.info();
         VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
         info.pNext = &ri;
         info.stageCount = 2;

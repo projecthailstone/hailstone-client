@@ -10,7 +10,7 @@
 
 layout(push_constant) uniform Push {
     mat4 view_proj;
-    vec4 time; // x seconds
+    vec4 time; // x seconds, y the last frame's (the motion's)
 } pc;
 
 // render/scene_lighting.h SceneLighting.
@@ -36,6 +36,11 @@ layout(location = 2) out vec3 v_world;
 layout(location = 3) flat out vec3 v_tint;
 layout(location = 4) flat out uint v_texture;
 layout(location = 5) out float v_root; // 0 at the foot, 1 at the top
+layout(location = 6) out vec4 v_now;   // the motion (shaders/motion.glsl): this frame's place, unjittered
+layout(location = 7) out vec4 v_then;  // and the last frame's
+
+#define MOTION_SET 1
+#include "motion.glsl"
 
 void main() {
     const vec2 corners[6] = vec2[6](vec2(-1, 0), vec2(1, 0), vec2(1, 1), vec2(-1, 0), vec2(1, 1), vec2(-1, 1));
@@ -47,6 +52,7 @@ void main() {
     vec3 across = vec3(cos(turn), sin(turn), 0.0);
     vec3 foot = i_position_turn.xyz;
     vec3 p = foot + across * (c.x * i_size.x * 0.5) + vec3(0.0, 0.0, c.y * i_size.y);
+    vec3 sway_then = vec3(0.0); // the sway a frame ago less now's, for the motion
     if (c.y > 0.5) {
         if (i_size.w > 0.0) {
             // The sway: the top moves along the plant's own line, its phase from where it stands.
@@ -54,6 +60,8 @@ void main() {
             float s = sin(6.2831853 * pc.time.x / i_size.w + phase);
             vec3 way = vec3(cos(i_position_turn.w + 0.7), sin(i_position_turn.w + 0.7), 0.0);
             p += way * (s * i_size.z * i_size.y);
+            float before = sin(6.2831853 * pc.time.y / i_size.w + phase);
+            sway_then = way * ((before - s) * i_size.z * i_size.y);
         }
         // Bent away from a pusher's foot, down and out, the more the nearer it stands.
         int n = int(frame.params.x + 0.5);
@@ -90,4 +98,8 @@ void main() {
         v_light = frame.classic.rgb;
     }
     gl_Position = pc.view_proj * vec4(p, 1.0);
+    if (temporal.info.x > 0.0)
+        motion_clips(p, p + sway_then, v_now, v_then);
+    else
+        v_now = v_then = vec4(0.0, 0.0, 0.0, 1.0);
 }

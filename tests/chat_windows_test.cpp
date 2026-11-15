@@ -75,7 +75,10 @@ void write_strings(const fs::path& game) {
                                           << "3135 will go to this window.\n3136 will go to the main window.\n"
                                           << "3138  is now the default channel for this window.\n"
                                           << "6041 All melee channels will now filter to this window.\n"
-                                          << "15014 Your Hits\n15026 My Death\n15034 Normal\n15035 Abbreviated\n"
+                                          << "15014 Your Hits\n15015 Your Misses\n15016 You Being Hit\n"
+                                          << "15017 You Being Missed\n15018 Others' Hits\n15019 Others' Misses\n"
+                                          << "15026 My Death\n15034 Normal\n15035 Abbreviated\n"
+                                          << "15036 Number Only\n15037 Miss Only\n15038 Hit Modes\n"
                                           << "13205 ALL\n6300 Bad Word\n6306 Guild Chat\n6301 PC Spells\n";
 }
 
@@ -262,6 +265,210 @@ TEST_CASE("Chat windows: lines go to the window of their colour's channel (Chann
     }
     ImGui::DestroyContext(ctx);
     fs::remove_all(dir);
+}
+
+TEST_CASE("Chat hit modes: spell categories persist independently, ALL keeps index 7 and menus put it last") {
+    ImGuiContext* ctx = ImGui::CreateContext();
+    test::ScratchDir scratch("chat_spell_hit_modes");
+    const auto dir = scratch.path();
+    fs::create_directories(dir / "game");
+    write_strings(dir / "game");
+    GameDir game(dir / "game");
+    const auto layout = dir / "UI_Test_Server.ini";
+    std::ofstream(layout) << "[ChatManager]\nHitMode0=1\nHitMode6=2\nHitMode7=1\n";
+    const game::SpellHitModes expected{1, 2, 0, 1};
+    for (int session = 0; session < 2; ++session) {
+        net::GameConnection conn(game);
+        ui::ChatView view;
+        app::EqHost host;
+        host.in_game = host.ui_ready = true;
+        host.game = &game;
+        host.conn = &conn;
+        host.chat = &view;
+        app::EqApi api(host);
+        api.load_layout(dir / "defaults.ini", layout, {});
+        Lua lua(api);
+        REQUIRE(lua.run("return #eq.ChatHitModes()") == "11");
+        CHECK(lua.run("return eq.ChatHitModes()[7].id .. ':' .. eq.ChatHitModes()[7].name") == "7:ALL");
+        CHECK(lua.run("return eq.ChatHitModes()[8].name") == "Direct Spell Damage");
+        CHECK(lua.run("return eq.ChatHitModes()[9].name") == "Damage Over Time");
+        CHECK(lua.run("return eq.ChatHitModes()[10].name") == "Healing");
+        CHECK(lua.run("return eq.ChatHitModes()[11].name") == "Healing Over Time");
+        CHECK(lua.run("return table.concat(eq.ChatHitModes()[8].modes, '|')") == "Normal|Abbreviated|Number Only");
+        CHECK(lua.run("return eq.ChatHitModes()[2].modes[3]") == "Miss Only");
+        if (session == 0) {
+            // Older layouts' unused native modes 6/7 are not spell settings.
+            CHECK(conn.hit_modes()[0] == 1);
+            CHECK(conn.spell_hit_modes() == game::SpellHitModes{});
+            for (std::size_t i = 0; i < expected.size(); ++i)
+                lua.run(std::format("eq.ChatSetHitMode({}, {})", i + 8, expected[i]));
+            CHECK(conn.hit_modes()[0] == 1);
+            CHECK(conn.spell_hit_modes() == expected);
+            CHECK(app::chat_ui_ini()->get("ChatManager", "HitMode6") == "2");
+            CHECK(app::chat_ui_ini()->get("ChatManager", "HitMode7") == "1");
+
+            // Native/shared context menus have the same four categories and working checkmarks/actions.
+            lua.run("eq.ChatMenu(1)");
+            REQUIRE(host.menus.size() == 1);
+            auto hit = std::find_if(host.menus[0].rows.begin(), host.menus[0].rows.end(),
+                                    [](const auto& row) { return row.text == "Hit Modes"; });
+            REQUIRE(hit != host.menus[0].rows.end());
+            REQUIRE(hit->submenu);
+            auto rows = hit->submenu();
+            REQUIRE(rows.size() == 11);
+            CHECK(rows.back().text == "ALL");
+            for (std::size_t i = 0; i < expected.size(); ++i) {
+                CAPTURE(i);
+                CHECK(rows[i + 6].text == game::spell_hit_category_name(static_cast<int>(i)));
+                REQUIRE(rows[i + 6].submenu);
+                auto choices = rows[i + 6].submenu();
+                REQUIRE(choices.size() == 3);
+                CHECK(choices[static_cast<std::size_t>(expected[i])].check);
+                choices[2].act();
+                CHECK(conn.spell_hit_modes()[i] == 2);
+            }
+
+            // Existing scripts' ALL index also sets every spell category.
+            lua.run("eq.ChatSetHitMode(7, 2)");
+            CHECK(conn.hit_modes() == game::HitModes{2, 2, 2, 2, 2, 2});
+            CHECK(conn.spell_hit_modes() == game::SpellHitModes{2, 2, 2, 2});
+            CHECK(lua.run("return eq.ChatHitModes()[7].mode") == "2");
+            for (std::size_t i = 0; i < expected.size(); ++i)
+                lua.run(std::format("eq.ChatSetHitMode({}, {})", i + 8, expected[i]));
+            CHECK(lua.run("return eq.ChatHitModes()[7].mode") == "-1");
+            lua.run("eq.ChatSetHitMode(0, 0); eq.ChatSetHitMode(-1, 0); eq.ChatSetHitMode(12, 0); "
+                    "eq.ChatSetHitMode(math.mininteger, 0); eq.ChatSetHitMode(math.maxinteger, 0); "
+                    "eq.ChatSetHitMode(8, -1); eq.ChatSetHitMode(11, 3)");
+            CHECK(conn.spell_hit_modes() == expected);
+            CHECK(conn.hit_modes() == game::HitModes{2, 2, 2, 2, 2, 2});
+            api.save_layout();
+            for (std::size_t i = 0; i < expected.size(); ++i)
+                CHECK(app::chat_ui_ini()->get("ChatManager", std::format("SpellHitMode{}", i)) ==
+                      std::to_string(expected[i]));
+        } else {
+            CHECK(conn.spell_hit_modes() == expected);
+            for (std::size_t i = 0; i < expected.size(); ++i)
+                CHECK(lua.run(std::format("return eq.ChatHitModes()[{}].mode", i + 8)) == std::to_string(expected[i]));
+            // Changing character/layout resets absent or invalid spell modes to Normal.
+            const auto other = dir / "UI_Other_Server.ini";
+            std::ofstream(other) << "[ChatManager]\nSpellHitMode0=-1\nSpellHitMode1=3\nSpellHitMode2=bad\n";
+            api.load_layout(dir / "defaults.ini", other, {});
+            CHECK(conn.spell_hit_modes() == game::SpellHitModes{});
+            CHECK(conn.hit_modes() == game::HitModes{});
+        }
+    }
+    ImGui::DestroyContext(ctx);
+}
+
+TEST_CASE("Chat hit mode UI: modern and gamepad controls use stable spell indices and put ALL last") {
+    const auto root = fs::path(__FILE__).parent_path().parent_path();
+    const char* fixture = R"lua(
+calls = {}
+local modes = {}
+for i = 1, 11 do
+  modes[i] = {id=i, name='Category ' .. i, mode=0, modes={'Normal', 'Abbreviated', 'Number Only'}}
+end
+modes[7].name, modes[7].mode = 'ALL', -1
+modes[11].name, modes[11].mode = 'Healing Over Time', 1
+eq = {
+  ChatFilters=function() return {{id=0, menu=0, group='Filters', name='Say', on=true}} end,
+  ChatFilterGroups=function() return {} end,
+  ChatHitModes=function() return modes end,
+  ChatSetHitMode=function(id, mode) calls[#calls+1] = {id, mode} end,
+  Option=function() return nil end,
+  OptionChoices=function() return {} end,
+  ComboInfo=function() return nil end,
+}
+)lua";
+    for (bool gamepad : {false, true}) {
+        CAPTURE(gamepad);
+        const auto file = root / (gamepad ? "ui/gamepad/options.lua" : "ui/modern/chat.lua");
+        std::ifstream input(file);
+        REQUIRE(input.good());
+        std::string source(std::istreambuf_iterator<char>{input}, {});
+        lua_State* state = luaL_newstate();
+        REQUIRE(state);
+        struct CloseLua { lua_State* state; ~CloseLua() { lua_close(state); } } close{state};
+        luaL_openlibs(state);
+        REQUIRE(luaL_dostring(state, fixture) == LUA_OK);
+        std::string setup;
+        std::string checks;
+        if (gamepad) {
+            setup = R"lua(
+ui = {window=function() end}
+local theme = {C={}, palettes={list={{id='test', name='Test'}}}, palette='test'}
+dofile = function(name) return name == 'lib/theme.lua' and theme or {} end
+)lua";
+            checks = R"lua(
+local rows = PAGES[4][2]()
+assert(rows[#rows][1] == 'Hit mode: ALL')
+local hot
+for _, row in ipairs(rows) do if row[1] == 'Hit mode: Healing Over Time' then hot = row end end
+assert(hot and hot[2] == 'Abbreviated')
+hot[3](1)
+rows[#rows][3](-1)
+assert(#calls == 2 and calls[1][1] == 11 and calls[1][2] == 2)
+assert(calls[2][1] == 7 and calls[2][2] == 2)
+)lua";
+        } else {
+            const auto start = source.find("local function filtersMenu(slot)");
+            REQUIRE(start != std::string::npos);
+            const auto end = source.find("\n-- ---------------------------------------------------------------- drawing", start);
+            REQUIRE(end != std::string::npos);
+            source = source.substr(start, end - start);
+            setup = R"lua(
+order = {}
+local depth = 0
+local filtersOpen = false
+local hitMenus = 0
+eq.ChatInfo = function() return 0, 0, 'Say', false, false end
+eq.ChatTellWindows = function() return false end
+ui = {
+  BeginPopup=function(name) return name == 'chatmenu' end,
+  EndPopup=function() assert(depth == 0) end,
+  BeginMenu=function(name)
+    if name == 'Filters' then
+      assert(depth == 0)
+      if not filtersOpen then return false end
+    elseif name == 'Hit Modes' then
+      assert(depth == 0, 'Hit Modes must be beside Filters')
+      hitMenus = hitMenus + 1
+    elseif not name:match('##hit%d+$') then
+      return false
+    end
+    local id = name:match('##hit(%d+)$')
+    if id then order[#order+1] = tonumber(id) end
+    depth = depth + 1
+    return true
+  end,
+  EndMenu=function() depth = depth - 1; assert(depth >= 0) end,
+  Separator=function() end,
+  MenuItem=function(name) return name == 'Number Only##hitmode113' end,
+  GetSetting=function() return '0' end,
+  TextDisabled=function() end,
+}
+)lua";
+            checks = R"lua(
+for scenario = 1, 3 do
+  order, calls, hitMenus = {}, {}, 0
+  filtersOpen = scenario == 3
+  eq.ChatFilters = function()
+    if scenario == 1 then return {} end
+    return {{id=0, menu=0, group='Filters', name='Say', on=true}}
+  end
+  menu(1, {}, {main=true, tab=1, tabs={{title='Main'}}})
+  assert(hitMenus == 1 and depth == 0)
+  assert(#order == 11 and order[#order] == 7)
+  assert(order[7] == 8 and order[10] == 11)
+  assert(#calls == 1 and calls[1][1] == 11 and calls[1][2] == 2)
+end
+)lua";
+        }
+        const auto code = setup + source + checks;
+        const int result = luaL_dostring(state, code.c_str());
+        INFO((result == LUA_OK ? "" : lua_tostring(state, -1)));
+        CHECK(result == LUA_OK);
+    }
 }
 
 TEST_CASE("Chat windows: each window keeps its own last 1000 lines; a busy one does not push out a quiet one's") {

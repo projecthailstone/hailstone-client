@@ -59,8 +59,17 @@ layout(location = 6) in vec3 v_normal;
 layout(location = 7) in float v_fog; // oFog (zone.vert)
 layout(location = 8) in vec3 v_point;
 layout(location = 9) in vec3 v_rest; // the plants at rest, as the lights' shadow cubes hold them (point_shadow)
+layout(location = 10) flat in float v_lod_distance; // zone.vert: a level of detail's fades
+
+layout(location = 11) in vec4 v_now;
+layout(location = 12) in vec4 v_then;
 
 layout(location = 0) out vec4 o_color;
+layout(location = 1) out vec2 o_motion;   // the opaque pass's (render/vk_context.h SceneOutput)
+layout(location = 2) out float o_reactive; // the blended and additive passes' (water, glass, glows)
+
+#define MOTION_SET 2
+#include "motion.glsl"
 
 const uint kUnlit = 1u;
 const uint kNoFog = 2u;
@@ -73,6 +82,9 @@ const uint kReflective = 256u; // the sky reflected: extra.z strength
 const uint kMolten = 512u;     // RegionLava whose texture's name says lava or magma: drawn as lava (modern)
 const uint kEnergy = 1024u;    // RegionLavaH (harbingers' towers): drawn as lava (modern)
 const uint kEnvMap = 2048u;    // water: slot 2 is its own environment, an octahedral map (a "noswap" cube)
+const uint kFlagLodFade = 4096u; // a level of detail: extra3 its band (coverage.glsl lod_fade_samples)
+const uint kTintNeighbour = 32768u; // render/zone_renderer.h set_debug_tint: a neighbour's own geometry
+const uint kTintLand = 65536u;      // its own ground in its part of the land
 
 vec4 tex(uint i, vec2 uv) { return texture(textures[nonuniformEXT(i)], uv); }
 
@@ -491,14 +503,26 @@ vec3 modern_lava(vec3 texel, float molten, vec2 p) {
 }
 
 // The weather on the ground (shaders/weather.glsl): snow on the level surfaces, the rain's soak, and water standing
-// in the low spots.
-vec3 weathered(vec3 color, vec3 n) {
-    float footprint = length(fwidth(v_world));
+// in the low spots. A cut-out surface (`cutout`: leaves, fronds, grates) has no surface for water to stand on, and its
+// normals are a crown's or a card's, mostly facing up: no puddles or snow and a lighter soak, or a generated tree's
+// crown takes the sky's colour or turns white.
+vec3 weathered(vec3 color, vec3 n, bool cutout) {
+    vec3 dpx = dFdx(v_world), dpy = dFdy(v_world);
+    float footprint = length(abs(dpx) + abs(dpy));
     float open = sky_open(shadow_map, scene.cover, scene.cover_params, scene.shadow_params.y, v_world + n * 0.5);
     if (open <= 0.0) return color;
     vec3 horizon = scene.haze.z > 0.5 ? scene.haze_color.rgb : to_linear(scene.fog_color.rgb);
-    return weather_surface(color, lit(vec3(0.88, 0.9, 0.94)), v_world, n, normalize(scene.camera_pos.xyz - v_world),
-                           scene.weather, open, horizon, scene.sky.rgb, scene.time.x, footprint, true, 1.0);
+    vec3 view = normalize(scene.camera_pos.xyz - v_world);
+    vec4 weather = scene.weather;
+    if (cutout) weather.y = 0.0;
+    color = weather_surface(color, lit(vec3(0.88, 0.9, 0.94)), v_world, n, view, weather, open, horizon, scene.sky.rgb,
+                            cutout ? 0.3 : 1.0);
+    if (cutout || weather.w <= 0.0) return color;
+    vec3 face = cross(dpx, dpy);
+    float face_len = length(face);
+    face = face_len > 1e-12 ? face / face_len : n;
+    return puddle_surface(color, v_world, n, face, view, weather, open, horizon, scene.sky.rgb, scene.time.x,
+                          footprint, scene.to_light.xyz, scene.light.rgb * g_shadow);
 }
 
 vec3 mapped_normal(vec3 n, uint slot) {
@@ -536,10 +560,19 @@ vec3 surface_shine(vec3 n, uint flags) {
 }
 
 void main() {
-    // The isometric camera's cut (game/iso_occlusion.h).
+    // The isometric camera's cut (game/iso_occlusion.h). The depth pre-pass (zone_depth.frag) must discard every pixel
+    // this shader discards, here and at the alpha test below: the colour pass over it tests depth equal and writes
+    // none (tests/depth_prepass_test.cpp checks the two call the same discard helpers).
     if (reveal_discard(v_world, gl_FragCoord.xy, scene.reveal_origin, scene.reveal_axis, scene.reveal_shape,
                        scene.reveal_roof))
         discard;
+    // A level of detail in its fade into the next (render/lod_bands.h): each sample shows one of the two. The mask is
+    // written on every path (an unwritten one is undefined), and zone_depth.frag writes the same.
+    int lod_samples = lod_fade_samples((pc.tex2.z & kFlagLodFade) != 0u, v_lod_distance, pc.extra3, gl_FragCoord.xy);
+    if (lod_samples == 0) discard;
+    gl_SampleMask[0] = lod_samples;
+    // A neighbour's part of the land: this draw's ground or the other's (coverage.glsl land_blend_discard).
+    if (land_blend_discard(pc.tex2.z, v_color2.a, v_world)) discard;
     uint mode = pc.tex2.y;
     uint flags = pc.tex2.z;
     bool unlit = (flags & kUnlit) != 0u;
@@ -688,12 +721,15 @@ void main() {
     if (g_modern && !unlit && mode == 0u && (flags & (kSpecular | kReflective)) != 0u) color += surface_shine(n, flags);
     if (g_modern && !unlit && (flags & (kWaterSurface | kLavaSurface)) == 0u && mode != 2u && mode != 3u &&
         (scene.weather.x > 0.0 || scene.weather.y > 0.0 || scene.weather.w > 0.0))
-        color = weathered(color, n);
+        color = weathered(color, n, pc.params.x > 0.0);
     // Alpha test, GREATEREQUAL against the reference (0 = off), or coverage when multisampled.
     float out_alpha;
     if (!alpha_test(alpha, pc.params.x, pc.params.y, out_alpha)) discard;
     // The modern water over the copies is the whole result (it blends the floor itself).
     if (g_modern && (flags & kWaterCopies) != 0u) out_alpha = 1.0;
+    // The neighbour zones' debugging view: what comes from where.
+    if ((flags & kTintNeighbour) != 0u) color = mix(color, vec3(dot(color, vec3(0.3, 0.6, 0.1))) * vec3(1.6, 0.2, 1.4), 0.75);
+    if ((flags & kTintLand) != 0u) color = mix(color, vec3(dot(color, vec3(0.3, 0.6, 0.1))) * vec3(0.2, 1.6, 0.3), 0.6);
     if (g_modern) {
         if ((flags & kNoFog) == 0u)
             color = apply_haze(color, v_world, scene.camera, scene.haze, scene.haze_color, scene.to_light, scene.light);
@@ -704,4 +740,9 @@ void main() {
         color = to_linear(color);
     }
     o_color = vec4(color, out_alpha);
+    o_motion = motion_uv(v_now, v_then);
+    // Water is drawn blended but covers what is under it: a full reactive value would leave its waves without any
+    // history (shimmering); it takes a little.
+    bool watery = mode == 5u || (flags & kWaterSurface) != 0u;
+    o_reactive = reactive_of(o_color) * (watery ? 0.35 : 1.0);
 }

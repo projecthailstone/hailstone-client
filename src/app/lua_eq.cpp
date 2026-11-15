@@ -666,8 +666,8 @@ int HasSlot(lua_State* L) {
 }
 
 // list = eq.AltCurrencies([showMissing])   -- { name, count, icon, maxStack } per alternate currency
-// (OP_AltCurrency; the names' dbstr type is not known: "Currency <n>"); without showMissing only those held and
-// shown. The order and filter are the InventoryWindow's AltCurr_PointList rows (eq.ListClick selects one there).
+// (OP_AltCurrency; the name is dbstr type 0x12 of the currency id, as CInventoryWnd's Alt. Currency list reads it,
+// "Currency <n>" when the game folder has none); without showMissing only those held and shown. The order and filter are the InventoryWindow's AltCurr_PointList rows (eq.ListClick selects one there).
 int AltCurrencies(lua_State* L) {
     auto& h = Impl::of(L).host;
     bool missing = lua_toboolean(L, 1) != 0;
@@ -677,7 +677,9 @@ int AltCurrencies(lua_State* L) {
     for (const auto& [id, a] : h.conn->alt_currencies()) {
         if (!missing && (a.amount == 0 || !a.entry.shown)) continue;
         lua_newtable(L);
-        lua_pushstring(L, ("Currency " + std::to_string(id)).c_str());
+        std::string name = h.conn->strings().db_string(id, 0x12);
+        if (name.empty()) name = "Currency " + std::to_string(id);
+        lua_pushstring(L, name.c_str());
         lua_setfield(L, -2, "name");
         lua_pushinteger(L, a.amount);
         lua_setfield(L, -2, "count");
@@ -1129,24 +1131,33 @@ int GemInfo(lua_State* L) {
     return 1;
 }
 
-// top, r, g, b, a = eq.ButtonCoolDown(name, child, y0, y1)   -- a button's cool-down (CButtonWnd's DrawCooldown
+// top, r, g, b, a, remainingMs, reuseMs = eq.ButtonCoolDown(name, child, y0, y1) -- a button's cool-down (CButtonWnd's DrawCooldown
 // @0x8970a0, the spell gem's rectangle): from y0 + ftol(fraction * (y1 - y0)) down to y1, the button's width, in
-// user colour 0x15f at alpha 0x40; nil while idle
+// user colour 0x15f at alpha 0x40; nil while idle. The window may also supply remaining/reuse milliseconds
+// (combat ability buttons); both are 0 while idle or when the window has no timing detail.
 int ButtonCoolDown(lua_State* L) {
     std::optional<double> cool_down;
+    std::uint64_t left = 0, duration = 0;
     { // the Child gone before the checks below
         StockWindow* w = nullptr;
-        cool_down = Impl::of(L).child(L, w).cool_down;
+        const Child child = Impl::of(L).child(L, w);
+        cool_down = child.cool_down;
+        left = child.cool_down_left;
+        duration = child.cool_down_duration;
     }
     if (!cool_down) {
-        lua_pushnil(L);
-        return 1;
+        for (int i = 0; i < 5; ++i) lua_pushnil(L);
+        lua_pushinteger(L, 0);
+        lua_pushinteger(L, 0);
+        return 7;
     }
     const std::int32_t y0 = number_to_int(luaL_checknumber(L, 3)), y1 = number_to_int(luaL_checknumber(L, 4));
     lua_pushinteger(L, game::spell_gem_overlay_top(*cool_down, y0, y1));
     const std::uint32_t argb = cool_down_color();
     for (int shift : {16, 8, 0, 24}) lua_pushnumber(L, static_cast<double>((argb >> shift) & 0xffu) / 255.0);
-    return 5;
+    lua_pushinteger(L, static_cast<lua_Integer>(left));
+    lua_pushinteger(L, static_cast<lua_Integer>(duration));
+    return 7;
 }
 
 // preview = eq.ItemPreview()   -- the item preview window's state (CObjectPreviewWnd, game/item_preview.h): nil while
@@ -2008,7 +2019,7 @@ int ListInfo(lua_State* L) {
 }
 
 // texts, r, g, b [, texture, u0, v0, u1, v1] = eq.ListRow(name, child, row)   -- row from 0; texts.altRight,
-// texts.comboColumn, texts.iconColumn
+// texts.comboColumn, texts.disabled, texts.iconColumn
 // (from 0) when the icon is not in the first column
 int ListRowFn(lua_State* L) {
     auto& m = Impl::of(L);
@@ -2050,6 +2061,10 @@ int ListRowFn(lua_State* L) {
         lua_pushboolean(L, 1);
         lua_setfield(L, -2, "altRight");
     }
+    if (r.disabled) { // texts.disabled: the window left the line disabled
+        lua_pushboolean(L, 1);
+        lua_setfield(L, -2, "disabled");
+    }
     for (float f : r.color) lua_pushnumber(L, f);
     if (!r.icon) return 4;
     push_cell(L, *r.icon);
@@ -2073,6 +2088,7 @@ int ListClick(lua_State* L) {
         lua_pushboolean(L, 1);
         return 1;
     }
+    if (right) note_click_rect(m.host);
     lua_pushboolean(L, w && w->list_click(m.host, luaL_checkstring(L, 2), static_cast<int>(luaL_checkinteger(L, 3)),
                                           right, column));
     return 1;
@@ -2929,6 +2945,8 @@ void register_luasocial_api(lua_State* L, EqHost& host);  // app/lua_eq_luasocia
 void register_hotbar_api(lua_State* L, EqHost& host);     // app/lua_eq_hotbar.cpp
 void register_web_api(lua_State* L, EqHost& host);        // app/lua_eq_web.cpp
 void register_find_api(lua_State* L, EqHost& host);       // app/lua_eq_find.cpp
+void register_compare_api(lua_State* L, EqHost& host, std::vector<std::unique_ptr<StockWindow>>& windows); // app/lua_eq_compare.cpp
+void register_task_api(lua_State* L, EqHost& host, std::vector<std::unique_ptr<StockWindow>>& windows); // app/lua_eq_progress.cpp
 int CompassStrips(lua_State* L);                     // app/lua_eq_misc.cpp
 int CompassMarkers(lua_State* L);                    // app/lua_eq_misc.cpp
 
@@ -2949,6 +2967,20 @@ void EqApi::register_functions(lua_State* L) {
     register_hotbar_api(L, impl_->host);
     register_web_api(L, impl_->host);
     register_find_api(L, impl_->host);
+    register_compare_api(L, impl_->host, impl_->windows);
+    register_task_api(L, impl_->host, impl_->windows);
+    // Opening a tracker entry changes TaskWnd's selected objective list in this frame. Its next ListInfo/ListRow
+    // read must not retain the previously selected task's cached list.
+    lua_pushlightuserdata(L, impl_.get());
+    lua_getfield(L, -2, "OpenTask");
+    lua_pushcclosure(L, [](lua_State* state) -> int {
+        Impl::of(state).lists_changed();
+        lua_pushvalue(state, lua_upvalueindex(2));
+        lua_insert(state, 1);
+        lua_call(state, lua_gettop(state) - 1, LUA_MULTRET);
+        return lua_gettop(state);
+    }, 2);
+    lua_setfield(L, -2, "OpenTask");
     lua_pushlightuserdata(L, &impl_->host);
     lua_pushcclosure(L, CompassStrips, 1);
     lua_setfield(L, -2, "CompassStrips");

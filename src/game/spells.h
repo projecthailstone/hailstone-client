@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -229,6 +230,25 @@ inline bool is_instant(std::uint32_t cast_ms) { return cast_ms <= 100; }
 // text or the target is unknown.
 std::optional<std::string> spell_hit_message(const EqStrings& strings, const WorldState& world,
                                              const SpellData& spell, std::uint32_t target, std::int32_t damage);
+
+// Hailstone's spell hit modes are display choices, independent of the native melee categories. Callers keep the
+// normal sentence for logging and plugin hooks, then use this metadata only for the text put on screen.
+enum class SpellHitReport : std::uint8_t { DirectDamage, DamageOverTime, Healing, HealingOverTime };
+using SpellHitModes = std::array<std::int32_t, 4>;
+struct SpellHitLine {
+    SpellHitReport kind = SpellHitReport::DirectDamage;
+    std::string abbreviated;
+    std::string amount;
+};
+// Recognised EQEmu formatted-message ids and their typed argument positions, never arbitrary chat text. Unknown
+// messages or missing/malformed arguments return nullopt so their normal text remains intact.
+std::optional<SpellHitLine> spell_message_hit_report(std::uint32_t eqstr, std::span<const std::string> args);
+// OP_Damage's native spell line contains an amount only on the local player. Other landing and zero-damage
+// messages keep their normal presentation; the packet does not identify a periodic tick.
+std::optional<SpellHitLine> spell_damage_hit_report(const WorldState& world, const SpellData& spell,
+                                                  std::uint32_t target, std::int32_t damage);
+// Mode 0 (and invalid modes) preserves normal; 1 is abbreviated, 2 is the amount alone.
+std::string report_spell_hit_line(const SpellHitLine& line, std::string_view normal, std::int32_t mode);
 
 // Buff time left: `tics` as of `received_ms` (the packet, or the client's
 // last buff tick, game/passage_of_time.h).

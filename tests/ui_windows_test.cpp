@@ -3,32 +3,45 @@
 // page, the extended target window's context menu, and the pet window's gauges for several pets.
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <array>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <format>
+#include <functional>
 #include <fstream>
 #include <iterator>
 #include <map>
 #include <memory>
 #include <string>
-#include <thread>
 
 #include <imgui.h>
+#include <imgui_internal.h>
+#include <lua.hpp>
 
 #include "app/lua_eq.h"
 #include "app/lua_eq_hotbar.h"
 #include "app/lua_eq_windows.h"
+#include "core/byte_io.h"
 #include "core/ini_file.h"
 #include "game/bazaar.h"
 #include "game/hot_button_menu.h"
 #include "game/hotbuttons.h"
 #include "game_files.h"
+#include "mock_server/harness.h"
 #include "net/game_connection.h"
+#include "net/group_packets.h"
 #include "net/market_packets.h"
+#include "net/notice_packets.h"
 #include "net/opcodes.h"
 #include "net/pet_packets.h"
+#include "net/social_packets.h"
+#include "net/zone_packets.h"
+#include "manual_clock.h"
 #include "scratch_dir.h"
+#include "ui/lua/lua_host.h"
 
 using namespace hailstone;
 namespace fs = std::filesystem;
@@ -45,23 +58,40 @@ void put_f32(std::vector<std::byte>& b, float f) {
 }
 
 // OP_RespawnWindow as EQEmu's SendRespawnBinds writes it.
-net::AppPacket respawn_packet() {
+net::AppPacket respawn_packet(std::uint8_t validity = 1) {
     std::vector<std::byte> b;
     put_u32(b, 0);     // the default option
     put_u32(b, 60000); // time remaining
     put_u32(b, 0);     // delay
     put_u32(b, 2);
-    auto option = [&](std::uint32_t id, std::uint32_t zone, const char* name, std::uint8_t type) {
+    auto option = [&](std::uint32_t id, std::uint32_t zone, const char* name, std::uint8_t availability) {
         put_u32(b, id);
         put_u32(b, zone);
         for (int i = 0; i < 4; ++i) put_f32(b, 0.0f);
         for (const char* c = name; *c; ++c) b.push_back(static_cast<std::byte>(*c));
         b.push_back(std::byte{0});
-        b.push_back(static_cast<std::byte>(type));
+        b.push_back(static_cast<std::byte>(availability));
     };
     option(0, 2, "Bind Location", 0);
-    option(1, 2, "Resurrect", 1);
+    option(1, 2, "Resurrect", validity);
     return net::AppPacket(net::to_wire(net::Op::RespawnWindow), std::move(b));
+}
+
+net::AppPacket respawn_rez_offer(std::uint32_t spell = 100) {
+    ByteWriter w;
+    w.le<std::uint32_t>(0);
+    w.le<std::uint16_t>(2);
+    w.le<std::uint16_t>(0);
+    for (int i = 0; i < 3; ++i) w.f32(0);
+    w.le<std::uint32_t>(0);
+    w.fixed_string("Gennro", 64);
+    w.le<std::uint32_t>(0);
+    w.fixed_string("Healer", 64);
+    w.le(spell);
+    w.fixed_string("Gennro's corpse", 64);
+    w.le<std::uint32_t>(0);
+    w.zeros(8);
+    return net::AppPacket(net::to_wire(net::Op::RezzRequest), w.take());
 }
 
 struct Harness {
@@ -90,6 +120,811 @@ struct Harness {
 
 } // namespace
 
+TEST_CASE("Group role menus: self, member rows, permissions and confirmed role checks") {
+    hailstone::test::ScratchDir game_scratch("ui_windows_group_roles");
+    GameDir game(game_scratch.path());
+    Harness t(game);
+    net::PlayerProfile pp;
+    pp.name = "Leader";
+    t.conn.set_profile_for_test(pp);
+    CHECK_FALSE(t.api->child_shown("GroupWindow", "Hailstone_RolesButton").has_value());
+    CHECK_FALSE(t.api->click_child("GroupWindow", "Hailstone_RolesButton"));
+    CHECK_FALSE(t.api->context_menu("PlayerWindow", 10, 20));
+    CHECK_FALSE(t.api->context_menu("GroupWindow", 10, 20));
+
+    net::GroupUpdateB group;
+    group.leader = "Leader";
+    net::GroupUpdateMember self;
+    self.name = "Leader";
+    self.slot = 0;
+    self.main_tank = 1;
+    group.members.push_back(self);
+    net::GroupUpdateMember member;
+    member.name = "Member";
+    member.slot = 1;
+    member.main_assist = 1;
+    group.members.push_back(member);
+    net::GroupUpdateMember merc;
+    merc.name = "Mercenary";
+    merc.slot = 2;
+    merc.merc = 1;
+    group.members.push_back(merc);
+    t.conn.receive_zone_packet_for_test(net::encode(group));
+
+    // There is no roster button or background role menu. A member's name is the entry point.
+    CHECK_FALSE(t.api->child_shown("GroupWindow", "Hailstone_RolesButton").has_value());
+    CHECK_FALSE(t.api->click_child("GroupWindow", "Hailstone_RolesButton"));
+    CHECK_FALSE(t.api->context_menu("GroupWindow", 20, 30));
+    CHECK_FALSE(t.api->context_menu("PlayerWindow", 20, 30));
+    CHECK(t.host.menus.empty());
+    t.host.click_rect = {20, 30, 80, 50}; // a pad right click anchors to the member's item
+    REQUIRE(t.api->click_child("GroupWindow", "Gauge1", "right"));
+    REQUIRE(t.host.menus.size() == 1);
+    CHECK(t.host.menus[0].x == 80);
+    CHECK(t.host.menus[0].y == 40);
+    REQUIRE(t.host.menus[0].rows.size() == 5);
+    CHECK(t.host.menus[0].rows[0].text == "Member");
+
+    // The player's own name offers the same roles even though the group gauges omit self.
+    REQUIRE(t.api->click_child("PlayerWindow", "PlayerHP", "right"));
+    REQUIRE(t.host.menus.size() == 1);
+    CHECK(t.host.menus[0].rows[0].text == "Leader");
+    CHECK(t.host.menus[0].rows[1].check);
+    CHECK_FALSE(t.host.menus[0].rows[2].check);
+    CHECK(t.host.menus[0].rows[1].enabled);
+    CHECK(t.host.menus[0].rows[2].enabled);
+    CHECK(t.host.menus[0].rows[3].enabled);
+    CHECK(t.api->child_shown("PlayerWindow", "GroupRoleTank").value_or(false));
+
+    REQUIRE(t.api->click_child("GroupWindow", "Gauge1", "right"));
+    REQUIRE(t.host.menus.size() == 1);
+    const auto& member_rows = t.host.menus[0].rows;
+    REQUIRE(member_rows.size() == 5);
+    CHECK(member_rows[0].text == "Member");
+    CHECK_FALSE(member_rows[1].check);
+    CHECK(member_rows[2].check);
+    CHECK(t.api->child_shown("GroupWindow", "GroupRoleAssist1").value_or(false));
+    // Heading, the three roles and the zone note: no "Window" row (the gamepad pack has no window menu for it; the
+    // modern frame menu is the rest of the frame's right click).
+    CHECK(member_rows[4].text == "Assign in the same zone; clear roles from any zone");
+    CHECK_FALSE(member_rows[4].enabled);
+    for (const auto& row : member_rows) CHECK(row.text != "Window");
+
+    REQUIRE(t.api->click_child("GroupWindow", "Gauge2", "right"));
+    REQUIRE(t.host.menus.size() == 1);
+    CHECK(t.host.menus[0].rows[0].text == "Mercenary");
+    CHECK(t.host.menus[0].rows[1].enabled); // mercenaries may tank, but cannot assist or pull
+    CHECK_FALSE(t.host.menus[0].rows[2].enabled);
+    CHECK_FALSE(t.host.menus[0].rows[3].enabled);
+
+    // A server refresh changes the checks and the authority, without a local optimistic role assignment.
+    group.leader = "Member";
+    group.members[1].main_assist = 0;
+    group.members[1].puller = 1;
+    t.conn.receive_zone_packet_for_test(net::encode(group));
+    REQUIRE(t.api->click_child("GroupWindow", "Gauge1", "right"));
+    CHECK_FALSE(t.host.menus[0].rows[2].check);
+    CHECK(t.host.menus[0].rows[3].check);
+    CHECK_FALSE(t.host.menus[0].rows[1].enabled);
+    CHECK_FALSE(t.host.menus[0].rows[2].enabled);
+    CHECK_FALSE(t.host.menus[0].rows[3].enabled);
+    CHECK_FALSE(t.api->menu_click(0, 1));
+
+    t.host.menus.clear();
+    t.conn.set_client_option_for_session(game::ClientOption::ContextMenus, 0);
+    CHECK_FALSE(t.api->context_menu("GroupWindow", 20, 30));
+    CHECK(t.api->click_child("GroupWindow", "Gauge1", "right"));
+    CHECK(t.host.menus.empty());
+    CHECK(t.api->click_child("PlayerWindow", "PlayerHP", "right"));
+    CHECK(t.host.menus.empty());
+}
+
+TEST_CASE("Raid member menus: clicked identities, grouped and ungrouped rows, and stale authority") {
+    ImGuiContext* ctx = ImGui::CreateContext();
+    ImGui::GetIO().IniFilename = nullptr;
+    {
+        test::Rig rig;
+        REQUIRE(rig.to_zone());
+        auto& conn = rig.conn;
+        app::EqHost host;
+        host.conn = &conn;
+        host.in_game = host.ui_ready = true;
+        app::EqApi api(host);
+        std::unique_ptr<lua_State, decltype(&lua_close)> lua(luaL_newstate(), lua_close);
+        luaL_openlibs(lua.get());
+        lua_newtable(lua.get());
+        api.register_functions(lua.get());
+        lua_setglobal(lua.get(), "eq");
+        auto run = [&](const std::string& code) {
+            INFO(code);
+            REQUIRE(luaL_dostring(lua.get(), code.c_str()) == LUA_OK);
+            lua_settop(lua.get(), 0);
+        };
+        auto member = [&](const std::string& name, std::uint32_t group, bool add = true) {
+            net::RaidUpdate update;
+            update.general.action = add ? net::kRaidAddMember : net::kRaidRemoveMember;
+            update.general.player_name = name;
+            update.general.parameter = group;
+            conn.receive_zone_packet_for_test(net::encode_raid_update(update));
+        };
+        member("Gennro", 0);
+        for (int i = 1; i <= 17; ++i) member("Member" + std::to_string(i), static_cast<std::uint32_t>(i / 6));
+        member("Ungrouped", 0xffffffffu);
+        auto authority = [&](const std::string& leader, std::uint32_t marker_rank = 1) {
+            net::RaidUpdate update;
+            update.general.action = net::kRaidSetLeader;
+            update.general.leader_name = leader;
+            update.leadership[19] = 1;
+            update.leadership[20] = marker_rank;
+            update.leadership[28] = 1;
+            conn.receive_zone_packet_for_test(net::encode_raid_update(update));
+        };
+        authority("Gennro");
+        auto open = [&](const std::string& list, const std::string& name) {
+            const auto rows = api.list_rows("RaidWindow", list);
+            auto found = std::find_if(rows.begin(), rows.end(), [&](const auto& row) {
+                return row.size() > 1 && row[1] == name;
+            });
+            REQUIRE(found != rows.end());
+            run("eq.ListClick('RaidWindow', '" + list + "', " + std::to_string(found - rows.begin()) + ", 'right')");
+        };
+        auto action = [&](const std::string& label) -> app::EqHost::MenuRow {
+            REQUIRE(host.menus.size() == 1);
+            const auto& rows = host.menus[0].rows;
+            auto found = std::find_if(rows.begin(), rows.end(), [&](const auto& row) { return row.text == label; });
+            REQUIRE(found != rows.end());
+            return *found; // menus may be replaced while the captured callback remains open
+        };
+        auto delegates = [&] {
+            std::vector<net::DelegateAbility> result;
+            for (const auto& packet : rig.server.zone_log)
+                if (packet.opcode == net::to_wire(net::Op::RaidDelegateAbility))
+                    if (auto decoded = net::decode_delegate_ability(packet)) result.push_back(*decoded);
+            return result;
+        };
+        conn.set_raid_target("Member1");
+        open("RAID_PlayerList", "Member2");
+        REQUIRE(host.menus.size() == 1);
+        CHECK(host.menus[0].rows.front().text == "Member2");
+        auto assist = action("Main Assist");
+        REQUIRE(assist.enabled);
+        CHECK_FALSE(assist.check);
+        conn.set_raid_target("Member1");
+        assist.act();
+        REQUIRE(rig.until([&] { return delegates().size() == 1; }));
+        CHECK(delegates()[0].ability == 3);
+        CHECK(delegates()[0].name == "Member2");
+
+        open("RAID_NotInGroupPlayerList", "Ungrouped");
+        CHECK(host.menus[0].rows.front().text == "Ungrouped");
+        auto mark = action("Mark NPC");
+        REQUIRE(mark.enabled);
+        conn.set_raid_target("Member1");
+        mark.act();
+        REQUIRE(rig.until([&] { return delegates().size() == 2; }));
+        CHECK(delegates()[1].ability == 4);
+        CHECK(delegates()[1].name == "Ungrouped");
+
+        // A server update that already achieved a checkbox's captured intent must not toggle it back off.
+        open("RAID_PlayerList", "Member2");
+        auto pending_assist = action("Main Assist").act;
+        conn.receive_zone_packet_for_test(net::encode(net::DelegateAbility{3, 1, 0, 0, "Member2"}, net::Op::RaidDelegateAbility));
+        pending_assist();
+        open("RAID_PlayerList", "Member2");
+        CHECK(action("Main Assist").check);
+
+        auto handoffs = [&] {
+            const auto expected = net::encode(net::RaidGeneral{net::kRaidCmdMakeLeader, "Gennro", "Member2"});
+            return std::count_if(rig.server.zone_log.begin(), rig.server.zone_log.end(), [&](const auto& packet) {
+                return packet.opcode == expected.opcode && packet.data == expected.data;
+            });
+        };
+        action("Make Raid Leader").act();
+        REQUIRE(host.confirm);
+        CHECK(host.confirm->text == "Make Member2 the raid leader?");
+        CHECK(handoffs() == 0);
+        auto confirm_departed = host.confirm->done;
+        member("Member2", 0, false);
+        confirm_departed(true);
+        member("Member2", 0);
+        open("RAID_PlayerList", "Member2");
+        action("Make Raid Leader").act();
+        REQUIRE(host.confirm);
+        auto confirm_selected = host.confirm->done;
+        conn.set_raid_target("Member1");
+        confirm_selected(true);
+        REQUIRE(rig.until([&] { return handoffs() == 1; }));
+
+        // The selected-member control is the keyboard/controller entry to the same captured-name menu.
+        conn.set_raid_target("Member2");
+        REQUIRE(api.click_child("RaidWindow", "RAID_MemberActionsButton"));
+        REQUIRE(host.menus.size() == 1);
+        CHECK(host.menus[0].rows.front().text == "Member2");
+        auto removed = action("Mark NPC").act;
+        member("Member2", 0, false);
+        conn.set_raid_target("Member1");
+        removed(); // a departed member must never redirect an old action to the current selection
+        member("Member2", 0);
+
+        open("RAID_PlayerList", "Member2");
+        auto lost_leader = action("Main Assist").act;
+        authority("Member1");
+        lost_leader();
+        open("RAID_PlayerList", "Member2");
+        CHECK_FALSE(action("Main Assist").enabled);
+        authority("Gennro");
+
+        open("RAID_PlayerList", "Member2");
+        auto lost_rank = action("Mark NPC").act;
+        authority("Gennro", 0);
+        lost_rank();
+        open("RAID_PlayerList", "Member2");
+        CHECK_FALSE(action("Mark NPC").enabled);
+        authority("Gennro");
+
+        // Raid IDs may be zero on both sides of a disband/reform. Old callbacks must still expire.
+        conn.receive_zone_packet_for_test(net::encode(net::DelegateAbility{3, 1, 1, 0, "Member2"}, net::Op::RaidDelegateAbility));
+        open("RAID_PlayerList", "Member2");
+        auto before_reform = action("Main Assist");
+        REQUIRE(before_reform.enabled);
+        CHECK_FALSE(before_reform.check);
+        action("Make Raid Leader").act();
+        REQUIRE(host.confirm);
+        auto confirm_before_reform = host.confirm->done;
+        REQUIRE(conn.raid().id == 0);
+        net::RaidUpdate lifecycle;
+        lifecycle.general.action = net::kRaidDisband;
+        conn.receive_zone_packet_for_test(net::encode_raid_update(lifecycle));
+        lifecycle.general.action = net::kRaidCreate;
+        lifecycle.general.leader_name = "Gennro";
+        conn.receive_zone_packet_for_test(net::encode_raid_update(lifecycle));
+        member("Gennro", 0);
+        for (int i = 1; i <= 17; ++i) member("Member" + std::to_string(i), static_cast<std::uint32_t>(i / 6));
+        member("Ungrouped", 0xffffffffu);
+        authority("Gennro");
+        REQUIRE(conn.raid().id == 0);
+        before_reform.act();
+        confirm_before_reform(true);
+        rig.run_for(std::chrono::milliseconds(30));
+        CHECK(delegates().size() == 2);
+        CHECK(handoffs() == 1);
+        open("RAID_PlayerList", "Member2");
+        action("Main Assist").act();
+        REQUIRE(rig.until([&] { return delegates().size() == 3; }));
+        CHECK(delegates().back().ability == 3);
+        CHECK(delegates().back().name == "Member2");
+
+        open("RAID_PlayerList", "Member2");
+        auto context_disabled = action("Mark NPC").act;
+        host.menus.clear();
+        conn.set_client_option_for_session(game::ClientOption::ContextMenus, 0);
+        context_disabled();
+        open("RAID_PlayerList", "Member2");
+        CHECK(host.menus.empty());
+        CHECK_FALSE(api.child_state("RaidWindow", "RAID_MemberActionsButton").value_or(true));
+        CHECK_FALSE(api.click_child("RaidWindow", "RAID_MemberActionsButton"));
+        CHECK(host.menus.empty());
+        conn.set_client_option_for_session(game::ClientOption::ContextMenus, 1);
+
+        open("RAID_PlayerList", "Member2");
+        auto locked = action("Mark NPC").act;
+        conn.send_command("/safelock test");
+        REQUIRE(conn.interface_locked());
+        locked();
+        rig.run_for(std::chrono::milliseconds(30));
+        CHECK(delegates().size() == 3);
+    }
+    ImGui::DestroyContext(ctx);
+}
+
+TEST_CASE("Group role icons: player and member flags follow confirmed assignments and disband") {
+    test::ScratchDir game_scratch("ui_windows_group_role_icons");
+    GameDir game(game_scratch.path());
+    Harness t(game);
+    net::PlayerProfile pp;
+    pp.name = "Leader";
+    t.conn.set_profile_for_test(pp);
+    const std::array<const char*, 3> roles = {"GroupRoleTank", "GroupRoleAssist", "GroupRolePuller"};
+    for (const char* role : roles) {
+        CHECK_FALSE(t.api->child_shown("PlayerWindow", role).value_or(true));
+        CHECK_FALSE(t.api->child_shown("GroupWindow", std::string(role) + "1").value_or(true));
+    }
+
+    net::GroupUpdateB group;
+    group.leader = "Leader";
+    net::GroupUpdateMember self;
+    self.name = "Leader";
+    self.slot = 0;
+    self.main_tank = self.main_assist = self.puller = 1;
+    group.members.push_back(self);
+    net::GroupUpdateMember member;
+    member.name = "Member";
+    member.slot = 1;
+    group.members.push_back(member);
+    t.conn.receive_zone_packet_for_test(net::encode(group));
+
+    for (std::size_t i = 0; i < roles.size(); ++i) {
+        CHECK(t.api->child_shown("PlayerWindow", roles[i]).value_or(false));
+        CHECK_FALSE(t.api->child_shown("GroupWindow", std::string(roles[i]) + "1").value_or(true));
+    }
+
+    // A confirmed reassignment removes the player's icon and adds the member's matching icon.
+    for (int role = 1; role <= 3; ++role) {
+        net::GroupRole change;
+        change.leader = "Leader";
+        change.member = "Member";
+        change.role = role;
+        change.on = 1;
+        t.conn.receive_zone_packet_for_test(net::encode_group_role(change));
+        const auto index = static_cast<std::size_t>(role - 1);
+        CHECK_FALSE(t.api->child_shown("PlayerWindow", roles[index]).value_or(true));
+        CHECK(t.api->child_shown("GroupWindow", std::string(roles[index]) + "1").value_or(false));
+    }
+
+    t.conn.receive_zone_packet_for_test(net::encode_group_generic(net::Op::GroupDisbandYou, {"Leader", "Member"}));
+    for (const char* role : roles) {
+        CHECK_FALSE(t.api->child_shown("PlayerWindow", role).value_or(true));
+        CHECK_FALSE(t.api->child_shown("GroupWindow", std::string(role) + "1").value_or(true));
+    }
+    t.host.menus.clear();
+    CHECK_FALSE(t.api->click_child("PlayerWindow", "PlayerHP", "right"));
+    CHECK(t.host.menus.empty());
+}
+
+TEST_CASE("Group role UI packs: icons beside fitted names and name right clicks in player and group windows") {
+    for (const std::string pack : {"modern", "gamepad"}) {
+        INFO(pack);
+        test::ScratchDir scratch("ui_windows_group_role_pack");
+        GameDir game(scratch.path());
+        Harness t(game);
+        auto& io = ImGui::GetIO();
+        io.IniFilename = nullptr;
+        io.DisplaySize = ImVec2(1600, 900);
+        unsigned char* pixels = nullptr;
+        int width = 0, height = 0;
+        io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+        const auto source = fs::path(__FILE__).parent_path().parent_path() / "ui" / pack;
+        ui::lua::LuaUi lua(source, scratch.path() / "pack.txt");
+        lua.set_entry_scripts(pack == "modern" ? std::vector<std::string>{"player.lua", "group.lua"}
+                                                : std::vector<std::string>{"hud.lua", "group.lua"});
+        lua.add_eq_api([&](lua_State* state) {
+            t.api->register_functions(state);
+            lua_pushcfunction(state, [](lua_State* L) { lua_pushboolean(L, true); return 1; });
+            lua_setfield(state, -2, "InGame");
+        });
+        // Observe the real shipped helper and text drawing without substituting either renderer.
+        REQUIRE(lua.run_for_test("", R"lua(
+          partyRoleDraws, partyNameRects, partyRoleTips = {}, {}, {}
+          local register, load, text, tooltip = ui.window, dofile, ui.DrawText, ui.SetTooltip
+          ui.window = function(name, fn)
+            return register(name, function(...)
+              partyRoleWindow = name
+              fn(...)
+              partyRoleWindow = nil
+            end)
+          end
+          dofile = function(path)
+            local module = load(path)
+            if path == 'lib/role_icons.lua' then
+              local draw = module.Draw
+              module.Draw = function(mask, x, y, size, gap, colors)
+                if mask > 0 then partyRoleDraws[partyRoleWindow] = {mask, x, y, size, module.Width(mask, size, gap)} end
+                return draw(mask, x, y, size, gap, colors)
+              end
+            end
+            return module
+          end
+          ui.DrawText = function(x, y, r, g, b, a, value, ...)
+            if value:match('^Leader') or value:match('^Member') then
+              local w, h = ui.CalcTextSize(value)
+              partyNameRects[partyRoleWindow] = {x, y, w, h}
+            end
+            return text(x, y, r, g, b, a, value, ...)
+          end
+          ui.SetTooltip = function(value)
+            partyRoleTips[value] = true
+            return tooltip(value)
+          end
+          return true
+        )lua") == "true");
+
+        net::PlayerProfile pp;
+        pp.name = "LeaderWithAnExtremelyLongNameForRoleLayout";
+        t.conn.set_profile_for_test(pp);
+        net::GroupUpdateB group;
+        group.leader = pp.name;
+        net::GroupUpdateMember self;
+        self.name = pp.name;
+        self.main_tank = self.main_assist = self.puller = 1;
+        group.members.push_back(self);
+        net::GroupUpdateMember member;
+        member.name = "MemberWithAnExtremelyLongNameForRoleLayout";
+        member.slot = 1;
+        group.members.push_back(member);
+        t.conn.receive_zone_packet_for_test(net::encode(group));
+        t.api->show("PlayerWindow", true);
+        t.api->show("GroupWindow", true);
+        const auto frames = [&](int count) {
+            for (int i = 0; i < count; ++i) {
+                REQUIRE(lua.run_for_test("", "partyRoleDraws,partyNameRects,partyRoleTips={}, {}, {};return true") == "true");
+                io.DeltaTime = 1.0f / 60.0f;
+                t.api->begin_frame();
+                ImGui::NewFrame();
+                lua.frame();
+                ImGui::Render();
+                CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            }
+        };
+        const auto record = [&](const char* table, const std::string& window, int fields) {
+            std::vector<float> values;
+            lua_State* state = lua.state();
+            lua_getglobal(state, table);
+            lua_getfield(state, -1, window.c_str());
+            if (lua_istable(state, -1)) {
+                for (int i = 1; i <= fields; ++i) {
+                    lua_rawgeti(state, -1, i);
+                    values.push_back(static_cast<float>(lua_tonumber(state, -1)));
+                    lua_pop(state, 1);
+                }
+            }
+            lua_pop(state, 2);
+            return values;
+        };
+        const auto check_icons = [&](const std::string& window) {
+            INFO(window);
+            const auto icons = record("partyRoleDraws", window, 5);
+            const auto name = record("partyNameRects", window, 4);
+            REQUIRE(icons.size() == 5);
+            REQUIRE(name.size() == 4);
+            CHECK(icons[0] == 7); // all three confirmed roles draw on the same name row
+            CHECK(icons[4] > icons[3] * 3);
+            CHECK(icons[1] >= name[0] + name[2]);
+            CHECK(std::abs((icons[2] + icons[3] / 2) - (name[1] + name[3] / 2)) < 2);
+            const std::string imgui_name = pack == "modern" ? "###modern." + window + "Window" : window;
+            const auto* drawn = ImGui::FindWindowByName(imgui_name.c_str());
+            REQUIRE(drawn);
+            CHECK(icons[1] >= drawn->Pos.x);
+            CHECK(icons[1] + icons[4] <= drawn->Pos.x + drawn->Size.x);
+            const float gap = (icons[4] - 3 * icons[3]) / 2;
+            const std::array<const char*, 3> labels = {"Main Tank", "Main Assist", "Puller"};
+            for (std::size_t role = 0; role < labels.size(); ++role) {
+                io.AddMousePosEvent(icons[1] + static_cast<float>(role) * (icons[3] + gap) + icons[3] / 2,
+                                   icons[2] + icons[3] / 2);
+                frames(2);
+                CHECK(lua.run_for_test("", "return partyRoleTips['" + std::string(labels[role]) + "']") == "true");
+            }
+            return ImVec2(icons[1] + icons[3] / 2, icons[2] + icons[3] / 2);
+        };
+        const auto right_click = [&](ImVec2 at, const std::string& expected_name) {
+            t.host.menus.clear();
+            io.AddMousePosEvent(at.x, at.y);
+            frames(2);
+            io.AddMouseButtonEvent(ImGuiMouseButton_Right, true);
+            frames(1);
+            io.AddMouseButtonEvent(ImGuiMouseButton_Right, false);
+            frames(1);
+            REQUIRE(t.host.menus.size() == 1);
+            REQUIRE(t.host.menus[0].rows.size() == 5);
+            CHECK(t.host.menus[0].x == doctest::Approx(std::floor(at.x)));
+            CHECK(t.host.menus[0].y == doctest::Approx(std::floor(at.y)));
+            CHECK(t.host.menus[0].rows[0].text == expected_name);
+        };
+        frames(3);
+        const auto player = check_icons(pack == "modern" ? "Player" : "HUD Player");
+        right_click(player, pp.name);
+
+        group.members[0].main_tank = group.members[0].main_assist = group.members[0].puller = 0;
+        group.members[1].main_tank = group.members[1].main_assist = group.members[1].puller = 1;
+        t.conn.receive_zone_packet_for_test(net::encode(group));
+        frames(2);
+        const auto group_name = check_icons(pack == "modern" ? "Group" : "HUD Group");
+        right_click(group_name, member.name);
+        if (pack == "gamepad") {
+            REQUIRE(lua.run_for_test("", "GPSTATE.groupOpen=true;return true") == "true");
+            frames(3);
+            const auto dialog_name = check_icons("Group");
+            right_click(dialog_name, member.name);
+        }
+    }
+}
+
+namespace {
+
+// A UI pack's scripts over a Harness, for the group role tests below: frames run as the client runs them.
+struct RolePackRig {
+    test::ScratchDir scratch;
+    GameDir game;
+    Harness t;
+    std::unique_ptr<ui::lua::LuaUi> lua;
+    RolePackRig(const std::string& pack, std::vector<std::string> scripts)
+        : scratch("ui_windows_group_role_rig"), game(scratch.path()), t(game) {
+        auto& io = ImGui::GetIO();
+        io.IniFilename = nullptr;
+        io.DisplaySize = ImVec2(1600, 900);
+        unsigned char* pixels = nullptr;
+        int width = 0, height = 0;
+        io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+        const auto source = fs::path(__FILE__).parent_path().parent_path() / "ui" / pack;
+        lua = std::make_unique<ui::lua::LuaUi>(source, scratch.path() / "pack.txt");
+        lua->set_entry_scripts(std::move(scripts));
+        lua->add_eq_api([this](lua_State* state) {
+            t.api->register_functions(state);
+            lua_pushcfunction(state, [](lua_State* L) { lua_pushboolean(L, true); return 1; });
+            lua_setfield(state, -2, "InGame");
+        });
+    }
+    ~RolePackRig() { lua.reset(); }
+    // `before` runs between ImGui's NewFrame and the scripts (a pad focus put on an item, say).
+    void frames(int count, const std::function<void()>& before = {}) {
+        for (int i = 0; i < count; ++i) {
+            ImGui::GetIO().DeltaTime = 1.0f / 60.0f;
+            t.api->begin_frame();
+            ImGui::NewFrame();
+            if (before) before();
+            lua->frame();
+            ImGui::Render();
+            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        }
+    }
+    std::string run(const std::string& code) { return lua->run_for_test("", code); }
+    void group(const std::string& self) {
+        net::PlayerProfile pp;
+        pp.name = self;
+        t.conn.set_profile_for_test(pp);
+        net::GroupUpdateB g;
+        g.leader = self;
+        net::GroupUpdateMember me;
+        me.name = self;
+        g.members.push_back(me);
+        net::GroupUpdateMember member;
+        member.name = "Member";
+        member.slot = 1;
+        g.members.push_back(member);
+        t.conn.receive_zone_packet_for_test(net::encode(g));
+    }
+};
+
+// The screen rectangle the script hook below saved for the drawn text starting with `prefix` (empty when none).
+std::vector<float> drawn_text_rect(RolePackRig& r) {
+    std::vector<float> v;
+    lua_State* L = r.lua->state();
+    lua_getglobal(L, "roleTextRect");
+    if (lua_istable(L, -1))
+        for (int i = 1; i <= 4; ++i) {
+            lua_rawgeti(L, -1, i);
+            v.push_back(static_cast<float>(lua_tonumber(L, -1)));
+            lua_pop(L, 1);
+        }
+    lua_pop(L, 1);
+    return v;
+}
+
+constexpr const char* kTextRectHook = R"lua(
+  roleTextPrefix, roleTextRect, rolePopups = nil, nil, {}
+  local text, popup = ui.DrawText, ui.OpenPopup
+  ui.DrawText = function(x, y, r, g, b, a, value, ...)
+    if roleTextPrefix and type(value) == 'string' and value:sub(1, #roleTextPrefix) == roleTextPrefix then
+      local w, h = ui.CalcTextSize(value)
+      roleTextRect = {x, y, w, h}
+    end
+    return text(x, y, r, g, b, a, value, ...)
+  end
+  ui.OpenPopup = function(id, ...)
+    rolePopups[id] = true
+    return popup(id, ...)
+  end
+  return true
+)lua";
+
+} // namespace
+
+TEST_CASE("Group role UI packs: the modern Player window's name keeps the frame menu when no role menu opens") {
+    RolePackRig r("modern", {"player.lua"});
+    REQUIRE(r.run(kTextRectHook) == "true");
+    net::PlayerProfile pp;
+    pp.name = "Soloist";
+    r.t.conn.set_profile_for_test(pp);
+    r.t.api->show("PlayerWindow", true);
+    REQUIRE(r.run("roleTextPrefix='Soloist';return true") == "true");
+    auto& io = ImGui::GetIO();
+    r.frames(3);
+    const auto name = drawn_text_rect(r);
+    REQUIRE(name.size() == 4);
+    const ImVec2 at(name[0] + name[2] / 2, name[1] + name[3] / 2);
+    const auto right_click = [&](bool alt) {
+        // (a left click on empty screen first shuts a popup the last click opened)
+        io.AddMousePosEvent(1590, 890);
+        r.frames(1);
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+        r.frames(1);
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+        r.frames(1);
+        r.t.host.menus.clear();
+        REQUIRE(r.run("rolePopups={};return true") == "true");
+        io.AddKeyEvent(ImGuiMod_Alt, alt);
+        io.AddMousePosEvent(at.x, at.y);
+        r.frames(2);
+        io.AddMouseButtonEvent(ImGuiMouseButton_Right, true);
+        r.frames(1);
+        io.AddMouseButtonEvent(ImGuiMouseButton_Right, false);
+        r.frames(1);
+        io.AddKeyEvent(ImGuiMod_Alt, false);
+        r.frames(1);
+    };
+
+    // Solo there is no role menu: the click is the frame's, and its layout menu opens as anywhere else on it.
+    right_click(false);
+    CHECK(r.t.host.menus.empty());
+    CHECK(r.run("return rolePopups['##hudmenu'] == true") == "true");
+
+    // In a group the name opens the role menu, and the frame menu stays shut.
+    r.group("Soloist");
+    r.frames(2);
+    right_click(false);
+    REQUIRE(r.t.host.menus.size() == 1);
+    CHECK(r.t.host.menus[0].rows[0].text == "Soloist");
+    CHECK(r.run("return rolePopups['##hudmenu'] == true") == "false");
+
+    // Alt with the right click is the frame's menu, in a group too.
+    right_click(true);
+    CHECK(r.t.host.menus.empty());
+    CHECK(r.run("return rolePopups['##hudmenu'] == true") == "true");
+}
+
+TEST_CASE("Group role UI packs: the gamepad HUD player panel takes the mouse only on its name row in a group") {
+    RolePackRig r("gamepad", {"hud.lua"});
+    net::PlayerProfile pp;
+    pp.name = "Soloist";
+    r.t.conn.set_profile_for_test(pp);
+    r.t.api->show("PlayerWindow", true);
+    r.frames(3);
+    const auto* panel = ImGui::FindWindowByName("HUD Player");
+    REQUIRE(panel);
+    CHECK((panel->Flags & ImGuiWindowFlags_NoInputs) != 0);
+    const auto* row = ImGui::FindWindowByName("HUD Player Name");
+    CHECK((row == nullptr || !row->Active)); // solo the name does nothing, so nothing takes the mouse
+
+    r.group("Soloist");
+    r.frames(3);
+    panel = ImGui::FindWindowByName("HUD Player");
+    REQUIRE(panel);
+    CHECK((panel->Flags & ImGuiWindowFlags_NoInputs) != 0);
+    row = ImGui::FindWindowByName("HUD Player Name");
+    REQUIRE(row);
+    REQUIRE(row->Active);
+    CHECK(row->Size.y < panel->Size.y / 3);
+    CHECK(row->Pos.y >= panel->Pos.y);
+    CHECK(row->Pos.y + row->Size.y <= panel->Pos.y + panel->Size.y / 2);
+
+    // Over the gauges (the panel's lower half) no window of the UI takes the mouse; over the name the row does.
+    auto& io = ImGui::GetIO();
+    io.AddMousePosEvent(panel->Pos.x + panel->Size.x / 2, panel->Pos.y + panel->Size.y * 0.75f);
+    r.frames(2);
+    CHECK(ImGui::GetCurrentContext()->HoveredWindow == nullptr);
+    CHECK_FALSE(io.WantCaptureMouse);
+    const ImVec2 at(row->Pos.x + 4, row->Pos.y + row->Size.y / 2);
+    io.AddMousePosEvent(at.x, at.y);
+    r.frames(2);
+    CHECK(ImGui::GetCurrentContext()->HoveredWindow == ImGui::FindWindowByName("HUD Player Name"));
+    r.t.host.menus.clear();
+    io.AddMouseButtonEvent(ImGuiMouseButton_Right, true);
+    r.frames(1);
+    io.AddMouseButtonEvent(ImGuiMouseButton_Right, false);
+    r.frames(1);
+    REQUIRE(r.t.host.menus.size() == 1);
+    CHECK(r.t.host.menus[0].rows[0].text == "Soloist");
+}
+
+TEST_CASE("Group role UI packs: Y on a gamepad Group window row opens that member's role menu with the pad's focus") {
+    RolePackRig r("gamepad", {"group.lua", "menus.lua"});
+    // A pad in menu mode; padPress is the button that went down this frame.
+    REQUIRE(r.run(R"lua(
+      padPress = nil
+      eq.gamepad = {
+        connected = function() return true end,
+        type = function() return 'xbox' end,
+        mode = function() return 'menu' end,
+        set_mode = function() return 'menu' end,
+        pressed = function(b) return b == padPress end,
+        down = function(b) return b == padPress end,
+        released = function() return false end,
+        axis = function() return 0 end,
+        glyph = function(b) return string.upper(b) end,
+        takes_b = function() end,
+        request_focus = function(window) ui.SetWindowFocus(window) end,
+      }
+      return true
+    )lua") == "true");
+    r.group("Leader");
+    r.frames(1);
+    REQUIRE(r.run("GPSTATE.groupOpen = true;return true") == "true");
+    r.frames(3);
+    auto* window = ImGui::FindWindowByName("Group");
+    REQUIRE(window);
+    const auto press_y_on = [&](const char* id) {
+        r.t.host.menus.clear();
+        const ImGuiID item = window->GetID(id);
+        const auto focus = [&] {
+            ImGui::SetWindowFocus("Group");
+            ImGui::SetFocusID(item, window);
+        };
+        r.frames(1, focus);
+        REQUIRE(r.run("padPress='y';return true") == "true");
+        r.frames(1, focus);
+        REQUIRE(r.run("padPress=nil;return true") == "true");
+        r.frames(2);
+    };
+
+    press_y_on("##m1");
+    REQUIRE(r.t.host.menus.size() == 1);
+    CHECK(r.t.host.menus[0].rows[0].text == "Member");
+    CHECK(r.t.host.menus[0].rows[1].enabled); // the leader may give roles
+    CHECK(r.t.conn.world().target_id == 0);   // Y is not A: the member is not targeted
+    // menus.lua draws it with the pad's focus, so A and the D-pad work it as any game menu
+    const auto* menu = ImGui::FindWindowByName("##gamemenu1");
+    REQUIRE(menu);
+    CHECK(menu->Active);
+    REQUIRE(ImGui::GetCurrentContext()->NavWindow);
+    CHECK(ImGui::GetCurrentContext()->NavWindow->RootWindow == menu);
+
+    // The player's own row (first in a group) opens the player's role menu.
+    press_y_on("##self");
+    REQUIRE(r.t.host.menus.size() == 1);
+    CHECK(r.t.host.menus[0].rows[0].text == "Leader");
+}
+
+TEST_CASE("Group role menus: a server update while open preserves the displayed toggle intent") {
+    test::Rig rig;
+    REQUIRE(rig.to_zone());
+    Harness t(rig.game);
+    t.host.conn = &rig.conn;
+    net::GroupUpdateB group;
+    group.leader = "Gennro";
+    net::GroupUpdateMember self;
+    self.name = "Gennro";
+    self.slot = 0;
+    group.members.push_back(self);
+    net::GroupUpdateMember member;
+    member.name = "Tank";
+    member.slot = 1;
+    group.members.push_back(member);
+    rig.server.zone.send_reliable(net::encode(group));
+    REQUIRE(rig.until([&] { return rig.conn.group().count() == 2; }));
+    auto sent_roles = [&] {
+        std::vector<net::GroupRole> roles;
+        for (const auto& packet : rig.server.zone_log)
+            if (packet.opcode == net::to_wire(net::Op::GroupRoles))
+                if (auto role = net::decode_group_role(packet)) roles.push_back(*role);
+        return roles;
+    };
+
+    REQUIRE(t.api->click_child("GroupWindow", "Gauge1", "right"));
+    REQUIRE(t.host.menus.size() == 1);
+    CHECK_FALSE(t.host.menus[0].rows[2].check); // Main Assist was unchecked when the menu opened
+    net::GroupRole change;
+    change.member = "Tank";
+    change.leader = "Gennro";
+    change.role = 2;
+    change.on = 1;
+    rig.server.zone.send_reliable(net::encode_group_role(change));
+    REQUIRE(rig.until([&] { return rig.conn.group().slots[1].main_assist; }));
+    REQUIRE(t.api->menu_click(0, 2));
+    REQUIRE(rig.until([&] { return sent_roles().size() == 1; }));
+    CHECK(sent_roles()[0].member == "Tank");
+    CHECK(sent_roles()[0].role == 2);
+    CHECK(sent_roles()[0].on == 1); // the stale unchecked menu still requests assignment
+
+    REQUIRE(t.api->click_child("GroupWindow", "Gauge1", "right"));
+    CHECK(t.host.menus[0].rows[2].check); // this time the menu offers to clear Main Assist
+    change.on = 0;
+    rig.server.zone.send_reliable(net::encode_group_role(change));
+    REQUIRE(rig.until([&] { return !rig.conn.group().slots[1].main_assist; }));
+    REQUIRE(t.api->menu_click(0, 2));
+    REQUIRE(rig.until([&] { return sent_roles().size() == 2; }));
+    CHECK(sent_roles()[1].on == 0);
+    CHECK_FALSE(rig.conn.group().slots[1].main_assist);
+}
+
 TEST_CASE("OP_PotionBelt: the right button held") {
     auto p = net::encode_potion_belt_hold(2, true);
     REQUIRE(p.data.size() == 12);
@@ -113,22 +948,177 @@ TEST_CASE("OP_Bandolier: the right button held on a set's slot") {
 }
 
 TEST_CASE("Respawn window: the options, the default row and Select") {
-    const GameDir* game = test::game_dir();
-    if (!game) return;
-    Harness t(*game);
+    test::ManualClock clock;
+    auto options = test::quick_options();
+    options.session.clock = clock.source();
+    test::Rig rig(test::MockConfig::standard(), std::move(options));
+    REQUIRE(rig.to_zone());
+    clock.hold();
+    Harness t(rig.game);
+    t.host.conn = &rig.conn;
+    auto& c = rig.conn;
     CHECK_FALSE(t.api->shown("RespawnWnd"));
-    t.conn.receive_zone_packet_for_test(respawn_packet());
+    c.receive_zone_packet_for_test(respawn_packet());
     REQUIRE(t.api->shown("RespawnWnd"));
-    CHECK(t.conn.respawn_window()->options.size() == 2);
+    CHECK(c.respawn_window()->options.size() == 2);
     auto markers = t.api->list_texts("RespawnWnd", "OptionsList");
     REQUIRE(markers.size() == 2);
     CHECK(markers[0] == "*"); // the default option
-    CHECK(markers[1] == "r"); // a resurrection
-    std::this_thread::sleep_for(std::chrono::milliseconds(5)); // Select: older than the delay (0)
-    CHECK(t.conn.respawn_ready());
+    CHECK(markers[1] == "r"); // the final byte set (Handle_OP_RespawnWindow's marker); on EQEmu: unavailable
+    clock.advance(std::chrono::milliseconds(1)); // Select: older than the delay (0)
+    CHECK(c.respawn_ready());
     CHECK(t.api->click_list("RespawnWnd", "OptionsList", 1, 0));
+    CHECK(t.api->child_state("RespawnWnd", "SelectButton") == false);
     CHECK(t.api->click_child("RespawnWnd", "SelectButton"));
-    CHECK(t.conn.respawn_chosen());
+    CHECK_FALSE(c.respawn_chosen());
+    // A server refresh makes the same row available without inventing a kind from the validity flag.
+    c.receive_zone_packet_for_test(respawn_packet(0));
+    markers = t.api->list_texts("RespawnWnd", "OptionsList");
+    REQUIRE(markers.size() == 2);
+    CHECK(markers[1].empty());
+    clock.advance(std::chrono::milliseconds(1));
+    CHECK(t.api->child_state("RespawnWnd", "SelectButton") == true);
+    CHECK(t.api->click_child("RespawnWnd", "SelectButton"));
+    CHECK(c.respawn_chosen());
+    CHECK(t.api->child_state("RespawnWnd", "SelectButton") == false);
+    CHECK(t.api->child_state("RespawnWnd", "OptionsList") == false);
+}
+
+TEST_CASE("Respawn window: a new session restores the server default without an intervening UI frame") {
+    test::ManualClock clock;
+    auto options = test::quick_options();
+    options.session.clock = clock.source();
+    test::Rig rig(test::MockConfig::standard(), std::move(options));
+    REQUIRE(rig.to_zone());
+    clock.hold();
+    Harness t(rig.game);
+    t.host.conn = &rig.conn;
+    auto& c = rig.conn;
+    c.receive_zone_packet_for_test(respawn_packet());
+    REQUIRE(c.respawn_window());
+    const auto first_session = c.respawn_session();
+    CHECK(t.api->click_list("RespawnWnd", "OptionsList", 1, 0));
+    clock.advance(std::chrono::milliseconds(1));
+    CHECK(t.api->child_state("RespawnWnd", "SelectButton") == false); // unavailable choice inspected
+
+    net::ZonePlayerToBind bind;
+    bind.zone_id = 2;
+    bind.zone_name = "Bind destination";
+    c.receive_zone_packet_for_test(net::encode(bind));
+    REQUIRE_FALSE(c.respawn_window());
+    c.receive_zone_packet_for_test(net::encode(test::make_spawn("Gennro", 60, 0, 1, 0, 0, 0)));
+    net::Death death;
+    death.spawn_id = death.corpse_id = 60;
+    death.damage = 5000;
+    c.receive_zone_packet_for_test(net::encode(death));
+    // Both packets arrive before the UI can observe the closed window and run its per-frame cleanup.
+    c.receive_zone_packet_for_test(respawn_packet());
+    REQUIRE(c.respawn_window());
+    CHECK(c.respawn_session() != first_session);
+    clock.advance(std::chrono::milliseconds(1));
+    CHECK(t.api->child_state("RespawnWnd", "SelectButton") == true); // new default is the available bind
+    CHECK(t.api->click_child("RespawnWnd", "SelectButton"));
+    CHECK(c.respawn_chosen());
+}
+
+TEST_CASE("Respawn window: an accepted resurrection enables its line and leaves the selection") {
+    test::ManualClock clock;
+    auto options = test::quick_options();
+    options.session.clock = clock.source();
+    test::Rig rig(test::MockConfig::standard(), std::move(options));
+    REQUIRE(rig.to_zone());
+    clock.hold();
+    Harness t(rig.game);
+    t.host.conn = &rig.conn; // the live mock connection outlives this UI harness
+    auto& c = rig.conn;
+    std::unique_ptr<lua_State, decltype(&lua_close)> L(luaL_newstate(), &lua_close);
+    REQUIRE(L);
+    luaL_openlibs(L.get());
+    lua_newtable(L.get());
+    t.api->register_functions(L.get());
+    lua_setglobal(L.get(), "eq");
+    auto selected = [&] {
+        t.api->begin_frame();
+        lua_settop(L.get(), 0);
+        const int status = luaL_dostring(L.get(), "return (select(3, eq.ListInfo('RespawnWnd', 'OptionsList')))");
+        CHECK(status == LUA_OK);
+        if (status != LUA_OK || !lua_isinteger(L.get(), -1)) return -2;
+        return static_cast<int>(lua_tointeger(L.get(), -1));
+    };
+    // The row's marker cell and its texts.disabled, as a pack reads them.
+    auto row = [&](int r) {
+        t.api->begin_frame();
+        lua_settop(L.get(), 0);
+        const std::string code = "local t = eq.ListRow('RespawnWnd', 'OptionsList', " + std::to_string(r) +
+                                 ") return t[1] .. (t.disabled and ':disabled' or '')";
+        const int status = luaL_dostring(L.get(), code.c_str());
+        CHECK(status == LUA_OK);
+        return status == LUA_OK && lua_isstring(L.get(), -1) ? std::string(lua_tostring(L.get(), -1)) : std::string("?");
+    };
+    auto die = [&](std::uint32_t id) {
+        net::Death death;
+        death.spawn_id = death.corpse_id = id;
+        death.killer_id = 101;
+        death.damage = 5000;
+        c.receive_zone_packet_for_test(net::encode(death));
+        c.receive_zone_packet_for_test(respawn_packet());
+    };
+    auto approve = [&] {
+        c.receive_zone_packet_for_test(respawn_rez_offer());
+        REQUIRE(c.confirmation());
+        c.answer_confirmation(true);
+        CHECK_FALSE(c.respawn_chosen());
+        CHECK(c.respawn_option_available(1));
+    };
+    die(c.world().player_id);
+    CHECK(selected() == 0);
+    CHECK(row(0) == "*");
+    CHECK(row(1) == "r:disabled");
+
+    SUBCASE("Yes enables the line, keeps its marker and leaves the server's selection") {
+        approve();
+        CHECK(selected() == 0); // 0x74e9e0 only enables and recolours lines
+        CHECK(row(1) == "r");   // the marker stays; the line is enabled
+        clock.advance(std::chrono::milliseconds(10));
+        rig.run_for(std::chrono::milliseconds(10));
+        CHECK(test::MockEqServer::count(rig.server.zone_log, net::Op::RespawnWindow) == 0);
+        CHECK(test::MockEqServer::count(rig.server.zone_log, net::Op::RezzAnswer) == 0);
+        c.receive_zone_packet_for_test(respawn_rez_offer(101));
+        CHECK(row(1) == "r:disabled"); // a replacement offer needs its own consent
+        c.answer_confirmation(true);
+        CHECK(selected() == 0);
+        CHECK(t.api->click_list("RespawnWnd", "OptionsList", 1, 0));
+        CHECK(selected() == 1);
+        CHECK(t.api->click_child("RespawnWnd", "SelectButton"));
+        CHECK(c.respawn_chosen());
+        CHECK_FALSE(c.accepted_hover_rez_option());
+        CHECK(selected() == 1); // clearing consent after commit must not move the highlight to bind
+        CHECK(t.api->child_state("RespawnWnd", "SelectButton") == false);
+        CHECK(t.api->child_state("RespawnWnd", "OptionsList") == false);
+
+        net::ZonePlayerToBind bind;
+        bind.zone_id = 2;
+        bind.zone_name = "Bind destination";
+        c.receive_zone_packet_for_test(net::encode(bind));
+        c.receive_zone_packet_for_test(net::encode(test::make_spawn("Gennro", 60, 0, 1, 0, 0, 0)));
+        die(60);
+        CHECK(selected() == 0); // a new window starts from the server's selection
+    }
+    SUBCASE("an explicit bind click before Yes keeps bind selected") {
+        CHECK(t.api->click_list("RespawnWnd", "OptionsList", 0, 0));
+        approve();
+        CHECK(selected() == 0);
+    }
+    SUBCASE("an explicit resurrection click survives replacement but cannot commit without new consent") {
+        approve();
+        CHECK(t.api->click_list("RespawnWnd", "OptionsList", 1, 0));
+        CHECK(selected() == 1);
+        c.receive_zone_packet_for_test(respawn_rez_offer(101));
+        CHECK(selected() == 1);
+        CHECK(t.api->child_state("RespawnWnd", "SelectButton") == false);
+        CHECK_FALSE(c.respawn_option_available(1));
+        CHECK_FALSE(c.respawn_chosen());
+    }
 }
 
 TEST_CASE("Tip window: the duel tip, its history and the show options") {

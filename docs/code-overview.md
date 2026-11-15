@@ -18,7 +18,7 @@ with the code, the code is right; fix this page.
 | `tests/` | The doctest suite (`hailstone_tests`), the mock EQEmu server (`tests/mock_server/`), fuzz targets and test plugins. |
 | `tools/` | Command-line tools (`pfsdump`, `wlddump`, `eqgdump`, `texdump`, `chrdump`, `audiodump`, `netprobe`, `playprobe`, `texpack`, `hailstone_check`, `hailstone_sign`), the browser helper (`tools/hailstone-web/`), generators (`gen_*.py`), release scripts (`make_update.py`, `make_addon.py`, `docker/`) and `sync_wiki.py`. |
 | `cmake/` | Dependency fetching (`Dependencies.cmake`), shaders, build info, toolchains, Windows resources. |
-| `third_party/` | Sources vendored into the tree: Lua 5.4 and AMD FSR 1. Everything else is fetched by CMake. |
+| `third_party/` | Sources vendored into the tree: Lua 5.4, AMD FSR 1 and the AMD FSR 3.1 upscaler's shaders. Everything else is fetched by CMake. |
 | `flora/` | Plain-text grass and plant tables per zone or zone group (docs/graphics.md). |
 | `docs/` | Design, protocol, format and mechanics documents; the source of this wiki. |
 | `icons/`, `pictures/` | Hailstone's own icon and pictures. No game art is ever in the repository. |
@@ -224,6 +224,7 @@ and `charcreate.lua`.
 - `*_vectors_test.cpp` check `game/mechanics/` against vectors recorded from the original client. Without
   `HAILSTONE_VECTORS_DIR` set they pass without checking anything.
 - Tests that read real game files (zones, models, sounds) need `EQ_GAME_DIR`, and likewise pass silently without it.
+  The few that read a current live install's newer files (hero's forge layers) need `EQ_LIVE_DIR`.
 - `mock_*_test.cpp` drive the real login and game connection against the in-process mock server
   (`tests/mock_server/README.md`).
 - `fuzz_*`: every decoder in `src/net/` must be in `fuzz_decoders.inc`; `fuzz_assets_test.cpp` covers the asset

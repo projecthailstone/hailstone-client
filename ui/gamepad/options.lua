@@ -45,6 +45,18 @@ local function optionRow(label, name, choices, values)
   end
 end
 
+-- The upscale quality presets (render/temporal.h UpscaleQuality: 0 Native AA .. 4 Ultra Performance), each a render
+-- scale; 5 Custom (another render scale) shows but is stepped past.
+local function upscaleQualityRow()
+  local v = eq.Option("upscale_quality")
+  if v == nil then return nil end
+  local names = { "Native AA", "Quality", "Balanced", "Performance", "Ultra performance", "Custom" }
+  return { "Upscale quality", names[v + 1] or "Custom", function(dir)
+    local n = v >= 5 and (dir > 0 and 0 or 4) or (v + dir) % 5
+    eq.SetOption("upscale_quality", n)
+  end }
+end
+
 -- What a binding can be (docs/gamepad.md section 4), with friendly names.
 local ACTIONS = {
   { "interact", "Interact / use" }, { "cancel", "Cancel" }, { "AUTOPRIM", "Auto attack" }, { "JUMP", "Jump" },
@@ -181,6 +193,7 @@ local PAGES = {
         { "Con-coloured NPC names", "con_name_colour" }, { "Highlight target name", "target_plate_highlight" }, { "Target name through walls", "target_plate_through_walls" }, { "Fade overlapping names", "plate_overlap_fade" }, { "Target ring", "show_target_ring" },
         { "Target ring cues", "target_ring_cues" }, { "Target ring through models", "target_ring_xray" },
         { "Target skips pets", "tab_skip_pets" }, { "Target needs sight", "tab_line_of_sight" }, { "Gem replaces spell", "replace_gem_spell" }, { "Buff timers", "show_buff_timer" }, { "Song timers", "show_song_timer" },
+        { "Compare items with what you wear", "item_compare" }, { "Upgrade / downgrade verdict", "item_compare_verdict" },
         { "Context menus", "context_menus" }, { "Player right-click menu", "player_menu" }, { "More hot button states", "hotbutton_extras" },
         { "Offer layouts to new characters", "offer_layout_copy" } }) do
       local x = optionRow(o[1], o[2], "bool")
@@ -210,6 +223,14 @@ local PAGES = {
     sizeNames[#sizeNames + 1] = "Off"; sizeValues[#sizeValues + 1] = 0
     local x = optionRow("Target ring max size", "target_ring_max_size", sizeNames, sizeValues)
     if x then rows[#rows + 1] = x end
+    local modes = eq.ChatHitModes()
+    local function addHitMode(h)
+      rows[#rows + 1] = { "Hit mode: " .. h.name, h.modes[h.mode + 1] or "Mixed", function(dir)
+        eq.ChatSetHitMode(h.id, (math.max(0, h.mode) + dir) % #h.modes)
+      end }
+    end
+    for i, h in ipairs(modes) do if i ~= 7 then addHitMode(h) end end
+    if modes[7] then addHitMode(modes[7]) end
     return rows
   end },
   { "Game", function()
@@ -232,29 +253,35 @@ local PAGES = {
   end },
   { "Display", function()
     local rows = {}
-    local list = {
+    local list = table.pack(
       optionRow("Display mode", "window_mode", { "Windowed", "Borderless", "Fullscreen" }),
       optionRow("Vertical sync", "vsync", { "Off", "On", "Adaptive" }),
       optionRow("Shadows", "shadows", { "Off", "Low", "Medium", "High" }),
-      optionRow("Anti-aliasing", "msaa", { "Off", "2x", "4x", "8x" }),
-      optionRow("Render scale", "render_scale", { 50, 100, 5, " %" }),
+      optionRow("Anti-aliasing", "msaa", { "Off", "2x", "4x" }),
+      upscaleQualityRow(),
+      optionRow("Render scale", "render_scale", { 33, 100, 1, " %" }),
+      optionRow("Upscaler (next start)", "upscaler", { "FSR 1", "Temporal", "FSR 3.1" }),
+      optionRow("Frame generation", "frame_gen", "bool"),
       optionRow("Ambient occlusion", "ao", "bool"),
       optionRow("Grass", "grass", "bool"),
       optionRow("Grass distance", "flora_distance", { 400, 1200, 100, " units" }),
+      optionRow("Tree detail distance", "tree_detail", { 50, 200, 10, " %" }),
       optionRow("Lighting", "lighting", { "Modern", "Classic" }),
       optionRow("Max camera zoom", "max_camera_distance", { 10, 150, 10, " units" }),
       optionRow("Ground floating NPCs", "ground_npcs", "bool"),
       -- the texture pack (display.texture_folder, from the next start): Off, then each folder of textures/
-      optionRow("Texture pack (next start)", "texture_pack", eq.OptionChoices("texture_pack")),
-    }
-    for i = 1, 12 do if list[i] then rows[#rows + 1] = list[i] end end
+      optionRow("Texture pack (next start)", "texture_pack", eq.OptionChoices("texture_pack"))
+    )
+    -- table.pack counts the nil rows (options this client lacks) too, so none past them is dropped.
+    for i = 1, list.n do if list[i] then rows[#rows + 1] = list[i] end end
     return rows
   end },
   { "Camera", function()
     -- Hailstone's isometric camera (docs/isometric.md): the iso_* options.
     local rows = {}
-    local list = {
+    local list = table.pack(
       optionRow("Isometric camera", "iso_camera", "bool"),
+      optionRow("Click to move in every camera", "click_move", "bool"),
       optionRow("Pitch", "iso_pitch", { 20, 89, 1, "°" }),
       optionRow("Field of view", "iso_fov", { 10, 90, 1, "°" }),
       optionRow("Movement", "iso_wasd", { "Relative to the camera", "Classic" }),
@@ -263,23 +290,25 @@ local PAGES = {
       optionRow("Lift roofs and ceilings", "iso_roof", "bool"),
       optionRow("Silhouette behind walls", "iso_silhouette", "bool"),
       optionRow("Click marker", "iso_marker", "bool"),
-      optionRow("Highlight under cursor", "iso_hover", "bool"),
-    }
-    for i = 1, 12 do if list[i] then rows[#rows + 1] = list[i] end end
+      optionRow("Highlight under cursor", "iso_hover", "bool")
+    )
+    -- table.pack counts the nil rows (options this client lacks) too, so none past them is dropped.
+    for i = 1, list.n do if list[i] then rows[#rows + 1] = list[i] end end
     return rows
   end },
   { "Audio", function()
     local rows = {}
-    local list = {
+    local list = table.pack(
       optionRow("Mute", "mute", "bool"),
       optionRow("Master volume", "master", { 0, 100, 5, " %" }),
       optionRow("Music", "music", { 0, 100, 5, " %" }),
       optionRow("Sound effects", "effects", { 0, 100, 5, " %" }),
       optionRow("NPC hit sounds", "npc_hits", { 0, 100, 5, " %" }),
       optionRow("Environment sounds", "environment", "bool"),
-      optionRow("Combat music", "combat_music", "bool"),
-    }
-    for i = 1, 7 do if list[i] then rows[#rows + 1] = list[i] end end
+      optionRow("Combat music", "combat_music", "bool")
+    )
+    -- table.pack counts the nil rows (options this client lacks) too, so none past them is dropped.
+    for i = 1, list.n do if list[i] then rows[#rows + 1] = list[i] end end
     return rows
   end },
   -- The plugins' options (eq.PluginOptions; docs/plugins.md "Plugin windows"): a switch, or left / right over its range.

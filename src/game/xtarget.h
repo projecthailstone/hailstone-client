@@ -18,7 +18,7 @@
 
 namespace hailstone::game {
 
-// The slot types, as the protocol carries them (EQEmu XTargetType, zone/client.h; the SDK's HS_XTARGET_*).
+// The slot types, as the protocol carries them (EQEmu XTargetType, zone/client.h; the SDK's HS_BULK_XTARGET_*).
 // Unscoped over std::uint32_t, the type XTargetSlot::type and the packets hold, so a slot's type compares with them
 // as it is.
 enum XTargetType : std::uint32_t {

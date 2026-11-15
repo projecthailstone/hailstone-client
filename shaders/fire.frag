@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 // The modern lighting's fire (render/fire_renderer.h, fire.vert). A flame is heat in a teardrop: widest at its foot,
 // narrowing to its tip one height up. Two fields of noise rise through it, the finer faster, bending it and eating
@@ -22,6 +23,9 @@ layout(location = 2) flat in vec4 v_shape;
 layout(location = 3) flat in vec4 v_tint;
 
 layout(location = 0) out vec4 o_color;
+layout(location = 2) out float o_reactive; // the temporal upscaler's reactive mask (shaders/reactive.glsl)
+
+#include "reactive.glsl"
 
 float hash12(vec2 p) {
     vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -110,4 +114,5 @@ void main() {
         light = mix(light, magic, v_tint.w);
     }
     o_color = vec4(light * v_shape.w * pc.haze.w * soft * through, 0.0);
+    o_reactive = reactive_of(o_color);
 }

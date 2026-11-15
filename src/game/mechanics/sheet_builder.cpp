@@ -6,6 +6,7 @@
 #include "game/inventory.h"
 #include "game/spells.h"
 #include "game/world_state.h"
+#include "net/tribute_packets.h"
 #include "net/zone_packets.h"
 
 namespace hailstone::game::mechanics {
@@ -44,6 +45,11 @@ void build_sheet_into(CharacterSheet& s, const net::PlayerProfile& p, const Inve
     s.focus_classes = live.focus_classes;
     s.skill_rules = live.skill_rules;
     s.vitals = live.vitals;
+    s.leadership_active = (p.expansions & 0x40) != 0;
+    s.leadership_hp_bonus = live.leadership.hp;
+    s.leadership_mana_bonus = live.leadership.mana;
+    s.leadership_hp_regen_bonus = live.leadership.hp_regen;
+    s.leadership_offense_bonus = live.leadership.offense;
     s.level = live.level > 0 ? live.level : p.level;
     // PcBase_GetHighestLevel: the profile carries no separate value in EQEmu's RoF2 encoder; the current level.
     s.highest_level = s.level;
@@ -103,6 +109,16 @@ void build_sheet_into(CharacterSheet& s, const net::PlayerProfile& p, const Inve
             kept.reset();
         }
     }
+
+    // EQEmu's RoF2 translator addresses personal tribute as type 6, slots 0..4 and guild tribute as type 8,
+    // slots 0..1. Use those received items, including their normal stats and effects, rather than synthesizing
+    // bonuses from the tribute catalog. The connection retires their slots on received tribute state changes.
+    for (std::int16_t slot = 0; slot < net::kTributeSlots; ++slot)
+        if (const net::Item* item = inventory.at({net::kInvTribute, slot, -1, -1}))
+            s.extra_items[static_cast<std::size_t>(slot)] = *item;
+    for (std::int16_t slot = 0; slot < net::kGuildTributeSlots; ++slot)
+        if (const net::Item* item = inventory.at({net::kInvGuildTribute, slot, -1, -1}))
+            s.extra_items[15 + static_cast<std::size_t>(slot)] = *item;
 
     s.buffs.assign(kPlayerBuffSlots, SheetBuff{});
     for (std::size_t i = 0; i < s.buffs.size() && i < spells.buffs.size(); ++i) {

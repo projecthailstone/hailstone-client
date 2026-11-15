@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include <glm/common.hpp>
 #include <glm/trigonometric.hpp>
@@ -18,12 +19,62 @@
 #include "game/sky_clock.h"
 #include "game/weather.h"
 #include "render/ambient_probe.h"
+#include "render/actor_surface.h"
 #include "render/atmosphere.h"
 #include "render/scene_lighting.h"
 #include "render/vk_context.h"
 #include "render/weather_renderer.h"
 
 using namespace hailstone;
+
+TEST_CASE("actor armor surfaces: defaults keep the old path; optional maps and material highlights stay distinct") {
+    assets::EffectParams effect;
+    CHECK_FALSE(render::has_actor_surface(effect));
+    const auto plain = render::actor_surface(effect, 0, 0);
+    CHECK(plain.slots == glm::uvec4(0));
+    CHECK(plain.params == glm::vec4(40.0f, 0.2f, 0.0f, 0.0f));
+
+    effect.normal_map = "armor_n.dds";
+    effect.specular = true;
+    effect.reflective = true;
+    effect.shininess = 80.0f;
+    effect.gloss = 0.4f;
+    effect.env_strength = 0.8f;
+    REQUIRE(render::has_actor_surface(effect));
+    const auto mapped = render::actor_surface(effect, 7, 11);
+    CHECK(mapped.params == glm::vec4(80.0f, 0.4f, 0.8f, 0.0f));
+    CHECK(mapped.slots.x == 7);
+    CHECK(mapped.slots.y == 11);
+    CHECK(mapped.slots.z == (render::kActorSurfaceSpecular | render::kActorSurfaceReflective));
+    // A missing cube suppresses reflection without dropping the authored highlight or inventing a sky texture.
+    const auto missing = render::actor_surface(effect, 0, 0);
+    CHECK(missing.slots.x == 0); // the shader then uses the pack's normal, when present
+    CHECK(missing.slots.z == render::kActorSurfaceSpecular);
+    effect.reflective = false;
+    CHECK(render::actor_surface(effect, 7, 11).slots.z == render::kActorSurfaceSpecular);
+}
+
+TEST_CASE("actor armor surfaces: malformed scalars and a full frame cannot produce invalid shader indexes") {
+    assets::EffectParams effect;
+    effect.shininess = std::numeric_limits<float>::quiet_NaN();
+    effect.gloss = std::numeric_limits<float>::infinity();
+    effect.env_strength = -1.0f;
+    const auto bounded = render::actor_surface(effect, 0, 0);
+    CHECK(bounded.params == glm::vec4(40.0f, 0.2f, 0.0f, 0.0f));
+    effect.shininess = 0.0f;
+    effect.gloss = -4.0f;
+    effect.env_strength = std::numeric_limits<float>::max();
+    CHECK(render::actor_surface(effect, 0, 0).params == glm::vec4(1.0f, 0.0f, 16.0f, 0.0f));
+    CHECK(render::actor_surface_range(1, 3) == 1);
+    CHECK(render::actor_surface_range(render::kMaxActorSurfaces - 1, 1) == render::kMaxActorSurfaces - 1);
+    CHECK_FALSE(render::actor_surface_range(render::kMaxActorSurfaces - 1, 2));
+    CHECK_FALSE(render::actor_surface_range(0, 1)); // zero belongs to the old material path
+    CHECK_FALSE(render::actor_surface_range(render::kMaxActorSurfaces, 0));
+    CHECK_FALSE(render::actor_surface_range(1, std::numeric_limits<std::size_t>::max()));
+    // Every permitted table index survives the unused push-constant float word without rounding or denormals.
+    const auto last = render::kMaxActorSurfaces - 1;
+    CHECK(static_cast<std::uint32_t>(static_cast<float>(last)) == last);
+}
 
 // The shader's own kernel, compiled as C++ with GLM's float operations (shaders/ao_kernel.glsl).
 namespace ao_kernel_test {
@@ -34,6 +85,20 @@ using glm::max;
 using glm::clamp;
 using glm::inversesqrt;
 #include "../shaders/ao_kernel.glsl"
+}
+
+// The puddles' noise and cover, compiled as C++ the same way (shaders/puddle_cover.glsl).
+namespace puddle_cover_test {
+using glm::vec2;
+using glm::vec3;
+using glm::abs;
+using glm::dot;
+using glm::floor;
+using glm::fract;
+using glm::min;
+using glm::mix;
+using glm::smoothstep;
+#include "../shaders/puddle_cover.glsl"
 }
 
 TEST_CASE("select_lights: dynamic lights first, then the zone's nearest, within range and the cap") {
@@ -428,7 +493,8 @@ TEST_CASE("render scale: the scene targets' size for the 3D view, kept in 50..10
     CHECK(same(render::scaled_extent({1920, 1080}, 1.0f), 1920, 1080));
     CHECK(same(render::scaled_extent({1920, 1080}, 0.5f), 960, 540));
     CHECK(same(render::scaled_extent({2560, 1440}, 0.67f), 1715, 965)); // each side rounded
-    CHECK(same(render::scaled_extent({1920, 1080}, 0.1f), 960, 540));   // no lower than half
+    CHECK(same(render::scaled_extent({1920, 1080}, 0.1f), 634, 356));   // no lower than a third (kMinRenderScale)
+    CHECK(same(render::scaled_extent({1920, 1080}, 0.33f), 634, 356));  // Ultra Performance
     CHECK(same(render::scaled_extent({1920, 1080}, 2.0f), 1920, 1080)); // never above the view
     CHECK(same(render::scaled_extent({1, 1}, 0.5f), 1, 1));             // at least a pixel
 }
@@ -461,6 +527,35 @@ TEST_CASE("weather look: a new zone starts it over; the snow lying in one does n
     }
     CHECK(look.snow == 0.0f);
     CHECK(look.storm == 0.0f);
+}
+
+TEST_CASE("puddles stand only on flat ground, and spread as they fill") {
+    using puddle_cover_test::puddle_cover;
+    // The share of a 400 x 400 unit patch under water (puddle_cover's x) for a surface whose smoothed normal tilts
+    // `smooth_deg` and whose triangle tilts `face_deg`.
+    auto share = [](float puddles, float smooth_deg, float face_deg) {
+        const glm::vec3 n{std::sin(glm::radians(smooth_deg)), 0.0f, std::cos(glm::radians(smooth_deg))};
+        const glm::vec3 face{0.0f, std::sin(glm::radians(face_deg)), std::cos(glm::radians(face_deg))};
+        double water = 0.0;
+        int count = 0;
+        for (float y = 0.0f; y < 400.0f; y += 2.0f)
+            for (float x = 0.0f; x < 400.0f; x += 2.0f, ++count)
+                water += static_cast<double>(puddle_cover(puddles, {x, y, 0.0f}, n, face, 1.0f).x);
+        return water / count;
+    };
+    const double flat = share(1.0f, 0.0f, 0.0f);
+    CHECK(flat > 0.1);  // a long storm covers a good part of level ground...
+    CHECK(flat < 0.45); // ...not all of it
+    CHECK(share(0.3f, 0.0f, 0.0f) < flat * 0.6); // the low spots first
+    CHECK(share(1.0f, 3.0f, 3.0f) > flat * 0.8); // ground a few degrees off level still holds water
+    CHECK(share(1.0f, 8.0f, 8.0f) < flat * 0.7); // less as it nears the limit
+    CHECK(share(1.0f, 12.0f, 0.0f) == 0.0);      // a slope keeps none
+    CHECK(share(1.0f, 30.0f, 30.0f) == 0.0);
+    // The smoothed normal can read level where the triangle is a slope's (its foot, a rounded crest): still none.
+    CHECK(share(1.0f, 0.0f, 15.0f) == 0.0);
+    CHECK(share(1.0f, 0.0f, 180.0f) == flat); // a floor wound the other way round is still level
+    CHECK(share(0.0f, 0.0f, 0.0f) == 0.0);
+    CHECK(puddle_cover(1.0f, {10.0f, 10.0f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, 0.0f).x == 0.0f); // under cover
 }
 
 TEST_CASE("weather look: rain soaks, then puddles fill and dry slower; the rings only while it falls") {

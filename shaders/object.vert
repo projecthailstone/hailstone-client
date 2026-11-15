@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 // Doors and ground objects: static meshes drawn with a per-instance model
 // matrix (render/object_renderer.h). Same look as zone objects (zone.frag).
@@ -25,6 +26,14 @@ layout(location = 0) out vec2 v_uv;
 layout(location = 1) out vec3 v_world;
 layout(location = 2) out float v_fog;
 layout(location = 3) out vec3 v_normal; // world space (the modern lighting, object.frag)
+layout(location = 4) out vec4 v_now;    // the motion (shaders/motion.glsl): this frame's place, unjittered
+layout(location = 5) out vec4 v_then;   // and the last frame's
+
+#define MOTION_SET 1
+#include "motion.glsl"
+
+// The last frame's transforms sit kPrevInstances after this frame's (render/object_renderer.h kMaxInstances).
+const uint kPrevInstances = 8192u;
 
 // The effects' fog (RegionC1 vs_1_1): per
 // vertex, f = clamp((|eye - pos| - FogStart) FogRangeInv fFogRange, 0, fFogRange)
@@ -45,4 +54,8 @@ void main() {
     v_world = world.xyz;
     v_fog = fog_factor(world.xyz);
     gl_Position = pc.view_proj * world;
+    if (temporal.info.x > 0.0)
+        motion_clips(world.xyz, (models[pc.instance + kPrevInstances] * vec4(in_position, 1.0)).xyz, v_now, v_then);
+    else
+        v_now = v_then = vec4(0.0, 0.0, 0.0, 1.0);
 }

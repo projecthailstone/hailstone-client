@@ -4,10 +4,12 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <memory>
 #include <optional>
 #include <string>
@@ -23,7 +25,9 @@
 #include <lua.hpp>
 
 #include "app/lua_eq.h"
+#include "app/gamepad.h"
 #include "core/byte_io.h"
+#include "core/config.h"
 #include "core/game_dir.h"
 #include "net/aa_packets.h"
 #include "net/game_connection.h"
@@ -31,9 +35,12 @@
 #include "net/merchant_packets.h"
 #include "net/social_packets.h"
 #include "net/spell_packets.h"
+#include "game/mechanics/character.h"
+#include "game/mechanics/tables.h"
 #include "ui/dev_screens.h"
 #include "ui/lua/lua_host.h"
 #include "mock_server/harness.h"
+#include "manual_clock.h"
 #include "scratch_dir.h"
 #include "app/web_service.h"
 #include "mq/lua_mq.h"
@@ -52,8 +59,8 @@ struct Session {
     app::EqHost host;
     app::EqApi api;
     ui::lua::LuaUi lua;
-    Session(const fs::path& dir, const std::string& pack)
-        : game(dir / "game"), conn(game), api(host), lua(dir / pack, dir / "ui.txt") {
+    Session(const fs::path& dir, const std::string& pack, net::ConnectionOptions options = {})
+        : game(dir / "game"), conn(game, std::move(options)), api(host), lua(dir / pack, dir / "ui.txt") {
         host.game = &game;
         host.conn = &conn;
         host.chat = &view;
@@ -65,18 +72,63 @@ struct Session {
         });
         api.load_layout(dir / "defaults.ini", dir / "UI_Test_Server.ini", {});
     }
-    void frames(int n) {
+    void frames(int n, ui::InGameView* fallback = nullptr) {
         for (int i = 0; i < n; ++i) {
             ImGuiIO& io = ImGui::GetIO();
             io.DisplaySize = ImVec2(1600, 900);
             io.DeltaTime = 1.0f / 60.0f;
             api.begin_frame();
             ImGui::NewFrame();
+            if (fallback) (void)ui::in_game_overlay(*fallback);
             lua.frame();
             ImGui::Render();
         }
     }
 };
+
+struct ReplacementCheck {
+    explicit ReplacementCheck(const app::EqApi& api) {
+        ui::lua::set_replaced_check([p = &api](std::string_view screen) { return p->replaces(screen); });
+    }
+    ~ReplacementCheck() { ui::lua::set_replaced_check({}); }
+};
+
+net::AppPacket respawn_window_packet(std::uint8_t validity) {
+    ByteWriter w;
+    w.le<std::uint32_t>(0);
+    w.le<std::uint32_t>(60000);
+    w.le<std::uint32_t>(0);
+    w.le<std::uint32_t>(2);
+    for (std::uint32_t id = 0; id < 2; ++id) {
+        w.le(id);
+        w.le<std::uint32_t>(2);
+        for (int i = 0; i < 4; ++i) w.f32(0);
+        const std::string_view name = id == 0 ? "Bind Location" : "Resurrect";
+        w.bytes(std::as_bytes(std::span(name.data(), name.size())));
+        w.le<std::uint8_t>(0);
+        w.le<std::uint8_t>(id == 0 ? 0 : validity);
+    }
+    return net::AppPacket(net::to_wire(net::Op::RespawnWindow), w.take());
+}
+
+net::AppPacket resurrection_offer_packet() {
+    ByteWriter w;
+    w.le<std::uint32_t>(0);
+    w.le<std::uint16_t>(2);
+    w.le<std::uint16_t>(0);
+    w.f32(30);
+    w.f32(40);
+    w.f32(12);
+    w.le<std::uint32_t>(0);
+    w.fixed_string("Gennro", 64);
+    w.le<std::uint32_t>(0);
+    w.fixed_string("Healer", 64);
+    w.le<std::uint32_t>(100);
+    w.fixed_string("Gennro's corpse", 64);
+    w.le<std::uint32_t>(0);
+    w.zeros(8);
+    return net::AppPacket(net::to_wire(net::Op::RezzRequest), w.take());
+}
 
 // Windows the packs redid from the Classic UI's (and a few more of theirs): shown one after another.
 constexpr const char* kScreens[] = {
@@ -127,6 +179,584 @@ TEST_CASE("UI packs: every script of the shipped UIs loads, and their windows dr
             }
         }
         ImGui::DestroyContext(ctx);
+    }
+}
+
+TEST_CASE("UI packs: active discipline shows seconds and its icon cancels on a mouse click") {
+    for (const char* pack : {"modern", "gamepad"}) {
+        INFO(pack);
+        test::ScratchDir scratch("ui_pack_discipline_test");
+        const auto dir = scratch.path();
+        fs::create_directories(dir / "game");
+        fs::copy(fs::path(__FILE__).parent_path().parent_path() / "ui" / pack, dir / pack,
+                 fs::copy_options::recursive);
+        ImGuiContext* ctx = ImGui::CreateContext();
+        ImGui::GetIO().IniFilename = nullptr;
+        unsigned char* px = nullptr;
+        int w = 0, h = 0;
+        ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&px, &w, &h);
+        {
+            Session s(dir, pack);
+            auto* L = s.lua.state();
+            auto run = [&](const char* code) {
+                const int rc = luaL_dostring(L, code);
+                INFO((rc == LUA_OK ? "" : lua_tostring(L, -1)));
+                REQUIRE(rc == LUA_OK);
+                const std::string result = lua_isstring(L, -1) ? lua_tostring(L, -1) : "";
+                lua_settop(L, 0);
+                return result;
+            };
+            run(R"lua(
+discActive, discFraction, discTime, endClicks = true, 1, "1:00", 0
+local shown, replace, child, text, art, gauge, click = eq.WindowShown, eq.ReplaceWindow,
+  eq.ChildShown, eq.WindowText, eq.ChildArt, eq.Gauge, eq.ClickChild
+eq.WindowShown = function(win) if win == "CombatAbilityWnd" then return true end return shown(win) end
+eq.ReplaceWindow = function(win)
+  if win == "CombatAbilityWnd" then return true, 40, 40, 360, 190 end
+  return replace(win)
+end
+eq.ChildShown = function(win, id)
+  if win == "CombatAbilityWnd" and id == "CAW_CombatEffectButton" then return discActive end
+  return child(win, id)
+end
+eq.WindowText = function(win, id)
+  if win == "CombatAbilityWnd" and id == "CAW_CombatEffectLabel" then return "Test Discipline" end
+  return text(win, id)
+end
+eq.ChildArt = function(win, id, kind)
+  if win == "CombatAbilityWnd" and id == "CAW_CombatEffectButton" then return nil end
+  return art(win, id, kind)
+end
+eq.Gauge = function(kind)
+  if kind == 26 then gaugeReads = (gaugeReads or 0) + 1; return discFraction, discTime end
+  return gauge(kind)
+end
+eq.ClickChild = function(win, id, button)
+  if win == "CombatAbilityWnd" and id == "CAW_CombatEffectButton" then
+    assert(button == "left")
+    endClicks, discActive = endClicks + 1, false
+    return true
+  end
+  return click(win, id, button)
+end
+local button, drawText = ui.InvisibleButton, ui.DrawText
+ui.InvisibleButton = function(id, ...)
+  local hit = button(id, ...)
+  if id == "##cawEffect" then discIcon = { ui.GetItemRect() } end
+  return hit
+end
+ui.DrawText = function(x, y, r, g, b, a, value)
+  if value == discTime then drewDiscTime = true end
+  return drawText(x, y, r, g, b, a, value)
+end
+)lua");
+            s.frames(3);
+            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK(run("return tostring(drewDiscTime and gaugeReads > 0 and discIcon ~= nil)") == "true");
+            run("discFraction, discTime, drewDiscTime = 0.5, '30s', false");
+            s.frames(2);
+            CHECK(run("return tostring(drewDiscTime)") == "true");
+            lua_getglobal(L, "discIcon");
+            float rect[4]{};
+            for (int i = 0; i < 4; ++i) {
+                lua_rawgeti(L, -1, i + 1);
+                rect[i] = static_cast<float>(lua_tonumber(L, -1));
+                lua_pop(L, 1);
+            }
+            lua_settop(L, 0);
+            auto& io = ImGui::GetIO();
+            io.AddMousePosEvent((rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2);
+            s.frames(1);
+            io.AddMouseButtonEvent(0, true);
+            s.frames(1);
+            io.AddMouseButtonEvent(0, false);
+            s.frames(1);
+            CHECK(run("return tostring(endClicks)") == "1");
+            run("gaugeReads, drewDiscTime, discIcon = 0, false, nil");
+            s.frames(2);
+            CHECK(run("return tostring(gaugeReads == 0 and not drewDiscTime and discIcon == nil)") == "true");
+            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        }
+        ImGui::DestroyContext(ctx);
+    }
+}
+
+TEST_CASE("UI packs: the gamepad's first focus is the discipline list, and LB ends the active discipline") {
+    test::ScratchDir scratch("ui_pack_discipline_pad_test");
+    const auto dir = scratch.path();
+    fs::create_directories(dir / "game");
+    fs::copy(fs::path(__FILE__).parent_path().parent_path() / "ui" / "gamepad", dir / "gamepad",
+             fs::copy_options::recursive);
+    ImGuiContext* ctx = ImGui::CreateContext();
+    ImGui::GetIO().IniFilename = nullptr;
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+    ImGui::GetIO().BackendFlags |= ImGuiBackendFlags_HasGamepad;
+    unsigned char* px = nullptr;
+    int w = 0, h = 0;
+    ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&px, &w, &h);
+    {
+        Session s(dir, "gamepad");
+        auto* L = s.lua.state();
+        auto run = [&](const char* code) {
+            const int rc = luaL_dostring(L, code);
+            INFO((rc == LUA_OK ? "" : lua_tostring(L, -1)));
+            REQUIRE(rc == LUA_OK);
+            const std::string result = lua_isstring(L, -1) ? lua_tostring(L, -1) : "";
+            lua_settop(L, 0);
+            return result;
+        };
+        // A pad in menu mode; padPress is the button that went down this frame.
+        run(R"lua(
+padPress, windowShown, discActive, endClicks, uses = nil, false, true, 0, 0
+eq.gamepad = {
+  connected = function() return true end,
+  type = function() return 'xbox' end,
+  mode = function() return 'menu' end,
+  set_mode = function() return 'menu' end,
+  pressed = function(b) return b == padPress end,
+  down = function(b) return b == padPress end,
+  released = function() return false end,
+  axis = function() return 0 end,
+  glyph = function(b) return string.upper(b) end,
+  takes_b = function() end,
+  request_focus = function(window) ui.SetWindowFocus(window) end,
+}
+local shown, replace, child, text, art, click = eq.WindowShown, eq.ReplaceWindow, eq.ChildShown, eq.WindowText,
+  eq.ChildArt, eq.ClickChild
+eq.WindowShown = function(win) if win == "CombatAbilityWnd" then return windowShown end return shown(win) end
+eq.ReplaceWindow = function(win)
+  if win == "CombatAbilityWnd" then return true, 40, 40, 360, 190 end
+  return replace(win)
+end
+eq.ChildShown = function(win, id)
+  if win == "CombatAbilityWnd" and id == "CAW_CombatEffectButton" then return discActive end
+  return child(win, id)
+end
+eq.WindowText = function(win, id)
+  if win == "CombatAbilityWnd" and id == "CAW_CombatEffectLabel" then return "Test Discipline" end
+  return text(win, id)
+end
+eq.ChildArt = function(win, id, kind)
+  if win == "CombatAbilityWnd" and id == "CAW_CombatEffectButton" then return nil end
+  return art(win, id, kind)
+end
+eq.Gauge = function() return 0.5, "30s" end
+eq.Disciplines = function()
+  return { { index = 0, spell = 101, name = "Guard", icon = 0, level = 50, endurance = 0, reuse = 60,
+    remaining = 0, timer = 1 } }
+end
+eq.PressButtonFrom = function() uses = uses + 1 end
+eq.ClickChild = function(win, id, button)
+  if win == "CombatAbilityWnd" and id == "CAW_CombatEffectButton" then
+    endClicks, discActive = endClicks + 1, false
+    return true
+  end
+  return click(win, id, button)
+end
+local button = ui.InvisibleButton
+ui.InvisibleButton = function(id, ...)
+  local hit = button(id, ...)
+  if id == "##cawEffect" then effectFocused = ui.IsItemFocused() end
+  if id == "##row" then rowFocused = ui.IsItemFocused() end
+  return hit
+end
+)lua");
+        s.frames(240); // the pack takes the pad's focus for a window only from 3 seconds after zoning in
+        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        run("windowShown = true");
+        s.frames(30); // the window appears with the focus; past its settle time
+        CHECK(run("return tostring(rowFocused == true and effectFocused == false)") == "true");
+        auto& io = ImGui::GetIO();
+        // A press of A uses the focused discipline; the running one is not ended. (ImGui activates only with its
+        // navigation cursor shown, as it is once the pad has moved it.)
+        ImGui::SetNavCursorVisible(true);
+        io.AddKeyEvent(ImGuiKey_GamepadFaceDown, true);
+        s.frames(1);
+        io.AddKeyEvent(ImGuiKey_GamepadFaceDown, false);
+        s.frames(2);
+        CHECK(run("return tostring(endClicks == 0 and uses == 1)") == "true");
+        // LB ends it.
+        run("padPress = 'lb'");
+        s.frames(1);
+        run("padPress = nil");
+        s.frames(2);
+        CHECK(run("return tostring(endClicks)") == "1");
+        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+    }
+    ImGui::DestroyContext(ctx);
+}
+
+TEST_CASE("UI packs: linked discipline cooldowns show red fills and matching seconds until ready") {
+    for (const char* pack : {"modern", "gamepad"}) {
+        INFO(pack);
+        test::ScratchDir scratch("ui_pack_discipline_cooldown_test");
+        const auto dir = scratch.path();
+        fs::create_directories(dir / "game");
+        fs::copy(fs::path(__FILE__).parent_path().parent_path() / "ui" / pack, dir / pack,
+                 fs::copy_options::recursive);
+        ImGuiContext* ctx = ImGui::CreateContext();
+        ImGui::GetIO().IniFilename = nullptr;
+        unsigned char* px = nullptr;
+        int w = 0, h = 0;
+        ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&px, &w, &h);
+        {
+            Session s(dir, pack);
+            auto* L = s.lua.state();
+            auto run = [&](const char* code) {
+                const int rc = luaL_dostring(L, code);
+                INFO((rc == LUA_OK ? "" : lua_tostring(L, -1)));
+                REQUIRE(rc == LUA_OK);
+                const std::string result = lua_isstring(L, -1) ? lua_tostring(L, -1) : "";
+                lua_settop(L, 0);
+                return result;
+            };
+            run(R"lua(
+sharedLeft, expectedTime, timerDraws, redArea, redFills, abilityClicks = 600, "10:00", 0, 0, 0, 0
+local shown, replace, child, text, cooldown, click = eq.WindowShown, eq.ReplaceWindow,
+  eq.ChildShown, eq.WindowText, eq.ButtonCoolDown, eq.ClickChild
+local names, reuse = { "Long Guard", "Short Guard", "Independent" }, { 600, 300, 120 }
+eq.WindowShown = function(win) if win == "CombatAbilityWnd" then return true end return shown(win) end
+eq.ReplaceWindow = function(win)
+  if win == "CombatAbilityWnd" then return true, 40, 40, 360, 190 end
+  return replace(win)
+end
+eq.ChildShown = function(win, id)
+  if win == "CombatAbilityWnd" and id == "CAW_CombatEffectButton" then return false end
+  return child(win, id)
+end
+eq.WindowText = function(win, id)
+  local n = id:match("^CAW_Button(%d)$")
+  if win == "CombatAbilityWnd" and n then return names[tonumber(n)] or "" end
+  return text(win, id)
+end
+eq.ButtonCoolDown = function(win, id, y0, y1)
+  local n = id:match("^CAW_Button(%d)$")
+  n = n and tonumber(n)
+  if win == "CombatAbilityWnd" and n and n <= 2 and sharedLeft > 0 then
+    return y0, 0, 0, 0, 0.25, sharedLeft * 1000, reuse[n] * 1000
+  end
+  return cooldown(win, id, y0, y1)
+end
+local row = 0
+eq.Disciplines = function()
+  row = 0
+  local out = {}
+  for i = 1, 3 do
+    out[i] = { index = i - 1, spell = 100 + i, name = names[i], icon = 0, level = 50,
+      endurance = 0, reuse = reuse[i], remaining = i <= 2 and sharedLeft or 0, timer = i <= 2 and 1 or 2 }
+  end
+  return out
+end
+eq.ClickChild = function(win, id, button)
+  if win == "CombatAbilityWnd" and id == "CAW_Button1" and button == "left" then
+    abilityClicks = abilityClicks + 1; return true
+  end
+  return click(win, id, button)
+end
+eq.PressButtonFrom = function(win, id, n)
+  assert(win == "CombatAbilityWnd" and id == "Discipline" and n == 1)
+  abilityClicks = abilityClicks + 1
+end
+local button, rect, drawText = ui.InvisibleButton, ui.DrawRectFilled, ui.DrawText
+ui.InvisibleButton = function(id, ...)
+  local hit = button(id, ...)
+  if id == "##row" then row = row + 1 end
+  if id == "##caw1" or (id == "##row" and row == 1) then firstAbility = { ui.GetItemRect() } end
+  return hit
+end
+ui.DrawRectFilled = function(x0, y0, x1, y1, r, g, b, a, ...)
+  if a and math.abs(a - 0.20) < 0.0001 and r > g * 1.5 and r > b * 1.5 then
+    redFills, redArea = redFills + 1, redArea + (x1 - x0) * (y1 - y0)
+  end
+  return rect(x0, y0, x1, y1, r, g, b, a, ...)
+end
+ui.DrawText = function(x, y, r, g, b, a, value)
+  if value == expectedTime then timerDraws = timerDraws + 1 end
+  return drawText(x, y, r, g, b, a, value)
+end
+)lua");
+            s.frames(3);
+            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            run("redFills, redArea, timerDraws = 0, 0, 0");
+            s.frames(1);
+            CHECK(run("return tostring(redFills == 2 and timerDraws >= 2)") == "true");
+            run("fullArea = redArea");
+            lua_getglobal(L, "firstAbility");
+            float rect[4]{};
+            for (int i = 0; i < 4; ++i) {
+                lua_rawgeti(L, -1, i + 1);
+                rect[i] = static_cast<float>(lua_tonumber(L, -1));
+                lua_pop(L, 1);
+            }
+            lua_settop(L, 0);
+            auto& io = ImGui::GetIO();
+            io.AddMousePosEvent((rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2);
+            s.frames(1);
+            io.AddMouseButtonEvent(0, true);
+            s.frames(1);
+            io.AddMouseButtonEvent(0, false);
+            s.frames(1);
+            CHECK(run("return tostring(abilityClicks)") == "1"); // The normal use handler still receives the click.
+            run("sharedLeft, expectedTime, redFills, redArea, timerDraws = 30, '0:30', 0, 0, 0");
+            s.frames(1);
+            CHECK(run("return tostring(redFills == 2 and timerDraws >= 2 and redArea < fullArea)") == "true");
+            run("sharedLeft, redFills, timerDraws = 0, 0, 0");
+            s.frames(1);
+            CHECK(run("return tostring(redFills == 0 and timerDraws == 0)") == "true");
+            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        }
+        ImGui::DestroyContext(ctx);
+    }
+}
+
+TEST_CASE("UI packs: hover respawn draws available and unavailable choices without script errors") {
+    for (const char* pack : {"modern", "gamepad"}) {
+        INFO(pack);
+        const fs::path src = fs::path(__FILE__).parent_path().parent_path() / "ui" / pack;
+        test::ScratchDir scratch("ui_pack_respawn_test");
+        const fs::path dir = scratch.path();
+        fs::create_directories(dir / "game");
+        fs::copy(src, dir / pack, fs::copy_options::recursive);
+        ImGuiContext* ctx = ImGui::CreateContext();
+        ImGui::GetIO().IniFilename = nullptr;
+        unsigned char* px = nullptr;
+        int width = 0, height = 0;
+        ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&px, &width, &height);
+        {
+            test::ManualClock clock;
+            clock.hold();
+            net::ConnectionOptions options;
+            options.session.clock = clock.source();
+            Session s(dir, pack, std::move(options));
+            s.conn.receive_zone_packet_for_test(respawn_window_packet(1));
+            clock.advance(std::chrono::milliseconds(1));
+            s.frames(3);
+            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            ImGuiWindow* respawn = ImGui::FindWindowByName(std::string_view(pack) == "modern"
+                ? "###modern.RespawnWnd" : "Respawn");
+            REQUIRE(respawn);
+            CHECK(respawn->Active);
+            CHECK(s.api.child_state("RespawnWnd", "SelectButton") == true);
+            CHECK(s.api.list_texts("RespawnWnd", "OptionsList") == std::vector<std::string>{"*", "r"});
+
+            CHECK(s.api.click_list("RespawnWnd", "OptionsList", 1, 0));
+            s.frames(2);
+            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK(s.api.child_state("RespawnWnd", "SelectButton") == false);
+            CHECK(s.api.click_child("RespawnWnd", "SelectButton"));
+            CHECK_FALSE(s.conn.respawn_chosen());
+
+            s.conn.receive_zone_packet_for_test(respawn_window_packet(0));
+            clock.advance(std::chrono::milliseconds(1));
+            s.frames(2);
+            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK(s.api.child_state("RespawnWnd", "SelectButton") == true);
+            CHECK(s.api.list_texts("RespawnWnd", "OptionsList") == std::vector<std::string>{"*", ""});
+        }
+        ImGui::DestroyContext(ctx);
+    }
+}
+
+TEST_CASE("UI packs: the respawn window leaves the focus alone for a question that is not a resurrection") {
+    for (const char* pack : {"modern", "gamepad"}) {
+        INFO(pack);
+        const bool gamepad_pack = std::string_view(pack) == "gamepad";
+        const fs::path src = fs::path(__FILE__).parent_path().parent_path() / "ui" / pack;
+        test::ScratchDir scratch("ui_pack_respawn_plain_question_test");
+        const fs::path dir = scratch.path();
+        fs::create_directories(dir / "game");
+        fs::copy(src, dir / pack, fs::copy_options::recursive);
+        ImGuiContext* ctx = ImGui::CreateContext();
+        ImGui::GetIO().IniFilename = nullptr;
+        unsigned char* px = nullptr;
+        int width = 0, height = 0;
+        ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&px, &width, &height);
+        {
+            test::ManualClock clock;
+            clock.hold();
+            net::ConnectionOptions options;
+            options.session.clock = clock.source();
+            Session s(dir, pack, std::move(options));
+            s.conn.receive_zone_packet_for_test(respawn_window_packet(1));
+            clock.advance(std::chrono::milliseconds(1));
+            s.frames(3);
+            app::EqHost::Confirm q;
+            q.text = "A question of a window's own";
+            s.host.confirm = std::move(q);
+            s.frames(3);
+            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            ImGuiWindow* confirm = ImGui::FindWindowByName(gamepad_pack ? "Confirm" : "###modern.ConfirmationDialogBox");
+            ImGuiWindow* respawn = ImGui::FindWindowByName(gamepad_pack ? "Respawn" : "###modern.RespawnWnd");
+            REQUIRE(confirm);
+            REQUIRE(respawn);
+            CHECK(confirm->Active);
+            REQUIRE(luaL_dostring(s.lua.state(),
+                "assert(eq.ChildShown('ConfirmationDialogBox', 'ResurrectionOffer') == false)") == LUA_OK);
+            ImGui::FocusWindow(respawn);
+            s.frames(3);
+            REQUIRE(GImGui->NavWindow);
+            CHECK(GImGui->NavWindow->RootWindow == respawn);
+        }
+        ImGui::DestroyContext(ctx);
+    }
+}
+
+TEST_CASE("UI packs: resurrection keeps the original respawn choices and timer until an explicit destination") {
+    for (const char* pack : {"modern", "gamepad"}) {
+        for (int choice : {0, 1, 2}) {
+            const bool accept = choice != 0, manual_bind = choice == 2;
+            INFO(pack, " accept=", accept, " manual_bind=", manual_bind);
+            const bool gamepad_pack = std::string_view(pack) == "gamepad";
+            const fs::path src = fs::path(__FILE__).parent_path().parent_path() / "ui" / pack;
+            test::ScratchDir scratch("ui_pack_respawn_question_test");
+            const fs::path dir = scratch.path();
+            fs::create_directories(dir / "game");
+            fs::copy(src, dir / pack, fs::copy_options::recursive);
+            ImGuiContext* ctx = ImGui::CreateContext();
+            ImGui::GetIO().IniFilename = nullptr;
+            unsigned char* px = nullptr;
+            int width = 0, height = 0;
+            ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&px, &width, &height);
+            {
+                test::ManualClock clock;
+                auto options = test::quick_options();
+                options.session.clock = clock.source();
+                test::Rig rig(test::MockConfig::standard(), std::move(options));
+                REQUIRE(rig.to_zone());
+                clock.hold();
+                Config config;
+                platform::GamepadState state;
+                state.connected = true;
+                state.type = platform::PadType::Xbox;
+                app::Gamepad pad(config, dir / "gamepad.ini");
+                pad.set_state(&state);
+                Session s(dir, pack);
+                auto& conn = rig.conn;
+                s.host.conn = &conn;
+                s.host.gamepad = &pad;
+                // Observe the actual pack's paint and selected-row input, rather than only its shared model.
+                REQUIRE(luaL_dostring(s.lua.state(), R"lua(
+local TextColored, DrawText, ListInfo = ui.TextColored, ui.DrawText, eq.ListInfo
+ui.TextColored = function(r, g, b, a, text, ...)
+  if text == "Resurrect" then RespawnPaintColor = { r, g, b } end
+  return TextColored(r, g, b, a, text, ...)
+end
+ui.DrawText = function(x, y, r, g, b, a, text, ...)
+  if text == "Resurrect" then RespawnPaintColor = { r, g, b } end
+  return DrawText(x, y, r, g, b, a, text, ...)
+end
+eq.ListInfo = function(win, child)
+  local rows, columns, selected, labels, widths, multi = ListInfo(win, child)
+  if win == "RespawnWnd" and child == "OptionsList" then RespawnPaintSelected = selected end
+  return rows, columns, selected, labels, widths, multi
+end
+)lua") == LUA_OK);
+
+                net::Death death;
+                death.spawn_id = death.corpse_id = conn.world().player_id;
+                death.killer_id = 101;
+                death.damage = 5000;
+                conn.receive_zone_packet_for_test(net::encode(death));
+                conn.receive_zone_packet_for_test(respawn_window_packet(1));
+                if (manual_bind) CHECK(s.api.click_list("RespawnWnd", "OptionsList", 0, 0));
+                conn.receive_zone_packet_for_test(resurrection_offer_packet());
+                REQUIRE(conn.confirmation());
+                REQUIRE(conn.confirmation()->id == net::kConfirmRezz);
+                clock.advance(std::chrono::milliseconds(1));
+                s.frames(3); // both packets arrived before the first UI frame, within its initial three seconds
+                CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+                ImGuiWindow* confirm = ImGui::FindWindowByName(gamepad_pack ? "Confirm" : "###modern.ConfirmationDialogBox");
+                REQUIRE(confirm);
+                CHECK(confirm->Active);
+                REQUIRE(GImGui->NavWindow);
+                CHECK(GImGui->NavWindow->RootWindow == confirm);
+                const char* respawn_name = gamepad_pack ? "Respawn" : "###modern.RespawnWnd";
+                ImGuiWindow* respawn = ImGui::FindWindowByName(respawn_name);
+                REQUIRE(respawn);
+                CHECK(respawn->Active);
+                CHECK(s.api.replaces("RespawnWnd"));
+                REQUIRE(luaL_dostring(s.lua.state(),
+                    "assert(RespawnPaintColor and math.abs(RespawnPaintColor[1]-1)<0.001 and "
+                    "math.abs(RespawnPaintColor[2]-0.25)<0.001 and math.abs(RespawnPaintColor[3]-0.25)<0.001); "
+                    "assert(RespawnPaintSelected==0)") == LUA_OK);
+                // Match the app's fallback draw before the Lua pass: the pack must retain ownership while
+                // the question is present, so a second "You have died" window cannot replace its original.
+                ReplacementCheck replacements(s.api);
+                ui::InGameView fallback;
+                fallback.respawn.options = {{0, "Bind Location"}, {1, "Resurrect"}};
+                fallback.respawn.ready = true;
+                s.frames(3, &fallback);
+                ImGuiWindow* duplicate = ImGui::FindWindowByName("You have died##hailstone_respawn");
+                CHECK((!duplicate || !duplicate->Active));
+                CHECK(respawn->Active);
+                CHECK(confirm->Active);
+                CHECK(GImGui->NavWindow->RootWindow == confirm);
+                auto requests = pad.take_focus_requests();
+                if (gamepad_pack) {
+                    REQUIRE_FALSE(requests.empty());
+                    CHECK(requests.back() == "Confirm");
+                    CHECK(std::find(requests.begin(), requests.end(), "Respawn") == requests.end());
+                }
+                REQUIRE(luaL_dostring(s.lua.state(),
+                    "assert(eq.ChildShown('ConfirmationDialogBox', 'ResurrectionOffer') == true)") == LUA_OK);
+                // Another window taken in hand while the offer waits (typing in chat) keeps the focus: the offer
+                // was put in front once, as it appeared, not every frame (which would take the active widget).
+                ImGui::FocusWindow(respawn);
+                s.frames(3);
+                REQUIRE(GImGui->NavWindow);
+                CHECK(GImGui->NavWindow->RootWindow == respawn);
+                CHECK(confirm->Active);
+                CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+
+                CHECK(s.api.click_child("ConfirmationDialogBox", accept ? "Yes_Button" : "No_Button"));
+                CHECK_FALSE(conn.confirmation());
+                CHECK_FALSE(conn.respawn_chosen());
+                CHECK(conn.respawn_option_available(0));
+                CHECK(conn.respawn_option_available(1) == accept);
+                const auto remaining = conn.respawn_ms_left();
+                clock.advance(std::chrono::milliseconds(2000));
+                s.frames(2);
+                CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+                respawn = ImGui::FindWindowByName(respawn_name);
+                REQUIRE(respawn);
+                CHECK(respawn->Active);
+                CHECK(s.api.child_state("RespawnWnd", "SelectButton") == true);
+                CHECK(s.api.child_state("RespawnWnd", "OptionsList") == true);
+                CHECK(conn.respawn_ms_left() == remaining - 2000);
+                CHECK_FALSE(conn.respawn_chosen());
+                auto markers = s.api.list_texts("RespawnWnd", "OptionsList");
+                REQUIRE(markers.size() == 2);
+                CHECK(markers[0] == "*");
+                CHECK(markers[1] == "r"); // the original's marker stays; Yes only enables the line
+                if (accept) {
+                    REQUIRE(luaL_dostring(s.lua.state(),
+                        "assert(RespawnPaintColor and math.abs(RespawnPaintColor[1]-0.25)<0.001 and "
+                        "math.abs(RespawnPaintColor[2]-1)<0.001 and math.abs(RespawnPaintColor[3]-0.35)<0.001)") == LUA_OK);
+                }
+                // Yes leaves the selection where it was (0x74e9e0 never changes it).
+                REQUIRE(luaL_dostring(s.lua.state(), "assert(RespawnPaintSelected==0)") == LUA_OK);
+                if (gamepad_pack) {
+                    requests = pad.take_focus_requests();
+                    REQUIRE_FALSE(requests.empty());
+                    CHECK(requests.back() == "Respawn");
+                }
+                CHECK(s.api.click_list("RespawnWnd", "OptionsList", accept ? 1 : 0, 0));
+                CHECK(s.api.child_state("RespawnWnd", "SelectButton") == true);
+                CHECK_FALSE(conn.respawn_chosen());
+                CHECK(s.api.click_child("RespawnWnd", "SelectButton"));
+                CHECK(conn.respawn_chosen());
+                CHECK(s.api.child_state("RespawnWnd", "SelectButton") == false);
+                net::ZonePlayerToBind bind;
+                bind.zone_id = 2;
+                bind.zone_name = accept ? "Resurrection destination" : "Bind destination";
+                conn.receive_zone_packet_for_test(net::encode(bind));
+                s.frames(2);
+                CHECK_FALSE(conn.respawn_window());
+                CHECK_FALSE(respawn->Active);
+                CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            }
+            ImGui::DestroyContext(ctx);
+        }
     }
 }
 
@@ -2355,6 +2985,82 @@ TEST_CASE("UI packs (modern): an item display draws the shown item's stats, and 
     ImGui::DestroyContext(ctx);
 }
 
+// Hailstone's item comparison (docs/item-compare.md): a linked item's display says what wearing it would change,
+// in both packs, and the Options switch turns it off.
+TEST_CASE("UI packs: the item display compares the item with what you wear") {
+    for (const char* pack : {"modern", "gamepad"}) {
+        CAPTURE(pack);
+        fs::path src = fs::path(__FILE__).parent_path().parent_path() / "ui" / pack;
+        hailstone::test::ScratchDir dir_scratch("ui_pack_item_compare_test");
+        fs::path dir = dir_scratch.path();
+        fs::create_directories(dir / "game");
+        fs::copy(src, dir / pack, fs::copy_options::recursive);
+        ImGuiContext* ctx = ImGui::CreateContext();
+        ImGui::GetIO().IniFilename = nullptr;
+        unsigned char* px = nullptr;
+        int w = 0, h = 0;
+        ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&px, &w, &h);
+        {
+            Session s(dir, pack);
+            namespace mech = game::mechanics;
+            mech::GameTables tables;
+            tables.class_levels.parse("60^1^400^0^300^3^6^0.9^0^1.25\n");
+            tables.skill_caps.parse("1^15^60^210^0\n");
+            mech::CharacterSheet sheet;
+            sheet.level = sheet.highest_level = 60;
+            sheet.base_str = sheet.base_sta = sheet.base_cha = sheet.base_dex = sheet.base_int = sheet.base_agi =
+                sheet.base_wis = 75;
+            sheet.buffs.resize(mech::kPlayerBuffSlots);
+            net::Item old_helm;
+            old_helm.name = "Old Helm";
+            old_helm.classes = old_helm.races = 0xffff;
+            old_helm.equip_slots = 1u << 2;
+            old_helm.hp = 10;
+            sheet.possessions[2] = old_helm;
+            mech::Character ch(sheet, tables, [](std::int32_t) -> const game::SpellData* { return nullptr; });
+            ch.process_all_stats();
+            s.host.character = &ch;
+            int option = 1;
+            s.host.find_option = [&](std::string_view o) -> std::optional<int> { return o == "item_compare" ? option : 1; };
+
+            net::Item helm = old_helm;
+            helm.id = 1001;
+            helm.name = "Iron Helm";
+            helm.hp = 60;
+            std::vector<net::Item> displays{helm};
+            std::vector<std::uint64_t> ids{1};
+            s.host.item_displays = &displays;
+            s.host.item_display_ids = &ids;
+            lua_State* L = s.lua.state();
+            REQUIRE(luaL_dostring(L, R"(
+                test_seen = {}
+                local dt, tc = ui.DrawText, ui.TextColored
+                ui.DrawText = function(...) local a = { ... } test_seen[tostring(a[#a])] = true return dt(...) end
+                ui.TextColored = function(...) local a = { ... } test_seen[tostring(a[5])] = true return tc(...) end)") ==
+                    LUA_OK);
+            auto seen = [&](const std::string& text) {
+                REQUIRE(luaL_dostring(L, ("return test_seen['" + text + "'] == true").c_str()) == LUA_OK);
+                bool b = lua_toboolean(L, -1);
+                lua_settop(L, 0);
+                return b;
+            };
+            s.frames(3);
+            const std::string hp = "+50 HP (" + std::to_string(ch.max_hp(true)) + " to " +
+                                   std::to_string(ch.max_hp(true) + 50) + ")";
+            CHECK(seen("Compared with your Old Helm (Head)"));
+            CHECK(seen("Upgrade"));
+            CHECK(seen(hp));
+            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+
+            option = 0;
+            REQUIRE(luaL_dostring(L, "test_seen = {}") == LUA_OK);
+            s.frames(2);
+            CHECK_FALSE(seen("Compared with your Old Helm (Head)"));
+        }
+        ImGui::DestroyContext(ctx);
+    }
+}
+
 // The modern windows whose per-frame reading was cut down (the reads kept to what changed, the tables made once)
 // draw without script errors when shown.
 TEST_CASE("UI packs (modern): the inventory, loot, trade, raid, guild, merchant, map and their kin draw") {
@@ -2576,6 +3282,266 @@ TEST_CASE("UI packs (modern): the raid leader drags a member onto another group"
         CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
     }
     ImGui::DestroyContext(ctx);
+}
+
+TEST_CASE("UI packs: raid member context menus and leadership hotkeys are reachable through drawn controls") {
+    for (const char* pack : {"modern", "gamepad"}) {
+        INFO(pack);
+        const bool modern = std::string_view(pack) == "modern";
+        fs::path src = fs::path(__FILE__).parent_path().parent_path() / "ui" / pack;
+        hailstone::test::ScratchDir scratch("ui_pack_raid_leadership_test");
+        fs::path dir = scratch.path();
+        fs::create_directories(dir / "game");
+        fs::copy(src, dir / pack, fs::copy_options::recursive);
+        std::ofstream(dir / "UI_Test_Server.ini") << "[Tips]\nShowTips=0\nShowTOTD=0\n";
+        ImGuiContext* ctx = ImGui::CreateContext();
+        ImGui::GetIO().IniFilename = nullptr;
+        unsigned char* pixels = nullptr;
+        int width = 0, height = 0;
+        ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+        {
+            Session s(dir, pack);
+            Config gamepad_config;
+            app::Gamepad gamepad(gamepad_config, {});
+            s.host.gamepad = &gamepad;
+            auto hot_buttons = std::make_unique<game::HotButtonStore>();
+            s.host.hot_buttons = hot_buttons.get();
+            s.host.set_hot_button = [&](int bar, int button, const game::HotButton& value) {
+                hot_buttons->current(bar, button) = value;
+            };
+            hailstone::test::Rig rig;
+            REQUIRE(rig.to_zone());
+            auto& conn = rig.conn;
+            s.host.conn = &conn;
+            const std::string me = conn.character_name();
+            net::RaidUpdate raid;
+            raid.general.action = net::kRaidAddMember;
+            raid.general.leader_name = me;
+            raid.class_ = 1;
+            raid.level = 60;
+            for (int i = 0; i < 18; ++i) {
+                raid.general.player_name = i ? "Member" + std::to_string(i) : me;
+                raid.general.parameter = static_cast<std::uint32_t>(i / 6);
+                conn.receive_zone_packet_for_test(net::encode_raid_update(raid));
+            }
+            conn.set_raid_target("Member1");
+            lua_State* L = s.lua.state();
+            auto run = [&](const std::string& code) {
+                INFO(code);
+                REQUIRE(luaL_dostring(L, code.c_str()) == LUA_OK);
+            };
+            // Record the real controls' rectangles; clicks below are mouse input, never direct ClickChild calls.
+            run(R"lua(
+                controls, memberPoints = {}, {}
+                local button, invisible, menuItem, drawText = ui.Button, ui.InvisibleButton, ui.MenuItem, ui.DrawText
+                local function record(id)
+                  controls[id] = { ui.GetItemRect() }
+                end
+                ui.Button = function(id, ...)
+                  local clicked = button(id, ...)
+                  record(id)
+                  return clicked
+                end
+                ui.InvisibleButton = function(id, ...)
+                  local clicked = invisible(id, ...)
+                  record(id)
+                  return clicked
+                end
+                ui.MenuItem = function(label, ...)
+                  local clicked = menuItem(label, ...)
+                  controls['menu.' .. label] = { ui.GetItemRect() }
+                  return clicked
+                end
+                ui.DrawText = function(...)
+                  local x, y, text = select(1, ...), select(2, ...), select(7, ...)
+                  if text == 'Member2' then memberPoints[text] = {x + 3, y + 3} end
+                  if text == 'Main Assist' or text == 'Mark NPC' then
+                    controls['menu.' .. text] = { ui.GetItemRect() }
+                  end
+                  return drawText(...)
+                end
+                ui.SetSetting('hud.size.RaidWindow', '1000,700')
+                ui.SetSetting('test.pos.RaidWindow', '20,20')
+                eq.ShowWindow('RaidWindow', true)
+            )lua");
+            s.frames(4);
+            // The gamepad pack's initial help tip covers the action column; dismiss unrelated onboarding first.
+            run("eq.ShowWindow('TipWindow', false)");
+            s.frames(2);
+            auto rectangle = [&](const std::string& id) {
+                lua_getglobal(L, "controls");
+                lua_getfield(L, -1, id.c_str());
+                REQUIRE(lua_istable(L, -1));
+                ImVec4 r;
+                float* fields[] = {&r.x, &r.y, &r.z, &r.w};
+                for (int i = 0; i < 4; ++i) {
+                    lua_rawgeti(L, -1, i + 1);
+                    *fields[i] = static_cast<float>(lua_tonumber(L, -1));
+                    lua_pop(L, 1);
+                }
+                lua_settop(L, 0);
+                return r;
+            };
+            auto mouse_click = [&](ImVec2 at, int button) {
+                auto& io = ImGui::GetIO();
+                io.AddMousePosEvent(at.x, at.y);
+                s.frames(1);
+                io.AddMouseButtonEvent(button, true);
+                s.frames(1);
+                io.AddMouseButtonEvent(button, false);
+                s.frames(2);
+                CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            };
+            auto click = [&](const std::string& id) {
+                const ImVec4 r = rectangle(id);
+                mouse_click(ImVec2((r.x + r.z) / 2, (r.y + r.w) / 2), ImGuiMouseButton_Left);
+            };
+            auto member_menu = [&] {
+                lua_getglobal(L, "memberPoints");
+                lua_getfield(L, -1, "Member2");
+                REQUIRE(lua_istable(L, -1));
+                lua_rawgeti(L, -1, 1);
+                const float x = static_cast<float>(lua_tonumber(L, -1));
+                lua_pop(L, 1);
+                lua_rawgeti(L, -1, 2);
+                const float y = static_cast<float>(lua_tonumber(L, -1));
+                lua_settop(L, 0);
+                mouse_click(ImVec2(x, y), ImGuiMouseButton_Right);
+                REQUIRE(s.host.menus.size() == 1);
+                REQUIRE_FALSE(s.host.menus[0].rows.empty());
+                CHECK(s.host.menus[0].rows.front().text == "Member2");
+            };
+            const std::array<const char*, 3> control_ids = modern ? std::array<const char*, 3>{
+                     "Invite Expedition##RAID_InviteExpedButton", "Invite Task##RAID_InviteTaskButton",
+                     "Member actions##RAID_MemberActionsButton"}
+                                        : std::array<const char*, 3>{"##top6", "##top7", "##memberactions"};
+            for (const char* id : control_ids)
+                CHECK(rectangle(id).z > 0);
+            run(modern ? "assert(controls['Main Assist##RAID_MainAssistButton'] == nil)"
+                       : "assert(controls['##assist'] == nil)");
+            auto delegates = [&] {
+                std::vector<net::DelegateAbility> result;
+                for (const auto& p : rig.server.zone_log)
+                    if (p.opcode == net::to_wire(net::Op::RaidDelegateAbility))
+                        if (auto d = net::decode_delegate_ability(p)) result.push_back(*d);
+                return result;
+            };
+            // A different member was selected first: opening the menu must use the row under the right click.
+            member_menu();
+            const auto disabled_assist = std::find_if(s.host.menus[0].rows.begin(), s.host.menus[0].rows.end(),
+                                                     [](const auto& row) { return row.text == "Main Assist"; });
+            REQUIRE(disabled_assist != s.host.menus[0].rows.end());
+            CHECK_FALSE(disabled_assist->enabled);
+            CHECK(delegates().empty());
+            s.host.menus.clear();
+            s.frames(2);
+            raid = {};
+            raid.general.action = net::kRaidSetLeader;
+            raid.general.player_name = raid.general.leader_name = me;
+            raid.leadership[16] = 3;
+            raid.leadership[0x13] = raid.leadership[0x14] = raid.leadership[0x1c] = 1;
+            conn.receive_zone_packet_for_test(net::encode_raid_update(raid));
+            s.frames(2);
+            CHECK(conn.leadership_ability_active(0x13, 1));
+            CHECK(conn.raid().leader == me);
+            conn.set_raid_target("Member1");
+            member_menu();
+            REQUIRE(std::any_of(s.host.menus[0].rows.begin(), s.host.menus[0].rows.end(), [](const auto& row) {
+                return row.text == "Main Assist" && row.enabled;
+            }));
+            click("menu.Main Assist");
+            REQUIRE(rig.until([&] { return delegates().size() == 1; }));
+            CHECK(delegates()[0].ability == 3);
+            CHECK(delegates()[0].name == "Member2");
+            member_menu();
+            click("menu.Mark NPC");
+            REQUIRE(rig.until([&] { return delegates().size() == 2; }));
+            CHECK(delegates()[1].ability == 4);
+            CHECK(delegates()[1].name == "Member2");
+            click(modern ? "Member actions##RAID_MemberActionsButton" : "##memberactions");
+            REQUIRE(s.host.menus.size() == 1);
+            CHECK(s.host.menus[0].rows.front().text == "Member2");
+            s.host.menus.clear();
+            s.frames(2);
+
+            // Disabling context menus restores direct member controls in each shipped pack.
+            conn.set_client_option_for_session(game::ClientOption::ContextMenus, 0);
+            run("controls = {}");
+            s.frames(3);
+            run(modern ? "assert(controls['Member actions##RAID_MemberActionsButton'] == nil)"
+                       : "assert(controls['##memberactions'] == nil)");
+            click(modern ? "Main Assist##RAID_MainAssistButton" : "##assist");
+            REQUIRE(rig.until([&] { return delegates().size() == 3; }));
+            CHECK(delegates()[2].ability == 3);
+            CHECK(delegates()[2].name == "Member2");
+            click(modern ? "Mark NPC##RAID_MarkNPCButton" : "##marker");
+            REQUIRE(rig.until([&] { return delegates().size() == 4; }));
+            CHECK(delegates()[3].ability == 4);
+            CHECK(delegates()[3].name == "Member2");
+            raid = {};
+            raid.general.action = net::kRaidSetLootType;
+            raid.general.parameter = 3;
+            conn.receive_zone_packet_for_test(net::encode_raid_update(raid));
+            if (!modern) {
+                const ImVec4 r = rectangle("##assist");
+                auto& io = ImGui::GetIO();
+                io.AddMousePosEvent((r.x + r.z) / 2, (r.y + r.w) / 2);
+                s.frames(1);
+                io.AddMouseWheelEvent(0, -8);
+                s.frames(3);
+            }
+            click(modern ? "Add Looter##RAID_AddLooterButton" : "##addlooter");
+            const auto add_looter = net::encode(net::RaidGeneral{net::kRaidCmdAddLooter, me, "Member2"});
+            REQUIRE(rig.until([&] {
+                return std::any_of(rig.server.zone_log.begin(), rig.server.zone_log.end(), [&](const auto& packet) {
+                    return packet.opcode == add_looter.opcode && packet.data == add_looter.data;
+                });
+            }));
+            conn.set_client_option_for_session(game::ClientOption::ContextMenus, 1);
+
+            run("eq.ShowWindow('RaidWindow', false) eq.ShowWindow('LeadershipWindow', true)"
+                " eq.ListInfo('LeadershipWindow', 'LEList2') eq.ListClick('LeadershipWindow', 'LEList2', 0, 'left')");
+            s.frames(20); // let the gamepad window's focus-settling interval finish before pressing its actions
+            {
+                // Purchase is offered with any point, below the RoF2 cost too: the server's costs decide.
+                net::LeadershipExp points;
+                points.raid_points = 1;
+                conn.receive_zone_packet_for_test(net::encode(points));
+                run("assert(eq.ChildState('LeadershipWindow', 'LEW_PurchaseButton') == true)");
+                points.raid_points = 0;
+                conn.receive_zone_packet_for_test(net::encode(points));
+                run("assert(eq.ChildState('LeadershipWindow', 'LEW_PurchaseButton') == false)");
+            }
+            for (int n = 1; n <= 3; ++n) {
+                CAPTURE(n);
+                const std::string id = modern ? "Create Hotkey " + std::to_string(n) + "##LEW_HotkeyButton" + std::to_string(n)
+                                             : "##LeadershipWindowLEW_HotkeyButton" + std::to_string(n);
+                run("assert(eq.ChildState('LeadershipWindow', 'LEW_HotkeyButton" + std::to_string(n) + "'))");
+                click(id);
+                REQUIRE(s.host.cursor_button);
+                CHECK(s.host.cursor_button->type == game::HotButtonType::Leadership);
+                CHECK(s.host.cursor_button->slot == 16 * 8 + n);
+                if (modern) {
+                    s.host.cursor_button.reset();
+                } else {
+                    run("assert(GPSTATE.assign and GPSTATE.assign.from == 'Leadership')");
+                    s.frames(20);
+                    click("##slot"); // the final cross-hotbar slot drawn by the assignment picker
+                    CHECK_FALSE(s.host.cursor_button);
+                    run("assert(not GPSTATE.assign)");
+                    CHECK(hot_buttons->current(0, 7).type == game::HotButtonType::Leadership);
+                    CHECK(hot_buttons->current(0, 7).slot == 16 * 8 + n);
+                    s.frames(20);
+                }
+            }
+            // A passive selection disables all three creation controls instead of making inert hot buttons.
+            run("eq.ListInfo('LeadershipWindow', 'LEList2') eq.ListClick('LeadershipWindow', 'LEList2', 1, 'left')");
+            s.frames(2);
+            click(modern ? "Create Hotkey 1##LEW_HotkeyButton1" : "##LeadershipWindowLEW_HotkeyButton1");
+            CHECK_FALSE(s.host.cursor_button);
+        }
+        ImGui::DestroyContext(ctx);
+    }
 }
 
 TEST_CASE("UI packs (modern): the Options window's Textures section picks the texture pack and starts the studio") {

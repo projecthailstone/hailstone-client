@@ -1,10 +1,14 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <map>
+#include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -13,14 +17,20 @@
 #include <volk.h>
 #include <vk_mem_alloc.h>
 
+#include "render/frame_gen.h"
+#include "render/frame_gen_logic.h"
+#include "render/fsr3_upscaler.h"
 #include "render/pipeline_cache.h"
 #include "render/point_shadows.h"
 #include "render/retire_queue.h"
 #include "render/shadows.h"
+#include "render/temporal.h"
 
 namespace hailstone::platform { class Window; }
 
 namespace hailstone::render {
+
+class GpuSharedCache;
 
 // Optional device capabilities the renderers adapt to.
 struct DeviceCaps {
@@ -28,6 +38,9 @@ struct DeviceCaps {
     // R8G8B8A8_SRGB images can be blitted with linear filtering: UploadBatch::texture builds an opaque texture's mips
     // on the GPU in linear light only then (render::gpu_builds_mips), and on the CPU otherwise.
     bool srgb_mip_blit = false;
+    // Colour attachments may blend differently (independentBlend): the scene's motion and reactive mask beside its
+    // colour need it (VkContext::scene_motion).
+    bool independent_blend = false;
     float max_anisotropy = 0.0f; // 0 when sampler anisotropy is unsupported
     // The textures one bindless array may hold (render/descriptor_limits.h), under the update-after-bind limits when
     // update_after_bind is set.
@@ -36,14 +49,20 @@ struct DeviceCaps {
     // far higher on some drivers (Intel on Windows: 64 samplers per stage without, 1048576 with).
     bool update_after_bind = false;
     VkSampleCountFlags msaa_counts = VK_SAMPLE_COUNT_1_BIT; // colour and depth framebuffer sample counts
+    // AMD FSR 3.1's upscaler can run (render/fsr3_upscaler.h supported): FSR's storage formats and quad subgroup
+    // operations in compute. Without it display.upscaler fsr3 falls back to taa.
+    bool fsr3 = false;
 };
 
 // How the scene is drawn and shown. The scene renders in linear colour into a floating-point target (multisampled
 // when msaa > 1), which a full-screen pass tonemaps into the swapchain before the UI is drawn on top.
 enum class Tonemap : std::uint8_t { None, AgX, Aces };
 
+// The most MSAA samples the scene is drawn with: a request for more (display.msaa 8, --msaa 8) is drawn at this.
+inline constexpr std::uint32_t kMaxMsaa = 4;
+
 struct SceneOptions {
-    std::uint32_t msaa = 4;         // samples per pixel; cut to what the device supports
+    std::uint32_t msaa = 4;         // samples per pixel; cut to kMaxMsaa and to what the device supports
     Tonemap tonemap = Tonemap::None;
     float exposure = 0.0f;          // EV: the scene is scaled by 2^exposure before the tonemap
     bool dither = true;             // break up banding in fog and sky gradients
@@ -55,6 +74,9 @@ struct SceneOptions {
     bool ambient_occlusion = true;    // screen-space AO (shaders/ao.frag) in frames that give set_ao_view
     float ao_strength = 0.85f;        // how far the AO darkens the scene (0..1)
     bool distance_blur = true;        // soften the far distance a little, with the AO's frames
+    // Draw the opaque geometry depth-only first, then colour it with the depth test equal and no depth write
+    // (render/zone_renderer.cpp draw_depth): a pixel covered by several surfaces is shaded once.
+    bool depth_prepass = false;
     // Bright light spreading into its surroundings (0 off .. 1 strong), with the AO's frames: a chain of
     // half-size levels of the scene (shaders/bloom_down.frag, bloom_up.frag) mixed in before the tonemap.
     float bloom = 0.5f;
@@ -66,14 +88,24 @@ struct SceneOptions {
     // The modern look's colour grade (set_color_grade; display.color_grade): by the time of day, the weather and the
     // zone's mood.
     bool color_grade = true;
-    // The 3D view drawn at this share of its size on each side (display.render_scale, 0.5..1) and brought up to it by
+    // The 3D view drawn at this share of its size on each side (display.render_scale, kMinRenderScale..1) and brought up to it by
     // FSR 1 (shaders/fsr_easu.frag, sharpened by fsr_rcas.frag at `sharpness`, 0 none .. 1 the most); 1 draws it
     // at its own size, without them.
     float render_scale = 1.0f;
     float sharpness = 0.5f;
+    // How the view is brought up to its size (render/temporal.h, display.upscaler). Taa draws with one sample
+    // whatever msaa says, jitters the scene's projection each frame (projection_jitter) and resolves it into a
+    // history at the view's size; `sharpness` then sharpens that with RCAS (0 none). Fsr3 does the same with AMD
+    // FSR 3.1's upscaler in place of the resolve, its own RCAS at `sharpness`; Taa where DeviceCaps::fsr3 is false.
+    Upscaler upscaler = Upscaler::Fsr1;
+    // Frame generation (render/frame_gen.h, display.frame_gen): a frame made between each two real ones from the
+    // temporal upscaler's motion and depth, presented before the real one, the UI drawn sharp over both. Only with a
+    // temporal upscaler; the swapchain then keeps vertical sync (FIFO paces the two frames) and one more image.
+    bool frame_gen = false;
 };
 
-// The scene targets' size for a 3D view of `view` pixels at `scale` (SceneOptions::render_scale, kept in 0.5..1):
+// The scene targets' size for a 3D view of `view` pixels at `scale` (SceneOptions::render_scale, kept in
+// kMinRenderScale..1):
 // each side rounded, at least one pixel.
 VkExtent2D scaled_extent(VkExtent2D view, float scale);
 
@@ -106,6 +138,33 @@ struct AoView {
 Tonemap parse_tonemap(std::string_view name);
 
 // One frame being recorded. Rendering into the scene target (colour + depth) is already begun.
+// What a scene pipeline's fragment shader writes besides the colour, under the temporal upscaler
+// (VkContext::scene_blends; docs/graphics.md "Temporal upscaling"): its own motion (`o_motion`, location 1: geometry
+// that moves by itself or sways) or how much the history should give way to it (`o_reactive`, location 2: blended and
+// additive draws, which have no motion of their own). The other attachments are masked off.
+enum class SceneOutput : std::uint8_t { Nothing, Motion, Reactive };
+
+// A scene pipeline's colour blend states, one per colour attachment of the scene (VkContext::scene_blends). info()
+// points into `states`: keep this object alive while the pipeline is made.
+struct SceneBlends {
+    std::array<VkPipelineColorBlendAttachmentState, 3> states{};
+    std::uint32_t count = 1;
+    VkPipelineColorBlendStateCreateInfo info() const {
+        VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        cb.attachmentCount = count;
+        cb.pAttachments = states.data();
+        return cb;
+    }
+};
+
+// A scene pipeline's blend states for colour blend `color` and `output` (VkContext::scene_blends): the colour alone
+// without `motion`, else the colour, the object motion and the reactive mask.
+SceneBlends make_scene_blends(const VkPipelineColorBlendAttachmentState& color, SceneOutput output, bool motion);
+
+// The value the object-motion attachment is cleared to: no draw gave this pixel a motion of its own, and
+// shaders/temporal_prep.frag takes the camera's.
+inline constexpr float kMotionUnset = 30000.0f;
+
 struct FrameInfo {
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     // The scene target's size, in pixels: the 3D view's (VkContext::set_scene_rect) times SceneOptions::render_scale.
@@ -163,6 +222,33 @@ public:
     // This frame's colour grade (render/atmosphere.h ColorGrade: rgb a tint of the linear scene before the tonemap,
     // w the saturation after it); none, or with SceneOptions::color_grade off, leaves the picture as it is.
     void set_color_grade(const glm::vec4& mood) { mood_ = mood; }
+    // The temporal upscaler (SceneOptions::upscaler Taa): the NDC offset to put on this frame's scene projection
+    // (render/temporal.h jittered), zero without it. Valid from begin_frame_commands. Picking, the name plates and the
+    // sun's place on the screen take the projection without it.
+    glm::vec2 projection_jitter() const { return jitter_ndc_; }
+    // This frame's camera without the jitter: the motion vectors and the history follow it. A frame that does not give
+    // it is drawn without the temporal upscaler (FSR 1 below a render scale of 1) and the history is dropped. Call
+    // before begin_overlay.
+    void set_temporal_view(const glm::mat4& view, const glm::mat4& proj) { temporal_view_ = TemporalView{view, proj}; }
+    // Drops the history at the next frame: what it holds is no longer on the screen (a new zone).
+    void reset_history() { history_valid_ = false; }
+    // The temporal upscaler runs (SceneOptions::upscaler Taa or Fsr3, its targets made).
+    bool temporal() const { return lit_.image != VK_NULL_HANDLE; }
+    // Frame generation runs (SceneOptions::frame_gen under a temporal upscaler, its images made).
+    bool frame_gen_active() const { return frame_gen_ && overlay_.image != VK_NULL_HANDLE; }
+    // Presented frames per real frame over the last frame: 2 when it generated one, else 1 (the performance window).
+    std::uint32_t frames_presented() const { return presented_last_; }
+    // Frame generation's counters, pacing and GPU time (the performance window).
+    FrameGenStats frame_gen_stats() const;
+    // Scene pipelines are made for the scene's colour attachments: the colour alone, or under a temporal upscaler
+    // (scene_motion()) the colour, the object motion (kMotionFormat) and the reactive mask (kReactiveFormat), as
+    // begin_scene renders into. A renderer drawing into targets of its own (the item previews) passes `scene` false
+    // for the colour alone. Decided by set_scene_options, before the renderers are made, as the sample count.
+    // Without independentBlend (DeviceCaps) the temporal upscaler runs on the camera's motion alone.
+    bool scene_motion() const { return scene_options_.upscaler != Upscaler::Fsr1 && caps_.independent_blend; }
+    VkPipelineRenderingCreateInfo scene_rendering(bool scene = true) const;
+    SceneBlends scene_blends(const VkPipelineColorBlendAttachmentState& color, SceneOutput output,
+                             bool scene = true) const;
     std::uint32_t shadow_size() const { return shadow_size_; }
     // Counts the shadow maps made: a new one holds nothing (the cover and water maps are drawn again).
     std::uint32_t shadow_generation() const { return shadow_generation_; }
@@ -242,6 +328,9 @@ public:
     // than that is shrunk by a whole factor (averaged) until it fits. False (and nothing is saved) when the swapchain's
     // images cannot be copied from (the surface does not offer TRANSFER_SRC).
     bool request_screenshot(std::filesystem::path path, std::uint32_t max_width = 0);
+    // With frame generation, the screenshot saves the frame's in-between frame instead of the real one (the viewer's
+    // --screenshot-generated; the real one when the frame made none).
+    void screenshot_generated(bool on) { screenshot_generated_ = on; }
     // The swapchain's images can be read back (screenshots).
     bool can_screenshot() const { return screenshots_supported_; }
     // The GPU and its driver, for bug reports: "AMD Radeon RX 7900 XTX (radv, Mesa 25.2.1), Vulkan 1.4.321".
@@ -274,6 +363,14 @@ public:
     std::uint32_t min_image_count() const { return min_image_count_; }
     VkPhysicalDevice physical_device() const { return physical_; }
     VmaAllocator allocator() const { return allocator_; }
+    GpuSharedCache* gpu_shared_cache() const { return gpu_shared_cache_.get(); }
+    // Called (between frames, the device idle) after shared textures moved into this client's own images when
+    // sharing stopped: a holder of Texture copies refreshes them (refresh_shared_texture) and rewrites its
+    // descriptors. Returns an id for remove_shared_textures_listener.
+    std::uint64_t on_shared_textures_moved(std::function<void()> refresh);
+    void remove_shared_textures_listener(std::uint64_t id);
+    // Coverage diagnostics for the explicit immutable upload path; not native GPU-memory measurements.
+    void note_shared_gpu_texture(bool imported);
     VkFormat color_format() const { return swapchain_format_; } // the swapchain: UI pipelines
     VkFormat scene_format() const { return kSceneFormat; }      // scene pipelines
     VkSampleCountFlagBits scene_samples() const { return scene_samples_; }
@@ -297,12 +394,29 @@ private:
     static constexpr VkFormat kAoFormat = VK_FORMAT_R8_UNORM;
     // FSR 1's pictures: tonemapped and sRGB-encoded, in 10 bits so the steps do not band before the dither.
     static constexpr VkFormat kUpscaleFormat = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+    // The temporal upscaler's motion vectors: UV to last frame's place (shaders/temporal_prep.frag).
+    static constexpr VkFormat kMotionFormat = VK_FORMAT_R16G16_SFLOAT;
+    static constexpr VkFormat kReactiveFormat = VK_FORMAT_R8_UNORM;
+    std::array<VkFormat, 3> scene_color_formats_{kSceneFormat, kMotionFormat, kReactiveFormat};
+    // The temporal block the scene shaders read (shadow_set() binding 5, shaders/motion.glsl), written into the
+    // frame's commands by begin_scene.
+    struct TemporalBlock {
+        glm::mat4 view_proj{1.0f};      // this frame's, unjittered
+        glm::mat4 prev_view_proj{1.0f}; // the last frame's, unjittered (this frame's when there is no history)
+        glm::vec4 info{0.0f};           // x: 1 when the motion attachments are drawn
+    };
+    VkBuffer temporal_buffer_ = VK_NULL_HANDLE;
+    VmaAllocation temporal_alloc_ = VK_NULL_HANDLE;
+    void write_temporal_block(VkCommandBuffer cmd);
     static constexpr std::uint32_t kBloomLevels = 6; // 1/2 .. 1/64 of the screen
 
     struct Frame {
         VkCommandPool pool = VK_NULL_HANDLE;
         VkCommandBuffer cmd = VK_NULL_HANDLE;
+        VkCommandBuffer shared_acquire = VK_NULL_HANDLE;
+        VkCommandBuffer shared_release = VK_NULL_HANDLE;
         VkSemaphore image_available = VK_NULL_HANDLE;
+        VkSemaphore generated_available = VK_NULL_HANDLE; // frame generation's second image
         VkFence in_flight = VK_NULL_HANDLE;
     };
 
@@ -315,6 +429,7 @@ private:
     void destroy_swapchain();
     void recreate_swapchain();
     void create_frames();
+    void localize_shared_textures();
     void create_scene_targets();
     void destroy_scene_targets();
     void create_post_pipeline(const std::filesystem::path& shader_dir);
@@ -339,6 +454,20 @@ private:
     std::uint32_t queue_family_ = 0;
     VkQueue queue_ = VK_NULL_HANDLE;
     DeviceCaps caps_;
+    std::unique_ptr<GpuSharedCache> gpu_shared_cache_;
+    bool gpu_shared_requested_ = false;
+    std::uint64_t gpu_shared_bindings_ = 0;
+    std::uint64_t gpu_shared_fallbacks_ = 0;
+    std::uint64_t gpu_shared_frames_ = 0;
+    bool shared_first_logged_ = false;
+    bool shared_detach_logged_ = false;
+    std::map<std::uint64_t, std::function<void()>> shared_texture_listeners_;
+    std::uint64_t shared_texture_listener_ids_ = 0;
+    bool gpu_benchmark_ = false;
+    std::uint64_t benchmark_present_submissions_ = 0;
+    std::chrono::steady_clock::time_point gpu_benchmark_start_{};
+    double benchmark_lease_wait_ms_ = 0.0;
+    double benchmark_shared_fence_wait_ms_ = 0.0;
     VkPipelineCache pipeline_cache_ = VK_NULL_HANDLE;
     PipelineCacheDevice cache_device_;
     std::filesystem::path pipeline_cache_path_;
@@ -371,6 +500,9 @@ private:
     // shaders; `push` is the pipeline's push constants.
     void draw_into(VkCommandBuffer cmd, const Image& target, VkExtent2D extent, VkPipeline pipeline,
                    VkPipelineLayout layout, VkDescriptorSet set, const void* push, std::uint32_t push_size);
+    // The same into several targets of one size at once (the pipeline's colour attachments, in order).
+    void draw_into(VkCommandBuffer cmd, std::span<const Image* const> targets, VkExtent2D extent, VkPipeline pipeline,
+                   VkPipelineLayout layout, VkDescriptorSet set, const void* push, std::uint32_t push_size);
 
     VkFormat depth_format_ = VK_FORMAT_UNDEFINED;
     SceneOptions scene_options_;
@@ -387,6 +519,64 @@ private:
     // at the view's, which fsr_rcas.frag sharpens into the swapchain.
     Image upscale_source_;
     Image upscaled_;
+    // The temporal upscaler (SceneOptions::upscaler Taa): temporal_prep.frag's colour (the scene with its AO) and
+    // motion at the scene's size, and taa_resolve.frag's two histories at the view's (written in turn: the frame
+    // writes history_[history_index_] and reads the other). upscaled_ is made too, for RCAS.
+    Image lit_;
+    Image motion_;
+    // Under scene_motion(), the scene's second and third colour attachments: what the draws wrote of their own motion
+    // (kMotionUnset elsewhere) and the reactive mask (0 .. 1: how much a pixel is made of draws without motion).
+    Image object_motion_;
+    Image reactive_;
+    std::array<Image, 2> history_{};
+    // Under FSR 3.1 (SceneOptions::upscaler Fsr3): its output at the view's size (RGBA16F, storage), which the post
+    // pass reads (post_fsr3_set_), and the upscaler itself (made when the option first asks for it).
+    Image fsr3_output_;
+    std::unique_ptr<Fsr3Upscaler> fsr3_;
+    // Frame generation (frame_gen_active()): the two pictures without the UI (this frame's is pictures_[picture_index_],
+    // the last one's the other), the in-between frame, and the UI's image (the window's size, the swapchain's format)
+    // that the overlay pass draws into instead of the swapchain; end_frame composites them (finish_frame_gen).
+    std::array<Image, 2> pictures_{};
+    Image generated_;
+    Image overlay_;
+    std::unique_ptr<FrameGen> frame_gen_;
+    std::uint32_t picture_index_ = 0;
+    bool picture_ready_ = false;   // the last frame left its picture, at this size
+    bool overlay_open_ = false;    // begin_overlay rendered into overlay_ this frame
+    bool fg_temporal_ = false;     // this frame ran the temporal upscaler
+    bool fg_history_kept_ = false; // and its history went on from the last frame's
+    std::uint32_t presented_last_ = 1;
+    bool frame_gen_fallback_logged_ = false;
+    bool frame_gen_requested_ = false; // SceneOptions::frame_gen as asked (scene_options_ drops it under FSR 1)
+    FrameGenStats fg_stats_;           // counters and the last measurements (frame_gen_stats fills in the rest)
+    const char* present_mode_ = "";    // the swapchain's present mode
+    // Two timestamps per frame in flight round finish_frame_gen's GPU work (none where the device cannot time).
+    VkQueryPool fg_queries_ = VK_NULL_HANDLE;
+    float timestamp_period_ns_ = 0.0f;  // VkPhysicalDeviceLimits::timestampPeriod, 0: no timestamps
+    std::array<std::uint8_t, kFramesInFlight> fg_query_state_{}; // 0 unwritten, 1 a real frame, 2 with an in-between
+    void read_frame_gen_time(std::uint32_t frame_slot);
+    VkPipeline fg_synth_pipeline_ = VK_NULL_HANDLE;
+    VkPipeline fg_composite_pipeline_ = VK_NULL_HANDLE;
+    VkPipeline rcas_picture_pipeline_ = VK_NULL_HANDLE; // RCAS into a picture (kUpscaleFormat), not the swapchain
+    void create_frame_gen(const std::filesystem::path& shader_dir);
+    void destroy_frame_gen();
+    void bind_frame_gen();
+    // Ends a frame-generation frame: the real frame composited into its image and, when one can be made, the
+    // in-between frame into a second image acquired here. Returns that image's index, or nullopt.
+    std::optional<std::uint32_t> finish_frame_gen(const FrameInfo& frame);
+    void composite_into(VkCommandBuffer cmd, std::uint32_t image_index, VkDescriptorSet set);
+    std::chrono::steady_clock::time_point fsr3_last_{}; // the last FSR 3.1 frame's time (its frame time)
+    bool fsr3_fallback_logged_ = false;
+    struct TemporalView {
+        glm::mat4 view{1.0f};
+        glm::mat4 proj{1.0f};
+    };
+    std::optional<TemporalView> temporal_view_; // set_temporal_view's, this frame's
+    TemporalView prev_view_;                    // the last temporal frame's
+    bool history_valid_ = false;
+    std::uint32_t history_index_ = 0;
+    glm::vec2 jitter_px_{0.0f};  // this frame's jitter, scene pixels
+    glm::vec2 jitter_ndc_{0.0f}; // the same in NDC (projection_jitter)
     Image water_color_; // begin_translucent's copies: the scene's colour,
     Image water_depth_; // and its depth (sample 0)
     std::array<Image, kBloomLevels> bloom_{};
@@ -418,6 +608,16 @@ private:
     VkPipeline rcas_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorSet easu_set_ = VK_NULL_HANDLE;
     VkDescriptorSet rcas_set_ = VK_NULL_HANDLE;
+    // The temporal upscaler: temporal_prep.frag reads the post set (the scene, the AO, the depth) into lit_ and
+    // motion_; taa_resolve.frag reads resolve_sets_[i] (lit_, motion_, the depth, the history not written, through the
+    // post set's layout) into history_[i]; post.frag then reads post_taa_sets_[i] (history_[i] in the scene's place).
+    VkPipeline prep_pipeline_ = VK_NULL_HANDLE;
+    VkPipelineLayout prep_layout_ = VK_NULL_HANDLE;
+    VkPipeline resolve_pipeline_ = VK_NULL_HANDLE;
+    VkPipelineLayout resolve_layout_ = VK_NULL_HANDLE;
+    std::array<VkDescriptorSet, 2> resolve_sets_{};
+    std::array<VkDescriptorSet, 2> post_taa_sets_{};
+    VkDescriptorSet post_fsr3_set_ = VK_NULL_HANDLE; // post.frag with fsr3_output_ in the scene's place
 
     VkFormat shadow_format_ = VK_FORMAT_UNDEFINED;
     std::uint32_t shadow_size_ = 0;
@@ -467,6 +667,7 @@ private:
     bool screenshots_supported_ = false; // the swapchain was made with TRANSFER_SRC
     std::filesystem::path screenshot_path_;
     std::uint32_t screenshot_max_width_ = 0;
+    bool screenshot_generated_ = false;
     std::string gpu_description_;
     std::string gpu_name_;
 };

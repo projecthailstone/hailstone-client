@@ -894,9 +894,28 @@ plus `cooldown` (0..1 of the recast left) on the slot readers while a recast run
 | ComboInfo | (name, child) → {choices}, selected \| nil | Combo choices and the chosen one (0-based) | — |
 | ComboSelect | (name, child, index) → ok | Pick a combo choice (0-based) | actions |
 | ListInfo | (name, child) → rows, columns, selected, labels, widths \| nil | List shape | — |
-| ListRow | (name, child, row) → texts, r, g, b [, tex,u0,v0,u1,v1] | Row (0-based). texts.altRight / .comboColumn / .iconColumn / .colors | — |
+| ListRow | (name, child, row) → texts, r, g, b [, tex,u0,v0,u1,v1] | Row (0-based). texts.altRight / .comboColumn / .iconColumn / .colors / .disabled (a line the window left disabled) | — |
 | ListClick | (name, child, row [, "left"\|"right"\|"double" [, column [, mods]]]) → ok | Click a list row. mods: 1 shift, 2 ctrl | actions |
 | ListHeaderClick | (name, child, column) → ok | Click a column header (0-based) | actions |
+
+#### Active tasks and quest journal (lua_eq_progress.cpp)
+
+| Function | Args → returns | What | Cap |
+|---|---|---|---|
+| Tasks | () → tasks | all authoritative active tasks, independent of journal visibility or selection | — |
+| OpenTask | (taskId) → bool | selects and opens an existing active task in the journal; false for an unknown ID | `commands` |
+
+`Tasks` returns an array in native task/shared/quest and slot order, plus `selectedId` (0 if none), `revision`
+and `requestTimerLeft` (seconds). Each task has `id`, `type` (0 task, 1 shared, 2 quest), `sequence`, `title`,
+`duration`, `left` (seconds; 0 when untimed), `description`, `rewards`, `details` (the combined native STML),
+`hasRewards`, `rewardSet`, `done`, `total` and `objectives`. It is empty outside the world.
+
+Objectives preserve native group/slot order. A separator is `{separator=true, group}`. A normal entry has
+`activityId`, `group`, `separator=false`, `hidden`, `optional`, `done`, `currentZone`, `text`, `status`, `zone`,
+`count` and `goal`. Hidden entries have no `count` or `goal`; their undisclosed names and locations are not
+available. `currentZone` is false for hidden objectives and those that count anywhere. `group` is the server's
+list-group value, not a parent-objective ID or an invented numbered stage. Reading tasks does not select one or
+send a request. `OpenTask` changes the journal selection and visibility, not task or tracking state.
 
 #### Spell gems, buffs, cool-downs (lua_eq.cpp)
 
@@ -905,7 +924,7 @@ plus `cooldown` (0..1 of the recast left) on the slot readers while a recast run
 | GemTint | (name, child) → r, g, b, a | Spell gem tint by category | — |
 | GemOverlay | (name, child, y0, y1) → top, r, g, b, a \| nil | Gem cool-down rectangle | — |
 | GemInfo | (name, child [, into [, y0, y1]]) → t | All gem looks in one call: {shown, tooltip, tex,u0,v0,u1,v1, tintR..tintA, overlay, coolR..coolA, top} | — |
-| ButtonCoolDown | (name, child, y0, y1) → top, r, g, b, a \| nil | A button's cool-down rectangle | — |
+| ButtonCoolDown | (name, child, y0, y1) → top, r, g, b, a, remainingMs, reuseMs | A button's cool-down rectangle; first five answers unchanged (nil when idle), with remaining/focus-adjusted reuse milliseconds for combat ability buttons (both 0 while idle or without timing detail). Shared remaining time can exceed this ability's reuse | — |
 | BuffSlot | (name, child [, overlays]) → spellId, msLeft, name, beneficial, fade [, counter,cr,cg,cb, limit,lr,lg,lb] \| nil | Buff on a buff button. msLeft < 0 = permanent | — |
 | BuffOverlay | (name, child, "timer"\|"counter"\|"limit") → text, r, g, b \| nil | Overlay text on a buff button | — |
 | SpellGemClick | (child [, "left"\|"right"]) → ok | Cast, or forget (right) | actions |
@@ -934,7 +953,7 @@ plus `cooldown` (0..1 of the recast left) on the slot readers while a recast run
 | ItemIcon | (icon) → tex,u0,v0,u1,v1 \| nil | Item icon cell | — |
 | ClickSlot | (slot, bagSlot\|nil, "left"\|"leftheld"\|"right"\|phase [, outside]) → ok | Game slot logic: pick up, drop, swap, split, use | actions |
 | HasSlot | (slot, bagSlot\|nil) → bool | ClickSlot can act there now: in game, a possessions slot 0..33, and with bagSlot a place inside the bag that general slot holds (empty places count) | — |
-| SlotItem | (name, child) → item\|nil | Item in a window's item slot (loot, bank, trade…) | — |
+| SlotItem | (name, child) → item\|nil | Item in a window's item slot (loot, bank, trade…; `MerchantWnd` `ItemList:<row>` a merchant's row, `ItemDisplayWindow` `Hailstone_Item` the shown item) | — |
 | BagInfo | (bagWindow) → name, slots, combine, where, slot \| nil | "Bag1".."Bag36" or "WorldContainer". where: "inventory", "bank" or "other" | — |
 | BagSlotItem | (bagWindow, index) → item\|nil | Item in a bag slot (0-based) | — |
 | BagSlotClick | (bagWindow, index [, button [, outside]]) → ok | Slot logic on a bag slot | actions |
@@ -1107,8 +1126,8 @@ achievement and reward-selection APIs.
 | ChatClear | (slot) → — | Empty the tab | commands |
 | ChatTellWindows | () → bool | Tells open a window per player | — |
 | ChatSetTellWindows | (on) → — | Set that | commands |
-| ChatHitModes | () → {{name, mode, modes={names}}} | Melee report categories | — |
-| ChatSetHitMode | (index, mode) → — | 1-based index (7 = ALL) | commands |
+| ChatHitModes | () → {{id, name, mode, modes={names}}} | 1..6 melee, 7 ALL, 8 direct spell damage, 9 DoT damage, 10 healing, 11 HoT healing; ALL mode is -1 when mixed | — |
+| ChatSetHitMode | (index, mode) → — | Indices above; 0 Normal, 1 Abbreviated, 2 Number Only (Miss Only for melee misses); 7 sets all categories | commands |
 
 #### Hot bars and icon selection (lua_eq_hotbar.cpp)
 
@@ -1179,6 +1198,16 @@ achievement and reward-selection APIs.
 | ZoneExitWalk | (zone) → x, y \| nil | /nav walk through the nearest line to `zone` | move |
 | ShowZoneMap | ([zone]) → — | Map window shows another zone (or own) | — |
 | MapZoneShown | () → long, short, own | Zone the map shows | — |
+
+#### Item comparison (lua_eq_compare.cpp)
+
+The item against what the player wears (docs/item-compare.md). `c` = {usable, whyNot, notes, slots = {{slot, slotName, current, verdict, score, changes = {{key, name, before, after, delta, weight}}, weaponBefore, weaponAfter, gained, lost}}}, the best swap first; nil for no comparison.
+
+| Function | Args → returns | What | Cap |
+|---|---|---|---|
+| CompareItem | (slot [, bagSlot]) → c\|nil | An item carried (nil for a worn one) | — |
+| CompareSlotItem | (window, child) → c\|nil | The item in a window's item slot (as SlotItem) | — |
+| CompareBagSlotItem | (bagWindow, index) → c\|nil | The item in a bag window's slot | — |
 
 #### Find window (lua_eq_find.cpp)
 
@@ -1370,6 +1399,7 @@ or -1 and say so in the chat window. Only call these on the client's thread, fro
 | `open_bank(banker)` | `actions` | the bank window at a spawn (0 the player), without a banker's checks. Added later in ABI 3: test `HAILSTONE_HOST_HAS(host, open_bank)` first |
 | `get_buff_data_bulk(out, size)`, `get_pet_buff_data_bulk(out, size)`, `get_spawns_data_bulk(out, size)` | `read` | every buff slot of the player (`size` must hold every buff and song slot, RoF2's 1798 bytes, or 0 comes back; one record more, 1827, brings the discipline slot, the last), the pet window's buffs, or every spawn in the zone (`size` at least 4096, or 0 comes back; 4112 for any record), as packed records in the machine's byte order (layout in docs/plugins.md "Buff and spawn records"); returns the bytes written. Added later in ABI 3: test `HAILSTONE_HOST_HAS(host, <field>)` first |
 | `get_xtarget_data_bulk(out, size)` | `read` | every extended target slot: type, spawn id, aggro meter percent and HP percent, 16 bytes a slot, as many whole records as fit (layout in docs/plugins.md "Buff and spawn records"); returns the bytes written. Added later in ABI 3: test `HAILSTONE_HOST_HAS(host, get_xtarget_data_bulk)` first |
+| `cursor_origin()` | `read` | how the item on the cursor got there: `HAILSTONE_CURSOR_ORIGIN_UNKNOWN` (0, also empty), `_INVENTORY` (1, the player's pickup) or `_SERVER` (2, the server put it on the empty cursor); docs/plugins.md "The cursor item's origin". Added later in ABI 3: test `HAILSTONE_HOST_HAS(host, cursor_origin)` first |
 | `add_ui_function(name, fn, user)`, `remove_ui_function` | `ui` | a function the plugin's windows call as `eq.Plugin("<name>").<name>(...)` |
 | `arg_count`, `arg(i, out)`, `arg_field(i, key, out)` | | a UI function's arguments |
 | `out_value`, `out_begin_array`, `out_begin_table`, `out_key`, `out_end` | | a UI function's result |

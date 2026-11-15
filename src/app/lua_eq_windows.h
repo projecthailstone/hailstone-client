@@ -73,6 +73,9 @@ struct Child {
     // CButtonWnd's cool-down (SetCoolDown, drawn by vtable +0x16c @0x8970a0): its rectangle's fraction (the part
     // gone, at most 0.87; game/spell_gem.h ButtonCoolDown), none when idle.
     std::optional<double> cool_down;
+    // Optional timing detail from the window (combat ability buttons): milliseconds left and the ability's
+    // focus-adjusted reuse. A shared timer can exceed this ability's reuse; 64 bits keep seconds * 1000 exact.
+    std::uint64_t cool_down_left = 0, cool_down_duration = 0;
     bool under = false; // the window draws it in its own Draw, under its children (CTargetWnd::Draw)
 };
 
@@ -157,6 +160,7 @@ struct ListRow {
     std::optional<ui::UiTextures::Cell> icon;
     std::vector<std::optional<Rgb>> cell_colors; // CListWnd::SetItemColor(row, column): a cell's own colour
     int icon_column = 0; // CListWnd::SetItemIcon's column
+    bool disabled = false; // a line added or left disabled (CListWnd line flag 0x100 clear): the packs grey it
 };
 // A combo box's choices and the chosen one (-1 none).
 struct ComboData {
@@ -409,6 +413,9 @@ void help_window_set_file(StockWindow& help, EqHost& host, const std::string& fi
 // CStmlWnd::LoadPage of a game file (help\\..., help\\tips\\...): the page's body with its new lines as spaces, and
 // its <TITLE> in `title` (empty when it has none).
 std::string load_stml_page(const GameDir* game, const std::string& path, std::string* title);
+// An href link's page in the game folder, as CStmlWnd follows it from `page` (the page shown): file:///x is x from the
+// game folder, a bare name is beside the page; none for a web link (not followed).
+std::optional<std::string> stml_href_path(const std::string& page, std::string_view href);
 
 // CChatWindowManager::GetRGBAFromIndex as 0xRRGGBB (app/lua_eq_chat.cpp), and text made safe inside STML.
 std::uint32_t chat_index_rgb(int index);

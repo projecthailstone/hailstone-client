@@ -6,8 +6,10 @@
 //   /probemessage n  web_message(tab 1) into a buffer of n bytes (0: no buffer)
 //   /probetcp port    tcp_open("127.0.0.1", port); /probetcpsend h  tcp_send(h, "hello") and tcp_state(h)
 //   /probebuffs [n], /probepetbuffs [n], /probespawns [n]  get_buff_data_bulk / get_pet_buff_data_bulk /
-//   get_spawns_data_bulk into n bytes (the whole buffer without n), read with ByteReader
-//   /probextargets [n]  get_xtarget_data_bulk the same way
+//   get_spawns_data_bulk into n bytes (the whole buffer without n), read through the SDK's HS_Bulk_* structs cast
+//   onto the buffer
+//   /probextargets [n]  get_xtarget_data_bulk the same way, through HS_Bulk_XTargetData
+//   /probecursor   cursor_origin, when the host table has it
 // Built again with HAILSTONE_PROBE_THROW_INIT (HostProbeThrow): InitializePlugin registers a command and a TLO, then
 // throws.
 #include <cstddef>
@@ -82,89 +84,101 @@ std::int32_t size_arg(const char* args, std::size_t whole) {
     return static_cast<std::int32_t>(n < whole ? n : whole);
 }
 
+static_assert(sizeof(HS_Bulk_BuffData) == HAILSTONE_BUFF_RECORD_SIZE);
+static_assert(sizeof(HS_Bulk_PetBuffData) == HAILSTONE_PET_BUFF_RECORD_SIZE);
+
 // The occupied slots one line each; the empty ones only counted, and only when laid out as empty.
 void probe_buffs(void*, const char* args) {
     unsigned char buf[4096]; // at least 62 * HAILSTONE_BUFF_RECORD_SIZE (1798), or nothing comes back
     const std::int32_t r = host->get_buff_data_bulk(host->host, buf, size_arg(args, sizeof buf));
-    hailstone::ByteReader rd(buf, r > 0 ? static_cast<std::size_t>(r) : 0);
+    const std::size_t count = r > 0 ? static_cast<std::size_t>(r) / sizeof(HS_Bulk_BuffData) : 0;
+    const auto* recs = reinterpret_cast<const HS_Bulk_BuffData*>(buf);
     int empty = 0;
-    for (int slot = 0; rd.remaining() >= HAILSTONE_BUFF_RECORD_SIZE; ++slot) {
-        const auto spell = rd.le<std::int32_t>(), caster = rd.le<std::int32_t>(), tics = rd.le<std::int32_t>(),
-            hits = rd.le<std::int32_t>(), type = rd.le<std::int32_t>(), counter = rd.le<std::int32_t>(),
-            base = rd.le<std::int32_t>();
-        const auto kind = rd.le<std::uint8_t>(); // HAILSTONE_BUFF_SLOT_*
-        if (spell == 0) { // an empty slot: every field 0, including the counter type
+    for (std::size_t slot = 0; slot < count; ++slot) {
+        const HS_Bulk_BuffData* rec = recs + slot;
+        if (rec->ID == 0) { // an empty slot: every field 0, including the counter type
             ++empty;
             continue;
         }
-        WriteChatf("[Probe] buff %d: %d %d %d %d %d %d %d %u", slot, static_cast<int>(spell),
-            static_cast<int>(caster), static_cast<int>(tics), static_cast<int>(hits), static_cast<int>(type),
-            static_cast<int>(counter), static_cast<int>(base), static_cast<unsigned>(kind));
+        WriteChatf("[Probe] buff %d: %d %d %d %d %d %d %d %u", static_cast<int>(slot), rec->ID, rec->casterID,
+            rec->duration, rec->hitcount, rec->spelltype, rec->counterType, rec->counterTotal,
+            static_cast<unsigned>(rec->slotType)); // HAILSTONE_BUFF_SLOT_*
     }
-    WriteChatf("[Probe] buffs %d bytes, %d empty", static_cast<int>(r), empty);
+    WriteChatf("[Probe] buffs %d bytes, %d empty", r, empty);
 }
 
 void probe_pet_buffs(void*, const char* args) {
     unsigned char buf[1024];
     const std::int32_t r = host->get_pet_buff_data_bulk(host->host, buf, size_arg(args, sizeof buf));
-    hailstone::ByteReader rd(buf, r > 0 ? static_cast<std::size_t>(r) : 0);
-    while (rd.remaining() >= HAILSTONE_PET_BUFF_RECORD_SIZE) {
-        const auto spell = rd.le<std::int32_t>(), tics = rd.le<std::int32_t>(), type = rd.le<std::int32_t>();
-        WriteChatf("[Probe] pet buff: %d %d %d", static_cast<int>(spell), static_cast<int>(tics),
-            static_cast<int>(type));
+    const std::size_t count = r > 0 ? static_cast<std::size_t>(r) / sizeof(HS_Bulk_PetBuffData) : 0;
+    const auto* recs = reinterpret_cast<const HS_Bulk_PetBuffData*>(buf);
+    for (std::size_t i = 0; i < count; ++i) {
+        const HS_Bulk_PetBuffData* rec = recs + i;
+        WriteChatf("[Probe] pet buff: %d %d %d", rec->id, rec->duration, rec->spellType);
     }
-    WriteChatf("[Probe] pet buffs %d bytes", static_cast<int>(r));
+    WriteChatf("[Probe] pet buffs %d bytes", r);
 }
 
-// The header, then each spawn one line (id, level, class, race, HP percent, name), then the bytes left over after
-// the records the header counts (0 when every record's strings are framed right).
+static_assert(sizeof(HS_Bulk_SpawnHeader) == HS_BULK_SPAWN_HEADER_SIZE);
+static_assert(sizeof(HS_Bulk_SpawnFixedRecord) == HS_BULK_SPAWN_RECORD_SIZE);
+
+// The header, then each spawn one line (id, level, class, race, HP percent, con colour, name), then the bytes left
+// over after the records the header counts (0 when every record's strings are framed right).
 void probe_spawns(void*, const char* args) {
     static unsigned char buf[1024*1024];
     const std::int32_t r = host->get_spawns_data_bulk(host->host, buf, size_arg(args, sizeof buf));
-    if (r <= 0) {
+    if (r <= 0 || static_cast<std::size_t>(r) < sizeof(HS_Bulk_SpawnHeader)) {
         WriteChatf("[Probe] spawns %d bytes", static_cast<int>(r));
         return;
     }
-    hailstone::ByteReader rd(buf, static_cast<std::size_t>(r));
-    const auto count = rd.le<std::uint32_t>();
-    const float px = rd.f32(), py = rd.f32(), pz = rd.f32();
-    for (std::uint32_t i = 0; i < count; ++i) {
-        const std::size_t start = rd.position();
-        const auto id = rd.le<std::int32_t>();
-        rd.seek(start + 16);
-        const auto class_id = rd.le<std::int32_t>();
-        rd.seek(start + 60);
-        const auto level = rd.le<std::int32_t>();
-        rd.seek(start + 84);
-        const auto pct = rd.le<std::int64_t>();
-        rd.seek(start + 104);
-        const auto race = rd.le<std::int32_t>();
-        rd.seek(start + 128); // the fixed part's end: then BodyDesc, CleanName, DisplayName, Name, RaceName, Suffix, TypeDesc
+    const auto size = static_cast<std::size_t>(r);
+
+    const auto* header = reinterpret_cast<const HS_Bulk_SpawnHeader*>(buf);
+    std::size_t at = sizeof(HS_Bulk_SpawnHeader);
+
+    for (std::uint32_t i = 0; i < header->spawnCount; ++i) {
+        if (size - at < sizeof(HS_Bulk_SpawnFixedRecord)) break; // a short buffer: stop, the "left" count shows it
+        const auto* rec = reinterpret_cast<const HS_Bulk_SpawnFixedRecord*>(buf + at);
+        at += sizeof(HS_Bulk_SpawnFixedRecord);
+
+        // BodyDesc, CleanName, DisplayName, Name, RaceName, Suffix, TypeDesc: each a u16 length and its bytes.
+        hailstone::ByteReader rd(buf + at, size - at);
         std::string name;
         for (int s = 0; s < 7; ++s) {
             const auto len = rd.le<std::uint16_t>();
             const auto text = rd.bytes(len);
             if (s == 3) name.assign(reinterpret_cast<const char*>(text.data()), text.size());
         }
-        WriteChatf("[Probe] spawn %d: %d %d %d %lld %s", static_cast<int>(id), static_cast<int>(level),
-                   static_cast<int>(class_id), static_cast<int>(race), static_cast<long long>(pct), name.c_str());
-    }
-    WriteChatf("[Probe] spawns %u, player %d %d %d, %d bytes left", static_cast<unsigned>(count), static_cast<int>(px),
-               static_cast<int>(py), static_cast<int>(pz), static_cast<int>(rd.remaining()));
-}
+        at += rd.position();
 
-// Each extended target slot one line: slot, type, spawn id, aggro percent, HP percent.
+        WriteChatf("[Probe] spawn %d: %d %d %d %d %d %s", rec->id, rec->level, rec->classID, rec->raceID, rec->pctHPs,
+            rec->conColorID, name.c_str());
+    }
+    WriteChatf("[Probe] spawns %u, player %.2f %.2f %.2f, %zu bytes left", header->spawnCount,
+        header->playerX, header->playerY, header->playerZ, size - at);
+}
+static_assert(sizeof(HS_Bulk_XTargetData) == HS_BULK_XTARGET_RECORD_SIZE);
+
+// Each extended target slot one line: slot, type (HS_BULK_XTARGET_*), spawn id, aggro percent, HP percent.
 void probe_xtargets(void*, const char* args) {
     unsigned char buf[512];
     const std::int32_t r = host->get_xtarget_data_bulk(host->host, buf, size_arg(args, sizeof buf));
-    hailstone::ByteReader rd(buf, r > 0 ? static_cast<std::size_t>(r) : 0);
-    for (int slot = 0; rd.remaining() >= HS_XTARGET_RECORD_SIZE; ++slot) {
-        const auto type = rd.le<std::int32_t>(), id = rd.le<std::int32_t>(), aggro = rd.le<std::int32_t>(),
-            hp = rd.le<std::int32_t>();
-        WriteChatf("[Probe] xtarget %d: %d %d %d %d", slot, static_cast<int>(type), static_cast<int>(id),
-            static_cast<int>(aggro), static_cast<int>(hp));
+    const std::size_t count = r > 0 ? static_cast<std::size_t>(r) / sizeof(HS_Bulk_XTargetData) : 0;
+    const auto* recs = reinterpret_cast<const HS_Bulk_XTargetData*>(buf);
+    for (std::size_t slot = 0; slot < count; ++slot) {
+        const HS_Bulk_XTargetData* rec = recs + slot;
+        WriteChatf("[Probe] xtarget %d: %d %d %d %d", static_cast<int>(slot), rec->targetType, rec->id,
+            rec->aggroPct, rec->pctHPs);
     }
     WriteChatf("[Probe] xtargets %d bytes", static_cast<int>(r));
+}
+
+void probe_cursor(void*, const char*) {
+    if (!HAILSTONE_HOST_HAS(host, cursor_origin)) {
+        WriteChatf("[Probe] cursor origin: not in this client");
+        return;
+    }
+    WriteChatf("[Probe] cursor origin %u", static_cast<unsigned>(host->cursor_origin(host->host)));
 }
 
 int probe_tlo(void*, const char*, const char* member, const char*, HailstoneValue* out) {
@@ -187,6 +201,7 @@ HAILSTONE_API void InitializePlugin(void) {
     AddCommand("/probepetbuffs", probe_pet_buffs, nullptr);
     AddCommand("/probespawns", probe_spawns, nullptr);
     AddCommand("/probextargets", probe_xtargets, nullptr);
+    AddCommand("/probecursor", probe_cursor, nullptr);
     AddTopLevelObject("Probe", probe_tlo, nullptr);
 #ifdef HAILSTONE_PROBE_THROW_INIT
     throw std::runtime_error("InitializePlugin threw");
@@ -203,6 +218,7 @@ HAILSTONE_API void ShutdownPlugin(void) {
     RemoveCommand("/probepetbuffs");
     RemoveCommand("/probespawns");
     RemoveCommand("/probextargets");
+    RemoveCommand("/probecursor");
     RemoveTopLevelObject("Probe");
 }
 HAILSTONE_API void OnUpdateImGui(void) { throw std::runtime_error("OnUpdateImGui threw"); }

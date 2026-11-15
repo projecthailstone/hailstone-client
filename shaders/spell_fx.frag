@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 // The modern lighting's spell bolts and comets (render/spell_fx_renderer.h, spell_fx.vert): light, added to the
 // scene past 1 so it blooms. Each element has its own colours, edge to core, and its own way of moving:
@@ -26,6 +27,9 @@ layout(location = 3) flat in vec4 v_extra;
 layout(location = 4) flat in vec4 v_segment;
 
 layout(location = 0) out vec4 o_color;
+layout(location = 2) out float o_reactive; // the temporal upscaler's reactive mask (shaders/reactive.glsl)
+
+#include "reactive.glsl"
 
 const int kFire = 0, kCold = 1, kMagic = 2, kLightning = 3, kPoison = 4, kDisease = 5, kCorruption = 6,
           kChromatic = 7, kEarth = 8;
@@ -223,4 +227,5 @@ void main() {
         through = exp(-3.5 * dist * dist * exp(-max(dv.z, 0.0) * pc.haze.y));
     }
     o_color = vec4(light * intensity * pc.haze.w * soft * through, 0.0);
+    o_reactive = reactive_of(o_color);
 }

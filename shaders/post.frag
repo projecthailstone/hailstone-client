@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 // The scene target (linear) into the swapchain: ambient occlusion, exposure, tonemap, encode, dither
 // (render/vk_context.h SceneOptions).
@@ -28,24 +29,15 @@ const uint kDither = 4u;
 const uint kAo = 8u;
 const uint kBlur = 16u;
 
-float view_depth(float d) { return pc.depth.y / (d + pc.depth.x); }
+#include "ao_blur.glsl"
 
-// The AO over the 4 x 4 block that holds every turn of ao.frag's pattern, weighted against other depths so it does
-// not bleed across edges.
-float blurred_ao(ivec2 p) {
-    ivec2 size = textureSize(ao_map, 0);
-    float z = view_depth(texelFetch(depth_map, p, 0).r);
-    float sum = 0.0, weight = 0.0;
-    for (int y = -2; y < 2; ++y)
-        for (int x = -2; x < 2; ++x) {
-            ivec2 q = clamp(p + ivec2(x, y), ivec2(0), size - 1);
-            float d = texelFetch(depth_map, q, 0).r;
-            if (d <= 0.0) continue;
-            float w = exp(-abs(view_depth(d) - z) / (0.02 * z));
-            sum += texelFetch(ao_map, q, 0).r * w;
-            weight += w;
-        }
-    return weight > 0.0 ? sum / weight : 1.0;
+float view_depth(float d) { return ao_view_depth(d, pc.depth.xy); }
+
+// The depth texel under view texel `p`. Under the temporal upscaler this pass runs at the view's size while the
+// depth stays at the scene's; otherwise the two are the same.
+ivec2 depth_texel(ivec2 p) {
+    vec2 scale = vec2(textureSize(depth_map, 0)) / vec2(textureSize(scene, 0));
+    return ivec2((vec2(p) + 0.5) * scale);
 }
 
 vec3 linear_to_srgb(vec3 c) {
@@ -95,7 +87,7 @@ float hash(vec2 p) {
 // (a glow round it) and fading with each step; what blocks the sky (trees, walls) leaves dark gaps, the shafts between
 // them. The start is jittered per pixel and frame against banding.
 vec3 sun_shafts(ivec2 p) {
-    vec2 size = vec2(textureSize(depth_map, 0));
+    vec2 size = vec2(textureSize(scene, 0));
     vec2 uv = (vec2(p) + 0.5) / size;
     const int kSteps = 40;
     vec2 delta = (pc.sun.xy - uv) / float(kSteps);
@@ -119,7 +111,7 @@ void main() {
     if ((pc.flags & kBlur) != 0u) {
         // The distance softens: up to 1.75 pixels at the far plane, from a quarter of the way out. Not the sky: its
         // stars would smear into blobs.
-        float d = texelFetch(depth_map, p, 0).r;
+        float d = texelFetch(depth_map, depth_texel(p), 0).r;
         float z = d > 0.0 ? view_depth(d) : 0.0;
         float r = smoothstep(0.25, 1.0, z / pc.depth.w) * 1.75;
         if (r > 0.2) {
@@ -133,7 +125,9 @@ void main() {
             c = sum / 7.0;
         }
     }
-    if ((pc.flags & kAo) != 0u && texelFetch(depth_map, p, 0).r > 0.0) c *= mix(1.0, blurred_ao(p), pc.depth.z);
+    // (Under the temporal upscaler temporal_prep.frag applied it, at the scene's size, and kAo is not set.)
+    if ((pc.flags & kAo) != 0u && texelFetch(depth_map, p, 0).r > 0.0)
+        c *= mix(1.0, blurred_ao(ao_map, depth_map, p, pc.depth.xy), pc.depth.z);
     if (pc.grade.w > 0.0) {
         vec2 uv = (vec2(p) + 0.5) / vec2(textureSize(scene, 0));
         c = mix(c, texture(bloom_map, uv).rgb / 6.0, pc.grade.w);

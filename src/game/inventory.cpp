@@ -27,13 +27,19 @@ void relocate(Item& item, const ItemSlot& slot) {
 
 } // namespace
 
+void Inventory::touched(const ItemSlot& slot) {
+    if (slot.type == net::kInvPossessions && slot.slot == net::kSlotCursor) ++cursor_placement_;
+}
+
 void Inventory::clear() {
     items_.clear();
     ++revision_;
+    ++cursor_placement_;
 }
 
 void Inventory::load(std::vector<Item> items) {
     items_.clear();
+    ++cursor_placement_;
     for (auto& it : items) {
         ItemSlot s = it.slot;
         s.aug = -1;
@@ -59,6 +65,7 @@ bool Inventory::put(const ItemSlot& slot, Item item) {
         relocate(item, slot);
         items_[key_of(slot)] = std::move(item);
         ++revision_;
+        touched(slot);
         return true;
     }
     auto parent = items_.find(key_of(slot));
@@ -74,6 +81,7 @@ bool Inventory::put(const ItemSlot& slot, Item item) {
         parent->second.contents.push_back({index, std::move(item)});
     }
     ++revision_;
+    touched(slot);
     return true;
 }
 
@@ -84,6 +92,7 @@ std::optional<Item> Inventory::take(const ItemSlot& slot) {
         Item item = std::move(parent->second);
         items_.erase(parent);
         ++revision_;
+        touched(slot);
         return item;
     }
     auto& contents = parent->second.contents;
@@ -92,6 +101,7 @@ std::optional<Item> Inventory::take(const ItemSlot& slot) {
             Item item = std::move(it->item);
             contents.erase(it);
             ++revision_;
+            touched(slot);
             return item;
         }
     }

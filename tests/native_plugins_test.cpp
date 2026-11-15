@@ -751,20 +751,22 @@ TEST_CASE("native plugins: get_spawns_data_bulk, laid out as docs/plugins.md say
     Host h(false, nullptr, HAILSTONE_PROBE_PLUGIN);
     h.approve(plugin::kCapAll);
     REQUIRE(h.plugins->load("HostProbe"));
-    // The test world's five spawns (mq_test_world.h), in no set order; the player (1) at the origin.
+    // The test world's five spawns (mq_test_world.h), in no set order; the player (1, level 50) at the origin. The
+    // con colours are RoF2's table for a level 50: itself white (10), the level 48 blue (4), the low ones grey (6).
     h.run("/probespawns");
-    CHECK(h.printed_line("[Probe] spawn 1: 50 2 1 100 Tester"));
-    CHECK(h.printed_line("[Probe] spawn 10: 2 1 1 80 a_rat01"));
-    CHECK(h.printed_line("[Probe] spawn 11: 8 1 1 80 Fippy_Darkpaw000"));
-    CHECK(h.printed_line("[Probe] spawn 12: 48 2 1 100 Groupie"));
-    CHECK(h.printed_line("[Probe] spawn 13: 3 1 1 80 a_rat02"));
-    CHECK(h.printed_line("[Probe] spawns 5, player 0 0 0, 0 bytes left")); // every record's strings framed right
+    CHECK(h.printed_line("[Probe] spawn 1: 50 2 1 100 10 Tester"));
+    CHECK(h.printed_line("[Probe] spawn 10: 2 1 1 80 6 a_rat01"));
+    CHECK(h.printed_line("[Probe] spawn 11: 8 1 1 80 6 Fippy_Darkpaw000"));
+    CHECK(h.printed_line("[Probe] spawn 12: 48 2 1 100 4 Groupie"));
+    CHECK(h.printed_line("[Probe] spawn 13: 3 1 1 80 6 a_rat02"));
+    // Every record's strings framed right: nothing left over.
+    CHECK(h.printed_line("[Probe] spawns 5, player 0.00 0.00 0.00, 0 bytes left"));
     // Below 4096 bytes nothing; at 4112 (the header and the 4096 kept free) one record, then it stops.
     h.printed.clear();
     h.run("/probespawns 4095");
     CHECK(h.printed_line("[Probe] spawns 0 bytes"));
     h.run("/probespawns 4112");
-    CHECK(h.printed_line("[Probe] spawns 1, player 0 0 0, 0 bytes left"));
+    CHECK(h.printed_line("[Probe] spawns 1, player 0.00 0.00 0.00, 0 bytes left"));
 }
 TEST_CASE("native plugins: get_xtarget_data_bulk, laid out as docs/plugins.md says") {
     Host h(false, nullptr, HAILSTONE_PROBE_PLUGIN);
@@ -776,10 +778,10 @@ TEST_CASE("native plugins: get_xtarget_data_bulk, laid out as docs/plugins.md sa
     CHECK(h.printed_line("[Probe] xtargets 0 bytes"));
     auto& xs = A::xtargets(*h.world.conn).slots;
     xs.resize(5);
-    xs[0] = {1, 2, 10, "a_rat01"};          // an auto hater, a_rat01 at 80%
-    xs[1] = {1, 2, 11, "Fippy_Darkpaw000"}; // Fippy, set to 55% below
-    xs[2] = {1, 2, 13, "a_rat02"};          // the test world's corpse: no HP
-    xs[3] = {3, 1, 0, "Somebody"};          // a named slot without a spawn in the zone
+    xs[0] = {HS_BULK_XTARGET_AUTO_HATER, 2, 10, "a_rat01"};          // an auto hater, a_rat01 at 80%
+    xs[1] = {HS_BULK_XTARGET_AUTO_HATER, 2, 11, "Fippy_Darkpaw000"}; // Fippy, set to 55% below
+    xs[2] = {HS_BULK_XTARGET_AUTO_HATER, 2, 13, "a_rat02"};          // the test world's corpse: no HP
+    xs[3] = {HS_BULK_XTARGET_SPECIFIC_NPC, 1, 0, "Somebody"};        // a named slot without a spawn in the zone
     // slot 4 empty
     auto& aggro = A::aggro(*h.world.conn).pct;
     aggro[net::kAggroXTarget1] = 100;
@@ -801,6 +803,36 @@ TEST_CASE("native plugins: get_xtarget_data_bulk, laid out as docs/plugins.md sa
     CHECK(h.printed_line("[Probe] xtarget 1: 1 11 42 55"));
     CHECK_FALSE(h.printed_line("[Probe] xtarget 2: 1 13 60 0"));
     CHECK(h.printed_line("[Probe] xtargets 32 bytes"));
+}
+TEST_CASE("native plugins: cursor_origin gives the cursor item's origin, and needs 'read'") {
+    using A = net::GameConnectionTestAccess;
+    auto server_item = [](std::uint32_t id) {
+        net::ItemPacket ip;
+        ip.type = net::kItemPacketTrade;
+        ip.item.id = id;
+        ip.item.name = "Found";
+        ip.item.slot = net::ItemSlot::possessions(net::kSlotCursor);
+        return net::encode_item_packet(false, ip);
+    };
+    {
+        Host h(false, nullptr, HAILSTONE_PROBE_PLUGIN);
+        h.approve(plugin::kCapAll);
+        REQUIRE(h.plugins->load("HostProbe"));
+        h.run("/probecursor");
+        CHECK(h.printed_line("[Probe] cursor origin 0")); // nothing held
+        A::handle_zone(*h.world.conn, server_item(2001));
+        REQUIRE(h.world.conn->inventory().cursor());
+        h.run("/probecursor");
+        CHECK(h.printed_line("[Probe] cursor origin 2")); // HAILSTONE_CURSOR_ORIGIN_SERVER
+    }
+    Host h(false, nullptr, HAILSTONE_PROBE_PLUGIN);
+    h.approve(plugin::kCapAll & ~plugin::kCapRead);
+    REQUIRE(h.plugins->load("HostProbe"));
+    A::handle_zone(*h.world.conn, server_item(2001));
+    REQUIRE(h.world.conn->inventory().cursor());
+    h.run("/probecursor");
+    CHECK(h.printed_line("[Probe] cursor origin 0"));
+    CHECK(h.printed_line("[Plugin] HostProbe: cursor_origin needs the server's 'read' permission"));
 }
 TEST_CASE("native plugins: the buff bulk reads need 'read'") {
     Host h(false, nullptr, HAILSTONE_PROBE_PLUGIN);

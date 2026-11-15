@@ -44,7 +44,15 @@ public:
     struct Instance {
         int model = -1;
         glm::mat4 transform{1.0f};
+        // Who this is from frame to frame (a door, an object, a placed item; make_motion_key), for its motion under
+        // the temporal upscaler: its transform a frame ago is drawn beside this one. 0: none kept (it moves with the
+        // camera only).
+        std::uint64_t motion_key = 0;
     };
+    // A motion key for item `id` of a kind of thing (`kind` 1..15, the caller's own numbering).
+    static constexpr std::uint64_t make_motion_key(std::uint32_t kind, std::uint64_t id) {
+        return (std::uint64_t{kind} * 0x9e3779b97f4a7c15ull) ^ (id + 1);
+    }
 
     ObjectRenderer(VkContext& vk, const std::filesystem::path& shader_dir);
     ~ObjectRenderer();
@@ -150,7 +158,10 @@ private:
     std::uint32_t max_textures_ = 0;
     std::array<std::uint32_t, VkContext::kFramesInFlight> descriptor_textures_{}; // textures written into each set
 
+    // Each frame's transforms, then from kMaxInstances on each one a frame ago (object.vert's motion).
     static constexpr std::uint32_t kMaxInstances = 8192;
+    std::unordered_map<std::uint64_t, glm::mat4> transforms_now_, transforms_before_; // by motion key
+    std::uint64_t frame_transforms_ = 0;
     std::array<Buffer, VkContext::kFramesInFlight> instances_{};
     std::array<void*, VkContext::kFramesInFlight> instances_mapped_{};
 

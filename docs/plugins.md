@@ -152,7 +152,7 @@ extension's `command_line`) from the moment it lost the bit, and its web tabs cl
 | 1 | `read` | read game state: `mq.TLO`, `${...}`, `mq.parse`, `ParseMacroData`, spawn events |
 | 2 | `commands` | run commands outside the groups below: windows, options, `/who`, other plugins' commands, `/lua`; add commands of its own (`mq.bind`, `AddCommand`) |
 | 4 | `target` | change the target: `/target`, `/assist`, `/xtarget`, ... |
-| 8 | `actions` | act: `/cast`, `/disc`, `/doability`, `/useitem`, `/attack`, `/memspellset`, non-movement `/keypress` |
+| 8 | `actions` | act: `/cast`, `/disc`, `/doability`, `/useitem`, `/attack`, `/memspellset`, non-movement `/keypress`; Hailstone's own item commands `/destroy`, `/destroycursor` and `/stowcursor` |
 | 16 | `move` | move: `/face`, movement `/keypress` (forward, jump, ...), `/follow`, `/sit`, `/stand`, `/duck`, `/camp` |
 | 32 | `chat` | speak: plain text, `/say`, `/tell`, `/g`, `/gu`, `/rs`, channels, emotes |
 | 64 | `events` | see chat lines: `mq.event`, `OnIncomingChat`, and hide them (`OnFilterChat`) |
@@ -166,7 +166,9 @@ extension's `command_line`) from the moment it lost the bit, and its web tabs cl
 The check sits in one place, the command filter (`src/mq/commands.cpp`). It looks at the capabilities of the code
 running now (`plugin::caller_caps()`). So a command reaches the same check whether a script sends it with `mq.cmd`,
 `/docommand`, `/squelch`, a bind, or a plugin's `DoCommand`. The game's own commands are classified by their entry in the
-command table (`plugin::command_caps`). MQ's and plugins' commands declare what they need.
+command table (`plugin::command_caps`). Hailstone's own commands are not in that table and need `commands`, except
+the ones that destroy or move items (`/destroy`, `/destroycursor`, `/stowcursor`, the short `kOwnActions` list in
+`src/plugin/policy.cpp`), which need `actions`. MQ's and plugins' commands declare what they need.
 
 ## MacroQuest Lua scripts
 
@@ -283,7 +285,7 @@ Targetable flag on and its body type not 11 (EQEmu's NoTarget, which servers giv
 
 Differences from MQ: `level N`, `afk`, `linkdead`, `buyer`, `exact` and `merc` are Hailstone's own words. This client
 keeps no alert lists, so `nearalert` finds nothing and the other alert words ask nothing (as in MQ with no such
-list). EQEmu has no fellowships, so `fellowship` finds nothing. `los` keeps a spawn while the zone's collision is not
+list). `fellowship` matches the server-supplied roster, including expanded rosters of up to 64 members. `los` keeps a spawn while the zone's collision is not
 loaded. `next` and `prev` (MQ's target cycling) are accepted and do nothing yet.
 
 Not yet:
@@ -463,6 +465,10 @@ Callbacks:
   client's own, not those a script or plugin writes (`print`, `/echo`, `WriteChatf`, a reply to its command), as MQ
   hands its own lines to `OnWriteChatColor` and not here: a plugin that answers "Bob tells you, ..." would otherwise
   answer whatever another add-on printed
+  Combat hit lines (melee and spell damage, heals) reach these hooks as the full sentence whatever the player's Hit
+  Modes: unlike MQ, whose hook sees the line as RoF2 displays it, an abbreviated or number-only line is never what a
+  hook gets, so a parser matches one form. A hook that rewrites such a line shows its rewrite in full, the hit mode
+  set aside for that line
 - `OnUpdateImGui`, `OnPacket(stream, direction, packet)` (nonzero drops it)
 
 Host functions: `WriteChatf`, `DoCommand(f)`, `AddCommand` (needs `commands`; 0 for one of the client's own commands, as `mq.bind`), `RemoveCommand`, `ParseMacroData` (`${...}`, so the
@@ -587,10 +593,48 @@ call, since a client older than the call has a shorter table. The structs a plug
 Buff, spawn and extended target records: `get_buff_data_bulk(host, out, out_size)`,
 `get_pet_buff_data_bulk(host, out, out_size)`, `get_spawns_data_bulk(host, out, out_size)` and
 `get_xtarget_data_bulk(host, out, out_size)` (with `read`; added later in ABI 3, so test `HAILSTONE_HOST_HAS(host, <field>)` first;
+The cursor item's origin: `cursor_origin(host)` (with `read`; added later in ABI 3, so test
+`HAILSTONE_HOST_HAS(host, cursor_origin)` first) says how the item on the cursor now got there, for a plugin that
+puts away or destroys what the server hands the player:
+
+| Value | Meaning |
+|---|---|
+| `HAILSTONE_CURSOR_ORIGIN_UNKNOWN` (0) | not known, or nothing on the cursor, or the plugin lacks `read`. The item was on the cursor at the zone-in (OP_CharInventory), replaced an item already on the cursor, or got there some way the client does not mark. Treat it as the player's: never destroy it unattended. |
+| `HAILSTONE_CURSOR_ORIGIN_INVENTORY` (1) | the player picked it up from their own inventory: a click on a slot, or part of a stack split off with the quantity slider. |
+| `HAILSTONE_CURSOR_ORIGIN_SERVER` (2) | the server put it on the empty cursor. |
+
+SERVER goes by how the item arrives, not by whether the player chose it. Traced in EQEmu's zone code: summoned items,
+tradeskill results and quest rewards (`Client::SummonItem`), and anything else EQEmu queues on the cursor
+(`Client::PushItemOnCursor`: the cursor queue's item packet type 0x6a, and the queue's next item moved up with
+OP_MoveItem), arrive that way; so do a ground item the player clicks to pick up (`Object::HandleClick`) and an item
+looted onto the cursor (`Client::PutLootInInventory`), which come as item packets of type 0x67 to the empty cursor.
+An item packet or a server OP_MoveItem onto a cursor that already holds an item (a merge, a swap) reads UNKNOWN.
+
+The answer belongs to the item it was noted for: every change to the cursor slot counts
+(`game::Inventory::cursor_placement`), and the origin is kept with the count it was noted at, so when the cursor
+changes by a path that marks nothing the answer is UNKNOWN, never an earlier item's origin. Read it beside
+`get_item` on the cursor, then act with one of the two commands below, giving the id just read; each does nothing
+when the cursor no longer holds an item of that id, so an item the player put there in the meantime is not touched
+(the check is by item id, so it cannot tell two items of the same id apart):
+
+- `/destroycursor <id>`: destroys the item on the cursor (OP_MoveItem to nowhere, as `/destroy` without its
+  question). Never coin, never a bag (it may hold other items), never an item with a Keep mark, and only in a zone.
+  It does not refuse a real-estate item (docs/unknowns.md).
+- `/stowcursor <id>`: puts the item on the cursor into the first free general slot, else the first bag with room
+  that takes it, never a worn slot; "There are no open slots for the held item in your inventory." when there is none.
+
+Both need `actions`, as `/destroy` does. The id is a plain decimal number above 0; anything else does nothing.
+
+Buff and spawn records: `get_buff_data_bulk(host, out, out_size)`, `get_pet_buff_data_bulk(host, out, out_size)` and
+`get_spawns_data_bulk(host, out, out_size)` (with `read`; added later in ABI 3, so test `HAILSTONE_HOST_HAS(host, <field>)` first;
 `out` is an `unsigned char*` and `out_size` an `int32_t`) write records into `out` and return the bytes written.
-The client copies its own packed structs into the buffer, so the fields are in the machine's byte order
-(little-endian on every platform Hailstone runs on) and unaligned: read them with `ByteReader` or `memcpy`, never by
-casting a struct onto the buffer. Without `read` they return 0 and say so in the chat window.
+The records are the SDK's packed structs (`HS_Bulk_BuffData`, `HS_Bulk_PetBuffData`, `HS_Bulk_SpawnHeader`,
+`HS_Bulk_SpawnFixedRecord`, all in `#pragma pack(push, 1)`), in the machine's byte order (little-endian on every
+platform Hailstone runs on) and unaligned. For speed, the bulk reads are the one place where a struct may be cast
+onto the buffer, by the client writing it and by a plugin reading it: read each field through the packed struct
+(`rec->level`), which the compiler reads unaligned, and never keep a plain pointer or reference to a field (`&rec->x`),
+which may fault on a processor that needs aligned reads. `ByteReader` or `memcpy` work too. Without `read` they return 0
+and say so in the chat window.
 
 - `get_buff_data_bulk`: one record of `HAILSTONE_BUFF_RECORD_SIZE` (29) bytes per buff slot, slot 0 first, in the
   client's order: the long buff slots, then the song slots, then the one discipline slot, always last. RoF2 has 42
@@ -621,7 +665,7 @@ casting a struct onto the buffer. Without `read` they return 0 and say so in the
   added until fewer than 4096 bytes are left in `out`: below 4096 bytes it returns 0, and it needs at least 4112
   bytes to write any record and a few hundred bytes per spawn on top; the header's count says how many records follow.
 
-  Header:
+  Header (`HS_Bulk_SpawnHeader`, `HS_BULK_SPAWN_HEADER_SIZE` = 16 bytes):
 
   | Offset | Type | Field |
   |---|---|---|
@@ -630,42 +674,35 @@ casting a struct onto the buffer. Without `read` they return 0 and say so in the
   | 8 | f32 | the player's y |
   | 12 | f32 | the player's z |
 
-  Each record is 128 fixed bytes:
+  Each record (`HS_Bulk_SpawnFixedRecord`) is `HS_BULK_SPAWN_RECORD_SIZE` = 92 fixed bytes:
 
   | Offset | Type | Field |
   |---|---|---|
   | 0 | i32 | spawn id |
   | 4 | u32 | flags (below) |
-  | 8 | i32 | blind: always 0 |
-  | 12 | i32 | body type id |
-  | 16 | i32 | class id |
-  | 20 | i32 | con colour against the player's level, as a chat colour (`CONCOLOR_*`: 6 grey, 2 green, 18 light blue, 4 blue, 10 white, 15 yellow, 13 red) |
-  | 24 | i32 | current endurance: always 0 |
-  | 28 | i64 | current HP: the HP percent, as the server sends it |
-  | 36 | i32 | current mana: always 0 |
-  | 40 | i32 | gender |
-  | 44 | i64 | guild id |
-  | 52 | f32 | heading in degrees (the server's heading x 0.703125) |
-  | 56 | f32 | height (the model's avatar height) |
-  | 60 | i32 | level |
-  | 64 | f32 | look: always 0 |
-  | 68 | i32 | master: the pet owner's spawn id, 0 for none |
-  | 72 | i32 | max endurance: always 0 |
-  | 76 | f32 | max range: 14.5, or 0 for a ground item |
-  | 80 | f32 | max range to: 14.5, or 0 for a ground item |
-  | 84 | i64 | HP percent |
-  | 92 | i32 | mana percent: always 0 |
-  | 96 | i32 | pet id: always 0 |
-  | 100 | i32 | player state, as the server sends it |
-  | 104 | i32 | race id |
-  | 108 | i32 | target of target id: always 0 |
-  | 112 | f32 | x |
-  | 116 | f32 | y |
-  | 120 | f32 | z |
-  | 124 | i32 | deity (tells a player's corpse from an NPC's) |
+  | 8 | i32 | body type id |
+  | 12 | i32 | class id |
+  | 16 | i32 | consider colour, the one `/consider` and the target window show (the original's con level, with the server's PvP rules), as a chat colour (`CONCOLOR_*`: 6 grey, 2 green, 18 light blue, 4 blue, 10 white, 15 yellow, 13 red); 6 also for a corpse |
+  | 20 | i64 | current HP: the HP percent, as the server sends it |
+  | 28 | i32 | gender |
+  | 32 | i64 | guild id |
+  | 40 | f32 | heading in degrees (the server's heading x 0.703125) |
+  | 44 | f32 | height (the model's avatar height) |
+  | 48 | i32 | level |
+  | 52 | i32 | master: the pet owner's spawn id, 0 for none |
+  | 56 | f32 | max range: 14.5, or 0 for a ground item |
+  | 60 | f32 | max range to: 14.5, or 0 for a ground item |
+  | 64 | i32 | HP percent |
+  | 68 | i32 | player state, as the server sends it |
+  | 72 | i32 | race id |
+  | 76 | f32 | x |
+  | 80 | f32 | y |
+  | 84 | f32 | z |
+  | 88 | i32 | deity (tells a player's corpse from an NPC's) |
 
   Then seven strings, each a u16 length followed by that many bytes with no terminating NUL: the body type's
-  description, the clean name, the display name, the name, the race's name, the suffix, and the spawn type's
+  description, the clean name, the display name (the same text as the clean name, as `${Spawn.CleanName}` and
+  `${Spawn.DisplayName}` give them), the name, the race's name, the suffix, and the spawn type's
   description.
 
   Flags (bit: meaning): 0 AFK, 1 aggressive (player state 0x04 or 0x08), 2 anonymous, 3 buyer, 4 dead, 5 ducking,
@@ -673,14 +710,14 @@ casting a struct onto the buffer. Without `read` they return 0 and say so in the
   other than 0), 14 named, 15 roleplaying, 16 sitting, 17 sneaking, 18 standing, 19 stunned (player state 0x20),
   20 targetable, 21 trader, 22 underwater. Bits 8, 17 and 22 are never set at present.
 
-- `get_xtarget_data_bulk`: one record of `HS_XTARGET_RECORD_SIZE` (16) bytes per extended target slot, slot 0
+- `get_xtarget_data_bulk`: one record (`HS_Bulk_XTargetData`) of `HS_BULK_XTARGET_RECORD_SIZE` (16) bytes per extended target slot, slot 0
   first, as many as fit in `out_size` (only whole records; 0 bytes before the server sent the list). The slots are
   the same ones `get_xtarget` reads by index, a slot the server's extension hides from the window included. RoF2 has
   at most 20 slots (EQEmu: 5 plus the AA's), so 512 bytes is plenty.
 
   | Offset | Type | Field |
   |---|---|---|
-  | 0 | i32 | the slot's type, as `HailstoneXTarget.type`: an `HS_XTARGET_*` value (`enum HS_XTargetType`, the protocol's 0 to 26: 0 empty, 1 auto hater, 2 / 3 a specific PC / NPC, ... 25 / 26 the mercenary and its target) |
+  | 0 | i32 | the slot's type, as `HailstoneXTarget.type`: an `HS_BULK_XTARGET_*` value (`enum HS_BULK_XTargetTypes`, the protocol's 0 to 26: 0 empty, 1 auto hater, 2 / 3 a specific PC / NPC, ... 25 / 26 the mercenary and its target) |
   | 4 | i32 | the slot's spawn id, 0 for none |
   | 8 | i32 | the aggro meter's percent for the slot's spawn, as the server sent it (entries 7 to 26 of the meter, the extended target window's aggro labels; on EQEmu an NPC's is our hate against its current target's, a player's is its hate against our target's top). 0 with no spawn in the zone, without the meter (EQEmu's `Character:EnableAggroMeter`), or for a slot past the 20th |
   | 12 | i32 | the spawn's HP percent, as the extended target window draws it: the player's own from its points (items' HP included), anyone else's as the server last sent it (EQEmu sends it to everyone with the spawn on their list when the percent changes); 0 with no spawn in the zone or for a corpse |

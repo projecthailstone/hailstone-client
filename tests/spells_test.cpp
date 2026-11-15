@@ -425,6 +425,99 @@ TEST_CASE("Spell hit lines (ReportSuccessfulHit, type 231)") {
     CHECK_FALSE(game::spell_hit_message(strings, world, s, 99, 0));
 }
 
+TEST_CASE("Spell hit modes use message identity and numeric substitutions") {
+    using Report = game::SpellHitReport;
+    struct Fixture {
+        std::uint32_t id;
+        std::vector<std::string> args;
+        Report kind;
+        std::string compact, amount;
+    };
+    const std::array fixtures{
+        Fixture{9073, {"Caster", "Victim", "1,234"}, Report::DirectDamage,
+                "Caster -> Victim: 1,234 damage", "1,234"},
+        Fixture{434, {"Victim", "27"}, Report::DirectDamage, "Victim: 27 non-melee", "27"},
+        Fixture{12481, {"28"}, Report::DirectDamage, "You: 28 non-melee", "28"},
+        Fixture{428, {"29"}, Report::DirectDamage, "You: 29 critical blast", "29"},
+        Fixture{1040, {"Caster", "30"}, Report::DirectDamage, "Caster: 30 critical blast", "30"},
+        Fixture{9072, {"Victim", "31", "Venom"}, Report::DamageOverTime, "Victim: 31 DoT (Venom)", "31"},
+        Fixture{12954, {"32", "Venom", "Caster"}, Report::DamageOverTime, "You: 32 DoT", "32"},
+        Fixture{13327, {"Victim", "33", "Venom", "Caster"}, Report::DamageOverTime, "Victim: 33 DoT", "33"},
+        Fixture{9068, {"Victim", "34"}, Report::Healing, "You -> Victim: 34 heal", "34"},
+        Fixture{419, {"Caster", "35"}, Report::Healing, "Caster -> You: 35 heal", "35"},
+        Fixture{427, {"36"}, Report::Healing, "You: 36 critical heal", "36"},
+        Fixture{1039, {"Caster", "37"}, Report::Healing, "Caster: 37 critical heal", "37"},
+        Fixture{12976, {"38", "Renewal"}, Report::HealingOverTime, "You: 38 HoT (Renewal)", "38"},
+        Fixture{12997, {"Victim", "39", "Renewal"}, Report::HealingOverTime,
+                "You -> Victim: 39 HoT (Renewal)", "39"},
+        Fixture{12998, {"Caster", "40", "Renewal"}, Report::HealingOverTime,
+                "Caster -> You: 40 HoT (Renewal)", "40"},
+    };
+    for (const auto& fixture : fixtures) {
+        CAPTURE(fixture.id);
+        const auto line = game::spell_message_hit_report(fixture.id, fixture.args);
+        REQUIRE(line);
+        CHECK(line->kind == fixture.kind);
+        CHECK(game::report_spell_hit_line(*line, "Complete localized sentence", 0) == "Complete localized sentence");
+        CHECK(game::report_spell_hit_line(*line, "Complete localized sentence", 1) == fixture.compact);
+        CHECK(game::report_spell_hit_line(*line, "Complete localized sentence", 2) == fixture.amount);
+        CHECK(game::report_spell_hit_line(*line, "Complete localized sentence", -1) == "Complete localized sentence");
+        CHECK(game::report_spell_hit_line(*line, "Complete localized sentence", 3) == "Complete localized sentence");
+        for (std::size_t n = 0; n < fixture.args.size(); ++n)
+            CHECK_FALSE(game::spell_message_hit_report(fixture.id, std::span(fixture.args).first(n)));
+    }
+    // DoT caster/spell arguments have been emitted in either order by servers; none is mislabelled in compact
+    // incoming/observer lines. A name containing a number is not mistaken for the damage substitution.
+    CHECK(game::spell_message_hit_report(12954, std::array<std::string, 3>{"32", "Caster42", "Venom"})->abbreviated ==
+          "You: 32 DoT");
+    CHECK(game::spell_message_hit_report(13327, std::array<std::string, 4>{"Victim42", "33", "Caster", "Venom"})->abbreviated ==
+          "Victim42: 33 DoT");
+}
+
+TEST_CASE("Spell hit modes preserve malformed and unrelated messages") {
+    for (const std::string amount : {"", "12 HP", "1.5", "-1", "+1", " 1", "1 ", "12,34", ",123", "123,",
+                                     "1,,234", "1234,567", "18446744073709551616"}) {
+        CAPTURE(amount);
+        CHECK_FALSE(game::spell_message_hit_report(9073, std::array<std::string, 3>{"Caster", "Victim", amount}));
+    }
+    for (const std::string amount : {"0", "1", "1234", "1,234", "12,345,678", "18446744073709551615"}) {
+        CAPTURE(amount);
+        const auto line = game::spell_message_hit_report(9073, std::array<std::string, 3>{"Caster", "Victim", amount});
+        REQUIRE(line);
+        CHECK(line->amount == amount);
+    }
+    CHECK_FALSE(game::spell_message_hit_report(9073, std::array<std::string, 3>{"", "Victim", "123"}));
+    CHECK_FALSE(game::spell_message_hit_report(9073, std::array<std::string, 3>{"Caster", "", "123"}));
+    // A casting line, a resist line, a buff message and arbitrary custom ids never become numbers-only.
+    for (const std::uint32_t id : {12205u, 12207u, 12003u, 99999u})
+        CHECK_FALSE(game::spell_message_hit_report(id, std::array<std::string, 3>{"Caster", "Victim", "123"}));
+}
+
+TEST_CASE("OP_Damage spell hit modes retain nonnumeric landing lines") {
+    game::WorldState world;
+    world.player_id = 1;
+    world.spawns[1].name = "Me";
+    world.spawns[2].name = "a_rat01";
+    game::SpellData spell;
+    spell.name = "Test Spell";
+    spell.duration_formula = 1; // an initial hit of a lasting spell is still direct damage
+    auto damage = game::spell_damage_hit_report(world, spell, 1, 123);
+    REQUIRE(damage);
+    CHECK(damage->kind == game::SpellHitReport::DirectDamage);
+    CHECK(damage->abbreviated == "You: 123 damage (Test Spell)");
+    CHECK(game::report_spell_hit_line(*damage, "Native complete landing line", 2) == "123");
+    const auto healing = game::spell_damage_hit_report(world, spell, 1, (-2147483647 - 1));
+    REQUIRE(healing);
+    CHECK(healing->kind == game::SpellHitReport::Healing);
+    CHECK(healing->amount == "2147483648");
+    CHECK(healing->abbreviated == "You: 2147483648 heal (Test Spell)");
+    CHECK_FALSE(game::spell_damage_hit_report(world, spell, 1, 0));
+    CHECK_FALSE(game::spell_damage_hit_report(world, spell, 2, 123));
+    CHECK_FALSE(game::spell_damage_hit_report(world, spell, 99, 123));
+    world.spawns.erase(1);
+    CHECK_FALSE(game::spell_damage_hit_report(world, spell, 1, 123));
+}
+
 TEST_CASE("The game's spells_us.txt" * doctest::skip(test::game_dir() == nullptr)) {
     game::SpellTable t;
     REQUIRE(t.load(*test::game_dir()));

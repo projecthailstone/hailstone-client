@@ -364,7 +364,7 @@ return rw, rh, ry, ow, oh, oy
 
 // The modern UI's grid snapping (ui/modern/lib/snap.lua): a dragged window's near or far edge goes to the nearest
 // grid line, or flush with the screen's edge when that is nearer, in whole pixels.
-TEST_CASE("UI snap: a window lands on the nearest grid line or screen edge") {
+TEST_CASE("UI snap: window positions and resize edges land on the grid") {
     fs::path file = ui_dir() / "modern" / "lib" / "snap.lua";
     if (!fs::exists(file)) return;
     lua_State* L = luaL_newstate();
@@ -405,6 +405,35 @@ TEST_CASE("UI snap: a window lands on the nearest grid line or screen edge") {
     lua_pushnil(L);
     REQUIRE(lua_pcall(L, 4, 1, 0) == LUA_OK);
     CHECK(lua_tonumber(L, -1) == 33.5);
+    // a resize: the dragged far edge goes to the nearest grid line, or the screen's far edge when that is nearer
+    auto extent = [&](double origin, double size, double delta, double minSize, double scale, double screen,
+                      double grid) {
+        lua_getglobal(L, "snap");
+        lua_getfield(L, -1, "Extent");
+        lua_pushnumber(L, origin);
+        lua_pushnumber(L, size);
+        lua_pushnumber(L, delta);
+        lua_pushnumber(L, minSize);
+        lua_pushnumber(L, scale);
+        lua_pushnumber(L, screen);
+        if (grid > 0) lua_pushnumber(L, grid);
+        else lua_pushnil(L);
+        REQUIRE(lua_pcall(L, 7, 1, 0) == LUA_OK);
+        const double v = lua_tonumber(L, -1);
+        lua_pop(L, 2);
+        return v;
+    };
+    CHECK(extent(103, 50, 4, 20, 1, 1000, 10) == 57);        // off-grid origin; far edge 157 -> 160
+    CHECK(extent(103, 50, -45, 20, 1, 1000, 10) == 20);      // minimum size wins over the grid
+    // a fractional screen grid (10 design pixels at 125 %): 20 + 5 / 1.25 = 24 puts the far edge at 131, nearer the
+    // line at 125 than 137.5, so it pulls back to (125 - 101) / 1.25; 10 pixels on (edge 136) it reaches 137.5
+    CHECK(extent(101, 20, 5, 10, 1.25, 1000, 12.5) == doctest::Approx(19.2));
+    CHECK(extent(101, 20, 10, 10, 1.25, 1000, 12.5) == doctest::Approx(29.2));
+    // the screen's right edge (196 is no grid line): flush with it when nearer than the line, the line on a tie
+    CHECK(extent(103, 50, 42, 20, 1, 196, 10) == 93);        // edge 195: 196 is nearer than 200
+    CHECK(extent(103, 50, 40, 20, 1, 196, 10) == 87);        // edge 193: 190 and 196 tie, the line wins
+    CHECK(extent(10, 40, 9, 20, 1.25, 63.4, 12.5) == doctest::Approx((63.4 - 10) / 1.25)); // edge 69 -> 63.4
+    CHECK(extent(103, 50, 3, 20, 1.25, 1000, 0) == doctest::Approx(52.4)); // Shift or snap off: raw resize
     lua_close(L);
 }
 
@@ -487,6 +516,70 @@ std::vector<std::string> run_modern(const char* chunk) {
 }
 
 } // namespace
+
+// With Snap to grid on, dragging a resizable frame's corner puts its right and bottom edges on the nearest grid line,
+// or flush with the screen's edge when that is nearer, with the grid shown (lib/hud.lua over lib/snap.lua). A frame
+// that lays itself out from the drag (opts.onResize: the hot bars, whole buttons) gets the mouse's size unsnapped
+// and shows no grid, since its own rounding would leave it off the lines.
+TEST_CASE("UI modern HUD: a frame's resize snaps to the grid and screen edge, not a self-laid-out one") {
+    if (!fs::exists(ui_dir() / "modern" / "lib" / "hud.lua")) return;
+    const char* check = R"lua(
+local hud = dofile("lib/hud.lua")
+local fails = {}
+local function expect(ok, what) if not ok then fails[#fails + 1] = what end end
+local last, active, mx, my, wpx, wpy = nil, nil, 0, 0, 0, 0
+ui.Begin = function() return true end
+ui.SetNextWindowPos = function(x, y) wpx, wpy = x, y end
+ui.GetWindowPos = function() return wpx, wpy end
+ui.GetScrollY = function() return 0 end
+ui.InvisibleButton = function(id) last = id return false end
+ui.IsItemActive = function() return active ~= nil and last == active end
+ui.IsMouseDown = function() return active ~= nil end
+ui.IsMouseDragging = function() return active ~= nil end
+ui.GetMousePos = function() return mx, my end
+settings["hud.snap"], settings["hud.snap.size"] = "1", "10"
+local got
+local framed = { size = function() return 200, 100 end, resizable = { 50, 50 } }
+local own = { size = function() return 200, 100 end, resizable = { 50, 50 }, onResize = function(w, h) got = { w, h } end }
+local function drag(name, opts, dx, dy) -- the corner grip pressed at (400, 400), then moved by dx, dy
+  shownWindows[name] = true
+  settings["hud.pos." .. name] = "103,203"
+  settings["hud.size." .. name] = nil
+  active, mx, my = nil, 400, 400
+  frame = frame + 1
+  hud.Window(name, name, opts, function() end)
+  active = "##resize"
+  frame = frame + 1
+  hud.Window(name, name, opts, function() end)
+  mx, my = 400 + dx, 400 + dy
+  frame = frame + 1
+  hud.Window(name, name, opts, function() end)
+  local shown = modern.gridFrame == frame
+  active = nil
+  frame = frame + 1
+  hud.Window(name, name, opts, function() end)
+  return shown
+end
+-- far edges 103 + 244 = 347 -> 350 and 203 + 100 = 303 -> 300
+expect(drag("SnapFrame", framed, 44, 0), "no grid shown while a frame is resized")
+expect(settings["hud.size.SnapFrame"] == "247.000,97.000", "frame size " .. tostring(settings["hud.size.SnapFrame"]))
+-- the screen's right edge at 1596: an edge dragged to 1594 goes flush with it (2 away), not to the line at 1590
+io_.width = 1596
+drag("SnapFrame", framed, 1291, 0)
+expect(settings["hud.size.SnapFrame"] == "1493.000,97.000", "edge size " .. tostring(settings["hud.size.SnapFrame"]))
+io_.width = 1600
+-- Shift held: the size as the mouse put it
+io_.shift = true
+drag("SnapFrame", framed, 44, 0)
+expect(settings["hud.size.SnapFrame"] == "244,100", "Shift size " .. tostring(settings["hud.size.SnapFrame"]))
+io_.shift = false
+-- the hot bar's kind: unsnapped, no grid
+expect(not drag("OwnFrame", own, 44, 3), "the grid shown for a frame that lays itself out")
+expect(got and got[1] == 244 and got[2] == 103, "onResize got " .. (got and (got[1] .. "," .. got[2]) or "nothing"))
+return fails
+)lua";
+    for (const auto& f : run_modern(check)) FAIL_CHECK(f);
+}
 
 // hud.Layout keeps its solve from frame to frame, and works it out again when a frame shows, changes size or goes
 // unseen for more than 2 frames (a hidden frame gives its room back then, not before), or the screen or the HUD's
@@ -940,6 +1033,191 @@ return true
         CHECK_MESSAGE(rc == LUA_OK, (rc == LUA_OK ? "" : lua_tostring(L, -1)));
         lua_close(L);
     }
+}
+
+// The tracker reads the same task snapshot as the journal without consulting TaskWnd's visibility or selection.
+// Keep its interaction checks separate from the shared HUD's placement, lock and resize checks above.
+TEST_CASE("UI quest tracker: independent tracked objectives and journal links") {
+    if (!fs::exists(ui_dir() / "modern" / "questtracker.lua")) return;
+    auto fails = run_modern(R"lua(
+local base = ...
+local hud = dofile("lib/hud.lua")
+local Q = dofile("lib/task_journal.lua")
+local real_dofile = dofile
+local texts, buttons, window, opts, pending = {}, {}, nil, nil, nil
+local cx, cy, calls, opened, journal = 0, 0, 0, nil, nil
+local inGame, openAllowed = true, true
+local snapshot = {
+  { id = 10, type = 2, title = "First quest", duration = 600, left = 128, done = 1, total = 6, objectives = {
+    { hidden = true, text = "Hidden secret" },
+    { text = "Already done", count = 1, goal = 1, done = true },
+    { separator = true },
+    { text = "First known", count = 1, goal = 4, zone = "North Ro" },
+    { text = "Second known", count = 0, goal = 1, zone = "Befallen" },
+    { text = "Third known", count = 2, goal = 3, zone = "Najena" },
+    { text = "Fourth known", count = 0, goal = 1, zone = "Upper Guk" },
+  } },
+  { id = 20, type = 1, title = "Another quest", objectives = { { text = "Other objective", count = 2, goal = 8 } } },
+}
+eq.InGame = function() return inGame end
+eq.Tasks = function() calls = calls + 1 return snapshot end
+eq.TasksRevision = function() return frame, 0 end -- a new revision every frame: read once a frame
+eq.WindowShown = function() error("the tracker must not inspect TaskWnd") end
+eq.ReplaceWindow = eq.WindowShown
+eq.OpenTask = function(id) opened = id return openAllowed end
+eq.ShowWindow = function(name, shown) journal = { name, shown } end
+ui.window = function(name, fn) assert(name == "Quest Tracker") window = fn end
+ui.GetWindowPos = function() return 0, 0 end
+ui.GetCursorScreenPos = function() return cx, cy end
+ui.GetCursorPos = ui.GetCursorScreenPos
+ui.SetCursorPos = function(x, y) cx, cy = x, y end
+ui.SetCursorScreenPos = ui.SetCursorPos
+ui.GetContentRegionAvail = function() return 282, 250 end
+ui.IsItemHovered = function() return false end
+ui.TextColored = function(_, _, _, _, text) texts[text] = true cy = cy + 16 end
+ui.Separator = function() cy = cy + 4 end
+hud.T.Text = function(_, _, text) texts[text] = true end
+hud.T.Hit = function(id) if pending == id then pending = nil return true end return false end
+hud.T.Button = function(id, _, _, _, _, _, label, options)
+  buttons[id] = label
+  return hud.T.Hit(id) and (not options or options.enabled ~= false)
+end
+hud.DragItem = function() return false end
+hud.Window = function(screen, title, options, body)
+  assert(screen == nil and title == "Quest Tracker", "an independent HUD frame")
+  opts = options
+  assert(options.resizable[1] >= 200 and options.resizable[2] >= 80, "bounded resizing")
+  assert(options.rollup and options.onClose, "the HUD owns rolling and closing")
+  if options.shown() then
+    options.rolled = hud.Rolled(title)
+    body(0, 0, 300, options.rolled and options.titleHeight or 350, 1)
+  end
+end
+dofile = function(name) if name == "lib/hud.lua" then return hud end return real_dofile(name) end
+assert(loadfile(base .. "/questtracker.lua"))()
+local function draw(click)
+  texts, buttons, pending, cx, cy = {}, {}, click, 0, 0
+  frame = frame + 1
+  window()
+  return texts
+end
+draw()
+assert(next(texts) == nil, "an empty tracker is not shown by default")
+Q.setTrackerVisible(true)
+draw()
+assert(texts["No tracked quests. Use Track in the Quest Journal to add one."], "explicitly showing an empty tracker offers help")
+Q.setTrackerVisible(false)
+Q.setTracked(10, true)
+Q.setTracked(20, true)
+local before = calls
+local drawn = draw()
+assert(drawn["First quest"] and drawn["Another quest"], "both tracked quests")
+assert(drawn["First known"] and drawn["Second known"] and drawn["Third known"], "the first three incomplete objectives")
+assert(not drawn["Fourth known"] and not drawn["Hidden secret"] and not drawn["Already done"], "compact visible unfinished rows only")
+assert(drawn["1/4"] and drawn["2/3"] and drawn["North Ro"] and drawn["Befallen"], "counts and zones")
+assert(drawn["2m 08s remaining"] and drawn["1/6"], "time and total progress")
+assert(calls == before + 1, "the snapshot is read once in a frame")
+ui.SetSetting("tasks.section.20", "rewards")
+draw("##quest20")
+assert(opened == 20, "the quest title selects that quest")
+assert(settings["tasks.section.20"] == "objectives" and settings["tasks.category"] == "active",
+  "a shared quest title opens its objectives with the other active tasks")
+local beforeRefresh = calls
+assert(Q.tasks() == snapshot and calls == beforeRefresh + 1, "opening a quest invalidates the same-frame snapshot")
+ui.SetSetting("tasks.section.10", "rewards")
+draw("##all10")
+assert(opened == 10, "all objectives opens the correct quest")
+assert(settings["tasks.section.10"] == "objectives" and settings["tasks.category"] == "active",
+  "all objectives opens objectives in the active category")
+ui.SetSetting("tasks.section.10", "rewards")
+openAllowed = false
+draw("##all10")
+assert(settings["tasks.section.10"] == "rewards", "a failed open preserves section preferences")
+openAllowed = true
+draw("##managequests")
+assert(journal[1] == "TaskWnd" and journal[2] == true, "the journal can be restored from the tracker")
+draw("##collapse10")
+assert(settings["tasks.tracker.collapsed.10"] == "1" and not texts["First known"], "per-quest collapse")
+assert(texts["Other objective"], "collapsing one quest leaves another expanded")
+draw()
+assert(not texts["First known"], "collapse is remembered")
+draw("##collapse10")
+assert(texts["First known"] and settings["tasks.tracker.collapsed.10"] == "0", "per-quest expand")
+draw("##trackerlock")
+assert(settings["hud.lock.Quest Tracker"] == "1", "the shared HUD lock setting")
+draw("##trackerlock")
+assert(settings["hud.lock.Quest Tracker"] == "0", "unlock")
+draw("##trackerroll")
+assert(settings["hud.rolled.Quest Tracker"] == "1", "the shared HUD roll-up setting")
+draw()
+assert(not texts["First quest"] and buttons["##trackerroll"] == "+", "rolled up shows only its header")
+draw("##trackerroll")
+draw()
+assert(texts["First known"], "expanded contents return")
+opts.onClose()
+draw()
+assert(not texts["First quest"] and Q.isTracked(10) and Q.isTracked(20), "hiding never clears watch flags")
+Q.setTrackerVisible(true)
+draw()
+assert(texts["First quest"], "hidden tracker can be shown again")
+snapshot[1].objectives[4].done = true
+draw()
+assert(not texts["First known"] and texts["Fourth known"], "progress changes refresh the compact objective set")
+Q.setTracked(10, false)
+draw()
+assert(not texts["First quest"] and texts["Another quest"], "untracking removes only that quest")
+snapshot = {}
+draw()
+assert(texts["No tracked quests. Use Track in the Quest Journal to add one."], "stale watch flags do not create stale tasks")
+local prior = calls
+inGame = false
+draw()
+assert(calls == prior and next(texts) == nil, "no tracker outside the game")
+return {}
+)lua");
+    CHECK_MESSAGE(fails.empty(), (fails.empty() ? "" : fails.front()));
+}
+
+TEST_CASE("UI task journal: shared snapshots and settings-backed tracking") {
+    if (!fs::exists(ui_dir() / "modern" / "lib" / "task_journal.lua")) return;
+    auto fails = run_modern(R"lua(
+local Q = dofile("lib/task_journal.lua")
+local other = dofile("lib/task_journal.lua")
+local calls = 0
+local snapshot = { { id = 10 }, { id = 20 }, { id = 30 } }
+local revision = 1
+eq.Tasks = function() calls = calls + 1 return snapshot end
+eq.TasksRevision = function() return revision, 0 end
+assert(Q.tasks() == other.tasks() and calls == 1, "both windows share one snapshot per frame")
+frame = frame + 1
+assert(Q.tasks() == other.tasks() and calls == 1, "an unchanged task list is not rebuilt in a new frame")
+frame = frame + 1
+snapshot = { { id = 10 }, { id = 30 } }
+revision = 2
+assert(Q.tasks() == snapshot and calls == 2, "a new revision reads current tasks")
+Q.invalidate()
+assert(Q.tasks() == snapshot and calls == 3, "invalidate reads again at once")
+Q.setTracked(20, true)
+Q.setTracked(10, true)
+local tracked = other.getTracked(Q.tasks())
+assert(#tracked == 1 and tracked[1].id == 10, "watch flags cannot keep a removed task visible")
+assert(Q.trackerVisible(), "tracking a quest shows the tracker")
+other.setTrackerVisible(false)
+assert(not Q.trackerVisible() and Q.isTracked(10) and Q.isTracked(20), "visibility is independent of tracking")
+Q.setTracked(10, false)
+assert(not other.isTracked(10) and Q.isTracked(20), "watch flags are shared through settings")
+local done, total = Q.stats({ objectives = {
+  { done = true }, { done = false }, { hidden = true, done = true }, { separator = true },
+} })
+assert(done == 1 and total == 3, "hidden and separator rows do not count as finished objectives")
+assert(Q.time(65) == "1m 05s" and Q.time(3600) == "1h 00m", "task time formatting")
+assert(Q.inZone({objectives={{currentZone=true,hidden=true},{currentZone=true,done=true}}}) == false,
+  "hidden or completed objectives do not make a task current-zone")
+assert(Q.inZone({objectives={{currentZone=false},{currentZone=true,done=false}}}),
+  "a known incomplete objective can make a task current-zone")
+return {}
+)lua");
+    CHECK_MESSAGE(fails.empty(), (fails.empty() ? "" : fails.front()));
 }
 
 // The modern chat's item links in its input (ui/modern/lib/chatlinks.lua): tags shown as names, and back as tags when

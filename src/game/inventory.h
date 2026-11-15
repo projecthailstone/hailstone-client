@@ -44,10 +44,17 @@ public:
     const std::map<Key, net::Item>& items() const { return items_; }
     // Counts every change, for UI caches.
     std::uint64_t revision() const { return revision_; }
+    // Counts every put, take, swap, load or clear that touches the cursor slot (the item there or a bag's contents),
+    // so a note about the item on the cursor (GameConnection's cursor origin) can tell it still describes that item.
+    // A stack count changed through at() is the same item and does not count.
+    std::uint64_t cursor_placement() const { return cursor_placement_; }
 
 private:
+    void touched(const net::ItemSlot& slot);
+
     std::map<Key, net::Item> items_;
     std::uint64_t revision_ = 0;
+    std::uint64_t cursor_placement_ = 0;
 };
 
 // ---- item rules (client side; the server checks again) ----

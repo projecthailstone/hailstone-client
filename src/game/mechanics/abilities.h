@@ -144,7 +144,7 @@ struct SkillContext {
     bool attacking = false, autofire = false; // __Attack, __Autofire
     float speed_x = 0, speed_y = 0, speed_z = 0; // SpeedX/Y/Z (units per physics tick)
     bool cursor_has_item = false;     // the fishing check's slot 0x21
-    std::int32_t profile_slam = 0xff; // profile +0x325c (an innate slot; 0xff = none): Slam (111)
+    std::int32_t form_slam = 0xff; // current appearance's innate Slam slot (0xff = unavailable)
     std::uint8_t pvp_ruleset = 0;     // 0xdcee70
     bool can_see_target = true;       // PlayerBase::CanSee (the zone's line of sight)
     bool tracking_window_open = false;
@@ -262,7 +262,9 @@ std::int32_t adjusted_skill(const Character& ch, std::uint32_t skill);
 
 // The Actions window's lists: skills the player has (CharacterZoneClient::HasSkill @0x44a1b0: adjusted skill
 // above 0) that the original activates through UseSkill; combat = SkillCombatType 1 or 2.
-std::vector<std::uint32_t> usable_skills(const Character& ch, bool combat);
+// current_race is the player spawn's current appearance race (which can change with illusions).
+// Zero falls back to the original profile race for callers without live spawn information.
+std::vector<std::uint32_t> usable_skills(const Character& ch, bool combat, std::uint32_t current_race = 0);
 
 // EQ_Character::InitInnates @0x44d4d0: the profile's 25 innate ability slots (+0x3230, 4 bytes each; 0 = has it,
 // 0xff = not) for a race and class. The client fills them itself (EQEmu sends them all 0xff): when the local player's
