@@ -123,8 +123,6 @@ std::vector<SectionAverages::Row> SectionAverages::rows() const {
     std::stable_sort(out.begin(), out.end(), [](const Row& a, const Row& b) { return a.avg_ms > b.avg_ms; });
     return out;
 }
-
-FrameRates frame_rates(const std::vector<float>& ms, const std::vector<std::uint8_t>& presented) {
 FrameRates frame_rates(const std::vector<float>& ms, const std::vector<std::uint8_t>& presented,
                        const std::vector<std::uint8_t>& generated) {
     FrameRates r;
