@@ -118,8 +118,8 @@ own first (Roadmap 6). `render/temporal.h` holds the maths, `VkContext::begin_ov
 
 6. **The draws' own motion and the reactive mask.** Under a temporal upscaler (and with `independentBlend`, which
    every desktop driver has; without it the camera's motion is all there is) the scene has three colour
-   attachments: the colour, the object motion (RG16F, cleared to `kMotionUnset`) and the reactive mask (R8, cleared
-   to 0). Every scene pipeline is made for them through `VkContext::scene_rendering` and `scene_blends`, which mask
+   attachments: the colour, the object motion (RGBA16F: the motion in red and green, cleared to `kMotionUnset`;
+   blue below) and the reactive mask (R8, cleared to 0). Every scene pipeline is made for them through `VkContext::scene_rendering` and `scene_blends`, which mask
    off what its shader does not write (`SceneOutput`); the item previews, drawn into targets of their own, keep the
    colour alone. The scene shaders read the temporal block (the shared scene set's binding 5,
    `shaders/motion.glsl`: this frame's and last frame's plain view-projection), which `begin_scene` writes into the
@@ -127,14 +127,19 @@ own first (Roadmap 6). `render/temporal.h` holds the maths, `VkContext::begin_ov
    - the zone: its plants' wind sway at last frame's wind clock (`SceneLighting::time.y`, kept per zone renderer);
      the rest of it stands still, so its motion is the camera's, drawn exactly;
    - characters: their bones a frame ago, kept per spawn (`ActorDraw::motion_key`) and written after this frame's at
-     `kMaxBones` in the same buffer; a spawn new this frame, or with another number of bones, moves with the camera;
+     `kMaxBones` in the same buffer; a spawn new this frame, or with another number of bones, moves with the camera.
+     They are kept on the CPU (`render::BoneHistory`), and both halves are built there and copied into the buffer at
+     once: it is write-only memory to the CPU, so nothing is read back from it;
    - doors, objects, placed items, the placement ghost and missiles: their transforms a frame ago, kept per thing
      (`ObjectRenderer::Instance::motion_key`), written after this frame's at `kMaxInstances`;
    - flora and the lawn: their sway and the wind at last frame's clock (`Push::time.y`); the pushing spawns' bend
      is taken as it is now.
-   The opaque passes write the motion; the blended and additive draws (the zone's water, glass and glows, the
-   characters' and objects' blended parts, particles, fire, spell bolts, rain and snow, the target ring, the
-   isometric silhouette) write the reactive mask instead, `shaders/reactive.glsl`: the larger of their alpha and
+   The opaque passes write the motion; the characters' blended parts (a see-through shield, hair: `MotionReactive`)
+   write their motion too, over what shows through them, with their depth in blue, as they write none (frame
+   generation takes the nearer of it and the depth buffer, or a glass shield's pixels follow the background and it
+   breaks up; temporal_prep.frag passes blue on in `motion_`); the blended and additive draws (the zone's water,
+   glass and glows, the characters' additive glows and the objects' blended parts, particles, fire, spell bolts, rain
+   and snow, the target ring, the isometric silhouette) write the reactive mask, `shaders/reactive.glsl`: the larger of their alpha and
    brightness, at most 0.9, blended to the largest over the pixel (water a third of that, or its waves would keep no
    history). The resolve keeps that much less of the history. The sky and the spawns' stand-in boxes write neither.
    Under FSR 1 the same shaders run with the colour alone; the validation layer then warns once that locations 1 and
@@ -142,7 +147,8 @@ own first (Roadmap 6). `render/temporal.h` holds the maths, `VkContext::begin_ov
 
 The history is dropped when the scene targets are made again (a resize, a new render scale), on zone-in
 (`VkContext::reset_history`), on a frame without the temporal path, and when the camera jumps between two frames
-(`render::camera_cut`: more than 25 units, or a turn of more than 0.5 radians: a teleport, a camera switch).
+(`render::camera_cut`: more than 200 units, or a turn of more than 0.5 radians: a teleport, a camera switch; not the
+chase camera pushed in by a tree and out again, tens of units in a frame, which the motion follows exactly).
 
 Open (docs/todo.md): a negative texture LOD bias below a render scale of 100; the bloom from the resolved picture;
 the held items and other attachments drawn as characters without a motion key.
@@ -222,8 +228,11 @@ holds the decisions (unit tested), `render::FrameGen` (`src/render/frame_gen.cpp
    together, the in-between frame presented first. FIFO is forced whatever `display.vsync` says, and the swapchain
    gets one image more (`swapchain_image_count`, min + 2): waiting for the second image is what holds the game to
    half the refresh, so the two presents alternate evenly. With fewer images (a surface's maximum) the second is
-   taken only when one is free. No frame is made across a cut, a reset, a resize or the first frame after any of them
-   (`frame_gen_ready`): the real frame is presented alone.
+   taken only when one is free. No frame is made across a cut, a reset, a resize or the first frame after any of them,
+   nor across a camera snap of more than 8 units (`kFrameGenMaxStep`: the chase camera pushed in by a tree, or
+   zoomed; running moves it a unit or two a frame, and a frame half way through a snap uncovers half the scene at
+   once): `frame_gen_ready`. The real frame is then shown twice (`frame_gen_repeat`, as kettle-framegen shows the
+   nearer real frame), keeping the pace of two images a frame; alone, it was a hitch on top of the cut.
 
 Cost and limits: two small compute passes at the scene's size and two full-screen draws at the view's per real frame,
 plus one composite more. The game reacts up to one real frame later. A moving thing the depth does not hold (glass,
@@ -1617,10 +1626,9 @@ zone loads (`Zone::draw_objects`).
   (glTF TEXCOORD_1, asset extras `hailstone_sway`), a branch with its needle sprays the height of its
   root on the trunk, the trunk and the far cards their own. A sway by each vertex's own height, or a flutter, moved
   a branch's crossing cards apart, so up close its leaves seemed to flip back and forth (a third of the bend without
-  the flutter still did). A generated tree now stands still in any case: even with each branch swaying whole, its
-  stark needle sprays slid over each other and across the pixels, a flicker in the modern lighting standing by a
-  tree that turning shadows off did not stop (0.67 % of the pixels changing by more than 12 a frame by Lake Rathe's
-  pines in the zone viewer, 0.01 % still). The generator still writes the sway heights; nothing reads them now.
+  the flutter still did). A generated tree from a pack built before stands still. Generated trees stood still for a
+  while because a pine still flickered by its swaying branches; the cause was the upright card of the clump once at
+  each branch's end (Styles, below), and with the clumps gone the branch sway is calm.
 - **Levels of detail:** a node's extras `{"hailstone_lod": [near, far]}` draw its meshes only from `near` to `far` world
   units from the camera (`MeshPart::lod_near`, `lod_far`). The zone renderer keeps each band's draws apart, a chunk
   for each placement, and chooses by the camera's distance to where the placement stands (`render/lod_bands.h`), so

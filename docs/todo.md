@@ -4,6 +4,11 @@ What is left before the client is feature complete, in the order to work on it. 
 
 Written 2026-10-28 from `docs/unknowns.md` and `docs/plan.md`.
 
+## Launcher login
+
+- [x] Explicit one-use token authentication, native-style `patchme /ticket:`, environment/argument transports, endpoint selection, optional world/character entry and memory-only returned-token session sign-in, with packet/launcher/mock-server and UI regression coverage.
+- [ ] Live launcher/server acceptance: fresh, expired, consumed and refused tickets; world restrictions; character entry; return to login and obtain a fresh ticket. Patcher executable selection stays separate.
+
 ## 1. Gameplay a player will hit
 
 ### Adventures (LDoN)
@@ -121,7 +126,7 @@ Written 2026-10-28 from `docs/unknowns.md` and `docs/plan.md`.
 - [x] Session limits against a hostile or broken server: early packets bounded in bytes (4 MiB) as well as count, the delivered-but-unread queue bounded (64 MiB, then the session ends), an ack for a packet not yet sent ignored, a too-short first fragment ends the session instead of reassembling garbage or silently losing what follows, datagrams failing the CRC no longer keep the link alive, oversized datagrams dropped on every platform (unit and mock tests).
 - [ ] What the original checks in OP_OutOfSession, and whether its last-receive time is set before its CRC check (unknowns.md). Until then a forged `00 1d` from the server's address ends a session (unknowns.md).
 - [ ] Whether the original checks the address a SessionResponse comes from (the client takes any with its connect code, as multi-homed EQEmu hosts need; unknowns.md).
-- [ ] eqhost.txt: the port the original uses for a `Host` without one, and whether it reads `Host1`.. (unknowns.md).
+- [ ] eqhost.txt: the port the original uses for a `Host` without one, and reading the `Host1`.. fallback entries eqmain's `LoginClient::ReadHosts` reads (unknowns.md).
 - [ ] The original CRT's atol on a number out of range: wrap or saturate (`/split`, `game::cmd_atol`; unknowns.md).
 
 ### Real estate (player housing, guild halls)

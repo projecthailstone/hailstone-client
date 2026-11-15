@@ -61,6 +61,10 @@ struct MockZone {
 struct MockConfig {
     // login server
     std::string account = "tester", password = "secret";
+    std::string login_token; // non-empty: this opaque ticket is also accepted, with empty user/password fields
+    std::string returned_login_token; // OP_LoginAccepted's optional next-login token
+    bool reply_to_handshake = true;
+    bool reply_to_login = true; // false: leave the authentication pending for timeout tests
     std::uint32_t account_id = 77;
     std::string session_key = "ABCDEFGHIJ"; // 10 characters, as EQEmu
     std::uint32_t server_id = 1;
@@ -100,7 +104,10 @@ public:
     net::WorldTicket ticket() const;
 
     // ---- what the client did ----
-    std::string login_user, login_password; // as decrypted from OP_Login
+    std::string login_user, login_password, login_token; // as decrypted from OP_Login
+    bool login_token_mode = false;
+    int handshake_requests = 0;
+    int login_requests = 0;
     std::vector<net::AppPacket> world_log;  // every application packet the world server received, in order
     std::vector<net::AppPacket> zone_log;
     std::vector<net::AppPacket> ucs_log;

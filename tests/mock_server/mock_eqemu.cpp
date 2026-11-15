@@ -245,6 +245,8 @@ void MockEqServer::on_login_packet(const AppPacket& p) {
     std::uint32_t seq = login_codec::sequence_of(p.data);
     switch (p.opcode) {
     case login_op::SessionReady: {
+        ++handshake_requests;
+        if (!config.reply_to_handshake) break;
         // OP_ChatMessage: base reply and one more string; EQEmu hard-codes sequence 2.
         ByteWriter w;
         login_header(w, 2, 0);
@@ -255,16 +257,32 @@ void MockEqServer::on_login_packet(const AppPacket& p) {
     }
     case login_op::Login: {
         // DES of user\0password\0token\0flag.
-        std::string user, password;
-        if (p.data.size() > 10)
+        ++login_requests;
+        std::string user, password, token;
+        bool token_mode = false, valid = false;
+        if (p.data.size() > 10) {
             if (auto plain = des::zero_cbc_decrypt(std::span<const std::byte>(p.data).subspan(10))) {
-                user = string_of(*plain);
-                if (user.size() + 1 < plain->size())
-                    password = string_of(std::span<const std::byte>(*plain).subspan(user.size() + 1));
+                try {
+                    ByteReader credentials(*plain);
+                    user = credentials.cstring();
+                    password = credentials.cstring();
+                    token = credentials.cstring();
+                    const auto flag = credentials.le<std::uint8_t>();
+                    token_mode = flag == 1;
+                    valid = flag <= 1;
+                } catch (const std::out_of_range&) {
+                    // A malformed credential envelope receives the same refusal as invalid credentials.
+                }
             }
+        }
         login_user = user;
         login_password = password;
-        bool ok = user == config.account && password == config.password;
+        login_token = token;
+        login_token_mode = token_mode;
+        const bool ok = valid && (token_mode
+            ? user.empty() && password.empty() && !config.login_token.empty() && token == config.login_token
+            : token.empty() && user == config.account && password == config.password);
+        if (!config.reply_to_login) break;
         // EQEmu's PlayerLoginReply, 58 bytes, encrypted into an 80-byte body.
         ByteWriter r;
         r.le<std::uint8_t>(ok);
@@ -276,9 +294,10 @@ void MockEqServer::on_login_packet(const AppPacket& p) {
         r.le<std::int32_t>(0);
         r.le<std::uint8_t>(1);
         for (std::int32_t v : {99, -1, 0, 0, 99, -1, 0}) r.le<std::int32_t>(v);
-        r.zeros(2);
+        cstr(r, ok ? config.returned_login_token : std::string());
+        cstr(r, "");
         auto encrypted = des::zero_cbc_encrypt(r.data());
-        encrypted.resize(80, std::byte{0});
+        encrypted.resize(std::max<std::size_t>(80, encrypted.size()), std::byte{0});
         ByteWriter w;
         login_header(w, seq, 2);
         w.bytes(encrypted);

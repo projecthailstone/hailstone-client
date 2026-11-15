@@ -107,6 +107,7 @@ private:
 
 class ByteWriter {
 public:
+    void reserve(std::size_t size) { buf_.reserve(size); }
     const std::vector<std::byte>& data() const { return buf_; }
     std::vector<std::byte> take() { return std::move(buf_); }
     std::size_t size() const { return buf_.size(); }

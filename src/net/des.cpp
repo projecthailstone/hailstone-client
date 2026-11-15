@@ -1,5 +1,7 @@
 #include "net/des.h"
 
+#include <algorithm>
+
 // Straightforward table-driven DES from the FIPS 46-3 tables. Bit numbers in
 // the tables count from 1 = most significant bit, as in the standard.
 
@@ -124,8 +126,9 @@ std::uint64_t Cipher::encrypt(std::uint64_t block) const { return crypt(block, f
 std::uint64_t Cipher::decrypt(std::uint64_t block) const { return crypt(block, true); }
 
 std::vector<std::byte> zero_cbc_encrypt(std::span<const std::byte> plain) {
-    std::vector<std::byte> out(plain.begin(), plain.end());
-    out.resize((out.size() + 7) / 8 * 8, std::byte{0});
+    // Allocate the padded size before copying secrets, so growing the vector cannot abandon plaintext storage.
+    std::vector<std::byte> out((plain.size() + 7) / 8 * 8, std::byte{0});
+    std::copy(plain.begin(), plain.end(), out.begin());
     Cipher cipher(0);
     std::uint64_t chain = 0;
     for (std::size_t i = 0; i < out.size(); i += 8) {

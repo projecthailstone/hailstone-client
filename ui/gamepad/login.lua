@@ -478,6 +478,11 @@ local function mainPage(v, x0, y, x1, w)
     F:want(nil)
   end
   y = y + lh
+  if v.sessionTicketAvailable and not busy then
+    P.at(x0, y + gap)
+    if P.button(F, "##resume_token", "Sign in with session", w, rh) then eq.LoginDo("resume_token") end
+    y = y + gap + rh
+  end
   if v.update then y = updateRow(v, x0, y + px(14), x1, w) end
   y = suggestionRows(v, x0, y, x1, w)
   return y
@@ -956,6 +961,7 @@ end
 
 -- Where the focus goes as the screen appears: the character played last, else the first field to fill, else Log in.
 local function firstFocus(v)
+  if v.sessionTicketAvailable and not v.busy then F:want("##resume_token") return end
   if #v.characters > 0 then
     local at = v.quick > 0 and v.quick or 1
     for i, q in ipairs(v.characters) do if q.last and v.quick == 0 then at = i end end

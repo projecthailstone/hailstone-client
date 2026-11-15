@@ -50,6 +50,8 @@ local function blocked(cfg) -- { window, title, slot (prefix), add, edit, who }
           T.font(20)
           T.draw(x0, ly + T.px(10), "Nothing blocked.", C.faint)
           T.unfont()
+          -- Record the list origin when the empty state only draws text.
+          ui.Dummy(0, 0)
         else
           W.list(cfg.window, listState, #list, visible, rowH, cw, function(i, rx0, ry0, rx1, ry1)
             local b = list[i]

@@ -337,11 +337,13 @@ TEST_CASE("Plugin UI: what a plugin leaves in the pack's shared tables runs as t
     CHECK(s.run("", "return SHARED.focus .. #SHARED.list .. SHARED.nested.deep.v") == "A32");
     CHECK(s.run("plugin:A", "return SHARED == SHARED and SHARED.list == SHARED.list") == "true");
     // A C function that reads a table raw gets the table behind a view (the pack's style lists, lib/style.lua).
+    ImGui::NewFrame();
     CHECK(s.run("plugin:A", "SHARED.style = { ui.Col.Text, 1, 0, 0, 1 } "
                             "ui.Begin('S') local n = ui.PushStyleColors(SHARED.style) ui.PopStyleColor(n) ui.End() "
                             "return n") == "1");
     CHECK(s.run("", "ui.Begin('S') local n = ui.PushStyleColors(SHARED.style) ui.PopStyleColor(n) ui.End() return n") ==
           "1"); // (the plugin's own table, as the pack sees it)
+    ImGui::Render();
 
     // A function it leaves there, or in a table of its own it leaves there: the plugin's, whoever calls it.
     CHECK(s.run("plugin:A", "SHARED.cb = function() return Who() end "

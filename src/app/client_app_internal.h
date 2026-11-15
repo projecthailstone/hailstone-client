@@ -4,6 +4,7 @@
 // and its collision world. Only those files include it.
 
 #include <format>
+#include <exception>
 
 #include "app/updater.h"
 #include "platform/process.h"
@@ -15,11 +16,13 @@
 #include "app/progress_ui.h"
 #include "app/market_ui.h"
 #include "app/client_app.h"
+#include "app/login_token_session.h"
 #include "app/input_script.h"
 #include "app/zone_settle.h"
 #include "app/server_links.h"
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <chrono>
 #include <cctype>
@@ -242,11 +245,12 @@ public:
     ~ClientApp() { lua_ui_.reset(); }
     ClientApp(const ClientApp&) = delete;
     ClientApp& operator=(const ClientApp&) = delete;
-    explicit ClientApp(const ClientOptions& options)
+    explicit ClientApp(ClientOptions& options)
         : opts_(options), window_(window_desc(options)), vk_(window_, options.validation),
           ui_(window_, vk_,
               ui::ImGuiLayerDesc{.scale_override = ui_scale_setting(options),
                                  .ini_path = platform::imgui_ini()}) {
+        core::wipe(options.login_launch.ticket); // opts_ owns the only application copy now
         log_memory("startup: window, Vulkan, fonts");
         vk_.screenshot_generated(options.screenshot_generated);
         apply_window_icon(window_);
@@ -274,7 +278,8 @@ public:
         // The saved servers (core/server_profile.h), the last one used picked (--server another); the old
         // login.host/port/username keys become the first.
         // The saved passwords (the system keyring); test logins never read or write them.
-        if (opts_.auto_user.empty()) login_view_.credentials = &platform::system_credentials();
+        if (opts_.auto_user.empty() && !opts_.login_launch.token_requested)
+            login_view_.credentials = &platform::system_credentials();
         // A fresh install with no saved server starts on the one the asset folder's eqhost.txt names.
         const std::filesystem::path eqhost = game_.find_base("eqhost.txt").value_or(std::filesystem::path());
         if (ui::load_login_settings(login_view_, config_, platform::servers_dir(), eqhost)) config_.save(config_path_);
@@ -282,6 +287,32 @@ public:
         if (!opts_.server.empty() && !named_server)
             log::warn("--server {}: no saved server has this id or name", opts_.server);
         if (auto strings = game_.find("eqlsstr_us.txt")) net::load_login_strings(*strings);
+        // Redeem short-lived launcher tickets while the expensive assets/renderers initialize. Only this worker
+        // touches LoginClient until it is joined below; Session maintains the authenticated connection meanwhile.
+        // std::thread is used throughout the client and works with older supported Apple libc++ releases too.
+        struct TokenLoginWorker {
+            std::atomic<bool> stop{false};
+            std::thread thread;
+            std::exception_ptr error;
+            void finish() {
+                stop.store(true, std::memory_order_relaxed);
+                if (thread.joinable()) thread.join();
+            }
+            ~TokenLoginWorker() { finish(); }
+        } token_login_worker;
+        if (opts_.login_launch.token_requested) {
+            start_token_login(named_server, eqhost);
+            token_login_worker.thread = std::thread([pending = login_.get(), &token_login_worker] {
+                try {
+                    while (!token_login_worker.stop.load(std::memory_order_relaxed)) {
+                        pending->update();
+                        const auto state = pending->state();
+                        if (state == net::LoginState::LoggedIn || state == net::LoginState::Failed) break;
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    }
+                } catch (...) { token_login_worker.error = std::current_exception(); }
+            });
+        }
         spawn_renderer_ = std::make_unique<render::SpawnRenderer>(vk_, shader_dir_);
         world_objects_ = std::make_unique<WorldObjects>(vk_, game_, shader_dir_);
         neighbours_ = std::make_unique<NeighbourZones>(vk_, game_, shader_dir_);
@@ -516,7 +547,12 @@ public:
         // The isometric camera when it was the one in use (hailstone.ini camera.iso, /camera).
         if (config_.get_bool("camera.iso", false)) set_camera_type(game::kCameraIsometric);
         game::reset_camera_defaults(cameras_);
-        if (!opts_.auto_user.empty()) {
+        if (opts_.login_launch.token_requested) {
+            token_login_worker.finish();
+            if (token_login_worker.error) std::rethrow_exception(token_login_worker.error);
+            apply_server_profile(server_profile_);
+            use_ui_pack(server_profile_.ui);
+        } else if (!opts_.auto_user.empty()) {
             // Test logins never use the player's remembered server: a test account's password must not reach a
             // server someone else runs. Only a server named with --server is used; else --host/--port (or the dev
             // server) as a transient profile, never saved.
@@ -547,6 +583,8 @@ public:
 
 private:
     void start_login();
+    void start_token_login(bool named_server, const std::filesystem::path& eqhost);
+    void start_session_login();
     // The login screen's Log in box: saves the server, starts a Hailstone for each box account after the first
     // (--server --account --character) and logs this window in to the first (client_app_login.cpp).
     void start_box_login();
@@ -1012,6 +1050,12 @@ private:
     // The server select's rows in the order it lists them (ui::server_list_order): row -> index into servers_.
     std::vector<std::size_t> server_rows_;
     bool auto_play_sent_ = false;
+    bool token_login_active_ = false; // through world/character selection; no keyring/account persistence
+    // The login view is the launcher's (ui::begin_launcher_login_view) until back_to_login restores the normal one,
+    // on the saved server picked before it when the ticket's server was not a saved one.
+    bool launcher_view_ = false;
+    std::string pre_launch_profile_id_;
+    LoginTokenSession login_token_session_; // only a token explicitly returned by the login server
     // A box login (Log in box, --account): play the world played last on the server without the server select, and
     // enter box_character_ (one time: after a camp the player chooses).
     bool box_play_ = false;

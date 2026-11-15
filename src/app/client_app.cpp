@@ -785,7 +785,7 @@ int ClientApp::run() {
         lap.mark("ImGui render");
         perf_ui_.mark(FramePhase::Record);
         vk_.end_frame(*f);
-        perf_ui_.set_presented(vk_.frames_presented());
+        perf_ui_.set_presented(vk_.frames_presented(), vk_.frame_generated());
         perf_ui_.mark(FramePhase::Present);
         settle_frame_.scene = in_game;
         update_zone_settle();
@@ -838,6 +838,7 @@ void ClientApp::update_guide() {
 } // namespace client_internal
 
 int run_client(ClientOptions& options) {
+    resolve_login_launch(options.login_launch, options.auto_user, options.auto_password, options.account, false);
     int code = 0;
     client_internal::ClientApp::UpdateExit update;
     {
@@ -846,6 +847,7 @@ int run_client(ClientOptions& options) {
         // members (the login fields, the session key) must not be in it.
         auto app = std::make_unique<client_internal::ClientApp>(options);
         core::wipe(options.auto_password);
+        core::wipe(options.login_launch.ticket);
         code = app->run();
         update = app->update_exit();
     }

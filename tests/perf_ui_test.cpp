@@ -94,6 +94,10 @@ TEST_CASE("perf: frame generation's rates count every image displayed against th
     const FrameRates off = frame_rates({10.0f, 10.0f}, {1, 1});
     CHECK(off.displayed_fps == doctest::Approx(off.rendered_fps));
     CHECK(off.generated_share == doctest::Approx(0.0f));
+    // A cut's frame shows the real one twice: two images, but no in-between frame.
+    const FrameRates cut = frame_rates({20.0f, 20.0f}, {2, 2}, {1, 0});
+    CHECK(cut.displayed_fps == doctest::Approx(100.0f));
+    CHECK(cut.generated_share == doctest::Approx(0.5f));
     // Nothing yet, or histories that do not match: no rates.
     CHECK(frame_rates({}, {}).rendered_fps == 0.0f);
     CHECK(frame_rates({10.0f}, {}).displayed_fps == 0.0f);

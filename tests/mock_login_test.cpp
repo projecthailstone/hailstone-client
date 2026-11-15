@@ -3,6 +3,8 @@
 
 #include <doctest/doctest.h>
 
+#include "app/login_token_session.h"
+#include "core/wipe.h"
 #include "mock_server/harness.h"
 #include "net/login.h"
 
@@ -53,6 +55,8 @@ TEST_CASE("mock login: login, server list and play hand over a world ticket") {
     // The credentials went out DES-encrypted; the mock decrypted them.
     CHECK(rig.server.login_user == "tester");
     CHECK(rig.server.login_password == "secret");
+    CHECK(rig.server.login_token.empty());
+    CHECK_FALSE(rig.server.login_token_mode);
     CHECK(rig.client.login_result().account_id == 77);
     CHECK(rig.client.login_result().session_key == "ABCDEFGHIJ");
     CHECK(rig.client.sequence() == 3); // handshake 2, login 3 (docs/protocol/login.md, Sequence numbers)
@@ -82,6 +86,252 @@ TEST_CASE("mock login: login, server list and play hand over a world ticket") {
     CHECK(ticket->server_id == 1);
     CHECK(ticket->server_name == "Mock EQEmu");
     rig.client.close();
+}
+
+TEST_CASE("mock login: a launcher ticket authenticates through the world character list") {
+    auto config = MockConfig::standard();
+    config.login_token = "lt1_" + std::string(43, 'A'); // synthetic patcher-shaped ticket
+    config.returned_login_token = "synthetic-next-login-token";
+    const std::string token = config.login_token;
+    LoginRig rig(std::move(config));
+    rig.client.start_token("127.0.0.1", rig.server.login.port(), token);
+    REQUIRE(rig.until_state(LoginState::LoggedIn));
+    CHECK(rig.server.login_requests == 1);
+    CHECK(rig.server.login_user.empty());
+    CHECK(rig.server.login_password.empty());
+    CHECK(rig.server.login_token_mode);
+    CHECK(rig.server.login_token == token);
+    CHECK(rig.client.login_result().token == "synthetic-next-login-token");
+    rig.client.request_server_list();
+    REQUIRE(rig.until_state(LoginState::ServerList));
+    rig.client.request_play(1);
+    REQUIRE(rig.until_state(LoginState::PlayAccepted));
+    REQUIRE(rig.client.ticket());
+    WorldTicket ticket = *rig.client.ticket();
+    CHECK(ticket.account_id == 77);
+    CHECK(ticket.session_key == "ABCDEFGHIJ");
+    ticket.world_port = rig.server.world.port();
+    rig.client.close();
+    CHECK(rig.client.state() == LoginState::Idle);
+    CHECK(rig.client.login_result().token.empty());
+    CHECK(rig.client.login_result().session_key.empty());
+    CHECK_FALSE(rig.client.ticket());
+
+    EmptyGameDir dir;
+    GameDir game(dir.path());
+    GameConnection conn(game);
+    conn.start(ticket);
+    REQUIRE(pump([&] { conn.update(); rig.server.poll(); },
+                 [&] { return conn.state() == ConnectionState::CharacterSelect; }));
+    REQUIRE(rig.server.login_infos.size() == 1);
+    CHECK(rig.server.login_infos[0].account_id == "77");
+    CHECK(rig.server.login_infos[0].session_key == "ABCDEFGHIJ");
+    REQUIRE(conn.characters().size() == 1);
+    CHECK(conn.characters()[0].name == "Gennro");
+}
+
+TEST_CASE("mock login: token authentication handles a fragmented maximum-size opaque ticket") {
+    auto config = MockConfig::standard();
+    config.login_token = std::string(login_codec::kMaxLoginTokenBytes, 'x');
+    const auto token = config.login_token;
+    LoginRig rig(std::move(config));
+    rig.client.start_token("127.0.0.1", rig.server.login.port(), token);
+    REQUIRE(rig.until_state(LoginState::LoggedIn));
+    CHECK(rig.server.login_token == token);
+    CHECK(rig.server.login_requests == 1);
+}
+
+TEST_CASE("mock login: only the server's replacement token can authorize an explicit next sign-in") {
+    auto config = MockConfig::standard();
+    config.login_token = "synthetic-launcher-ticket";
+    config.returned_login_token = "synthetic-server-next-token";
+    LoginRig rig(std::move(config));
+    app::LoginTokenSession session;
+    rig.client.start_token("127.0.0.1", rig.server.login.port(), "synthetic-launcher-ticket");
+    REQUIRE(rig.until_state(LoginState::LoggedIn));
+    REQUIRE(session.remember("127.0.0.1", rig.server.login.port(), rig.client.login_result().token));
+    rig.client.close();
+
+    rig.server.config.login_token = "synthetic-server-next-token";
+    rig.server.config.returned_login_token = "synthetic-server-rotated-token";
+    std::string next;
+    REQUIRE(session.take("127.0.0.1", rig.server.login.port(), next));
+    CHECK_FALSE(session.available("127.0.0.1", rig.server.login.port()));
+    rig.client.start_token("127.0.0.1", rig.server.login.port(), next);
+    core::wipe(next);
+    REQUIRE(rig.until_state(LoginState::LoggedIn));
+    CHECK(rig.server.login_requests == 2);
+    CHECK(rig.server.login_token == "synthetic-server-next-token");
+    CHECK(rig.server.login_user.empty());
+    CHECK(rig.server.login_password.empty());
+    REQUIRE(session.remember("127.0.0.1", rig.server.login.port(), rig.client.login_result().token));
+    rig.client.request_server_list();
+    REQUIRE(rig.until_state(LoginState::ServerList));
+    rig.client.request_play(1);
+    REQUIRE(rig.until_state(LoginState::PlayAccepted));
+    REQUIRE(rig.client.ticket());
+    CHECK(rig.client.ticket()->account_id == 77);
+    CHECK(rig.client.ticket()->session_key == "ABCDEFGHIJ");
+    rig.client.close();
+
+    // The returned token is also consumed locally before sending. A server refusal does not make it replayable.
+    rig.server.config.login_token = "another-current-token";
+    REQUIRE(session.take("127.0.0.1", rig.server.login.port(), next));
+    CHECK(next == "synthetic-server-rotated-token");
+    rig.client.start_token("127.0.0.1", rig.server.login.port(), next);
+    core::wipe(next);
+    REQUIRE(rig.until_state(LoginState::Failed));
+    CHECK(rig.server.login_requests == 3);
+    CHECK(rig.client.error_id() == login_error::BadPassword);
+    CHECK(rig.client.login_result().token.empty());
+    CHECK_FALSE(session.take("127.0.0.1", rig.server.login.port(), next));
+    CHECK(next.empty());
+    rig.step();
+    CHECK(rig.server.login_requests == 3);
+}
+
+TEST_CASE("mock login: invalid tokens fail locally before opening a session") {
+    LoginRig rig;
+    for (const auto& token : {std::string(), std::string("one\0two", 7),
+                              std::string(login_codec::kMaxLoginTokenBytes + 1, 'x')}) {
+        rig.client.start_token("127.0.0.1", rig.server.login.port(), token);
+        CHECK(rig.client.state() == LoginState::Failed);
+        CHECK(rig.client.error_id() == 0);
+        CHECK(rig.client.error() == "The login ticket is empty, too long or contains a NUL byte.");
+        rig.step();
+    }
+    CHECK(rig.server.login.sessions() == 0);
+    CHECK(rig.server.login_requests == 0);
+}
+
+TEST_CASE("mock login: an empty host list refuses token authentication without a session") {
+    LoginRig rig;
+    rig.client.start_token(std::vector<LoginClient::Host>{}, "synthetic-ticket");
+    CHECK(rig.client.state() == LoginState::Failed);
+    CHECK(rig.client.error_id() == login_error::NoConnection);
+    CHECK(rig.client.login_result().session_key.empty());
+    rig.step();
+    CHECK(rig.server.login.sessions() == 0);
+    CHECK(rig.server.login_requests == 0);
+}
+
+TEST_CASE("mock login: a refused or unsupported token never falls back to password authentication") {
+    auto config = MockConfig::standard();
+    SUBCASE("the issuer refuses this ticket") { config.login_token = "accepted-ticket"; }
+    SUBCASE("the server has token login disabled") {}
+    LoginRig rig(std::move(config));
+    // A successful earlier password login must not become a fallback for the launcher's ticket.
+    rig.start("tester", "secret");
+    REQUIRE(rig.until_state(LoginState::LoggedIn));
+    rig.client.start_token("127.0.0.1", rig.server.login.port(), "refused-ticket");
+    REQUIRE(rig.until_state(LoginState::Failed));
+    CHECK(rig.client.error_id() == login_error::BadPassword);
+    CHECK(rig.client.login_result().session_key.empty());
+    CHECK(rig.client.login_result().token.empty());
+    CHECK(rig.server.login_requests == 2);
+    CHECK(rig.server.login_token_mode);
+    CHECK(rig.server.login_user.empty());
+    CHECK(rig.server.login_password.empty());
+    rig.step();
+    CHECK(rig.server.login_requests == 2);
+    CHECK(rig.client.state() == LoginState::Failed);
+}
+
+TEST_CASE("mock login: a token login timeout permits an explicit fresh password login") {
+    auto config = MockConfig::standard();
+    config.reply_to_login = false;
+    ManualClock clock;
+    LoginClient::Options options;
+    options.session.clock = clock.source();
+    options.login_timeout = 50ms;
+    LoginRig rig(std::move(config), options);
+    rig.client.start_token("127.0.0.1", rig.server.login.port(), "pending-ticket");
+    REQUIRE(rig.until([&] { return rig.server.login_requests == 1; }));
+    REQUIRE(rig.client.state() == LoginState::Authenticating);
+    clock.hold();
+    clock.advance(51ms);
+    rig.step();
+    CHECK(rig.client.state() == LoginState::Failed);
+    CHECK(rig.client.error_id() == login_error::Timeout);
+    CHECK(rig.server.login_requests == 1);
+    CHECK(rig.server.login_token_mode);
+    // The caller explicitly supplies new credentials; nothing is implicitly retried.
+    rig.server.config.reply_to_login = true;
+    rig.start("tester", "secret");
+    REQUIRE(rig.until_state(LoginState::LoggedIn));
+    CHECK(rig.server.login_requests == 2);
+    CHECK_FALSE(rig.server.login_token_mode);
+    CHECK(rig.server.login_token.empty());
+    CHECK(rig.server.login_password == "secret");
+}
+
+TEST_CASE("mock login: a token handshake timeout ends the attempt and needs an explicit fresh ticket") {
+    auto config = MockConfig::standard();
+    config.reply_to_handshake = false;
+    ManualClock clock;
+    clock.hold();
+    LoginClient::Options options;
+    options.session.clock = clock.source();
+    options.connect_timeout = 50ms;
+    LoginRig rig(std::move(config), options);
+    rig.client.start_token("127.0.0.1", rig.server.login.port(), "discarded-pending-ticket");
+    REQUIRE(rig.until([&] { return rig.server.handshake_requests == 1; }));
+    REQUIRE(rig.client.state() == LoginState::Handshake);
+    clock.advance(51ms);
+    rig.step();
+    CHECK(rig.client.state() == LoginState::Failed);
+    CHECK(rig.client.error_id() == login_error::Timeout);
+    CHECK(rig.server.login_requests == 0);
+    rig.step();
+    CHECK(rig.server.login_requests == 0); // no ticket replay or password fallback
+    rig.server.config.reply_to_handshake = true;
+    rig.server.config.login_token = "fresh-ticket";
+    rig.client.start_token("127.0.0.1", rig.server.login.port(), "fresh-ticket");
+    REQUIRE(rig.until_state(LoginState::LoggedIn));
+    CHECK(rig.server.login_requests == 1);
+    CHECK(rig.server.login_token == "fresh-ticket");
+    CHECK(rig.server.login_user.empty());
+    CHECK(rig.server.login_password.empty());
+}
+
+TEST_CASE("mock login: a password handshake timeout keeps the original pending behaviour") {
+    auto config = MockConfig::standard();
+    config.reply_to_handshake = false;
+    ManualClock clock;
+    clock.hold();
+    LoginClient::Options options;
+    options.session.clock = clock.source();
+    options.connect_timeout = 50ms;
+    LoginRig rig(std::move(config), options);
+    rig.start("tester", "secret");
+    REQUIRE(rig.until([&] { return rig.server.handshake_requests == 1; }));
+    REQUIRE(rig.client.state() == LoginState::Handshake);
+    clock.advance(51ms);
+    rig.step();
+    CHECK(rig.client.state() == LoginState::Handshake);
+    CHECK(rig.server.login_requests == 0);
+}
+
+TEST_CASE("mock login: closing or replacing a pending token forgets the earlier credentials") {
+    LoginRig rig;
+    rig.client.start_token("127.0.0.1", rig.server.login.port(), "discarded-ticket");
+    SUBCASE("cancel before the handshake") {
+        rig.client.close();
+        CHECK(rig.client.state() == LoginState::Idle);
+        rig.start("tester", "secret");
+        REQUIRE(rig.until_state(LoginState::LoggedIn));
+        CHECK_FALSE(rig.server.login_token_mode);
+        CHECK(rig.server.login_token.empty());
+    }
+    SUBCASE("replace with a fresh token before the handshake") {
+        rig.server.config.login_token = "fresh-ticket";
+        rig.client.start_token("127.0.0.1", rig.server.login.port(), "fresh-ticket");
+        REQUIRE(rig.until_state(LoginState::LoggedIn));
+        CHECK(rig.server.login_token_mode);
+        CHECK(rig.server.login_token == "fresh-ticket");
+        CHECK(rig.server.login_password.empty());
+    }
+    CHECK(rig.server.login_requests == 1);
 }
 
 TEST_CASE("mock login: a locked or down world is asked like any other, and the server decides") {

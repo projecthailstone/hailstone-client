@@ -63,8 +63,11 @@ glm::mat4 reprojection(const glm::mat4& prev_view, const glm::mat4& prev_proj, c
                        const glm::mat4& proj);
 
 // A jump of the camera between two frames that the history cannot follow (a teleport, a camera switch, a cut):
-// it moved more than `max_step` world units, or turned more than `max_turn` radians.
-inline constexpr float kHistoryMaxStep = 25.0f;
+// it moved more than `max_step` world units, or turned more than `max_turn` radians. The step is past the chase
+// camera's whole reach (display.max_camera_distance, at most 150): pushed in by a tree and out again, or zoomed with
+// the wheel, it moves tens of units in a frame, and the motion follows that exactly. Cut there, the upscaler dropped
+// its history and frame generation the frame, over and over in a forest (a flash of the raw picture and a hitch).
+inline constexpr float kHistoryMaxStep = 200.0f;
 inline constexpr float kHistoryMaxTurn = 0.5f;
 bool camera_cut(const glm::mat4& prev_view, const glm::mat4& view, float max_step = kHistoryMaxStep,
                 float max_turn = kHistoryMaxTurn);

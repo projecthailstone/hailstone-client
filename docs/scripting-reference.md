@@ -1300,9 +1300,9 @@ return `true` while nothing changed. Reading a view draws that screen in the cli
 
 | Function | Args → returns | What | Cap |
 |---|---|---|---|
-| LoginScreen | ([revision]) → view\|true\|nil | Login view: revision, busy, status, servers, accounts, characters, gameFolders, addons{…} and more (the comment in src/app/lua_eq_pregame.cpp lists them) | self |
+| LoginScreen | ([revision]) → view\|true\|nil | Login view: revision, busy, status, sessionTicketAvailable (no token value), servers, accounts, characters, gameFolders, addons{…} and more (the comment in src/app/lua_eq_pregame.cpp lists them) | self |
 | LoginSet | (field, value) → — | Edit a login field ("name", "host", "port", "username", "password", "ui", "remember", …) | self |
-| LoginDo | (action [, arg [, value]]) → ok | Login buttons: "login", "quit", "play", "select", "save", "delete", update* and addon* actions, … | self |
+| LoginDo | (action [, arg [, value]]) → ok | Login buttons: "login", "resume_token" (consume a returned token for this endpoint), "quit", "play", "select", "save", "delete", update* and addon* actions, … | self |
 | ServerSelect | ([revision]) → {revision, busy, status, server, servers={{name, status, canJoin, favorite}}, selected, last, addonHint}\|true\|nil | Server select view | self |
 | ServerSelectDo | (action [, i]) → ok | "select", "play", "favorite" or "back" | self |
 | CharacterSelect | ([revision]) → {revision, busy, status, world, server, scene, selected, characters={{name, level, race, raceName, classes, className, classShort, zone, canGoHome, homeQuestion}}}\|true\|nil | Character select view | self |

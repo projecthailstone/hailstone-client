@@ -29,7 +29,9 @@ void main() {
     ivec2 q = ivec2(floor((uv + (1.0 - pc.t) * m) * vec2(pc.size)));
     if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, pc.size))) return;
     // Depths in 0..1 compare as their bits; + 1 so the sky (0) marks its places too.
-    uint key = floatBitsToUint(texelFetch(depth_map, p, 0).r) + 1u;
+    // A see-through part with motion of its own (a character's glass shield) is the nearer surface there, though it
+    // wrote no depth (temporal_prep.frag's blue): its pixels move with it.
+    uint key = floatBitsToUint(max(texelFetch(depth_map, p, 0).r, texelFetch(motion_map, p, 0).z)) + 1u;
     if (pc.pass == 0u) {
         imageAtomicMax(key_img, q, key);
         // Where it was a frame ago too: fg_synth.frag tells from it whether the last frame's sample along a motion

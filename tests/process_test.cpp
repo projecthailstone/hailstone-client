@@ -1,7 +1,9 @@
-// This process as the system sees it (platform/process.h): its id and memory, the log's lock file, a C file by path.
+// This process as the system sees it (platform/process.h): its id and memory, the log's lock file, a C file by path,
+// an environment variable taken out of the environment.
 #include <doctest/doctest.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <string>
 
@@ -49,4 +51,28 @@ TEST_CASE("process: private commit is a Windows measurement, unavailable elsewhe
 #else
     CHECK_FALSE(commit);
 #endif
+}
+
+namespace {
+// The test's own variable (the environment is this process's alone).
+void set_test_env(const std::string& name, const char* value) {
+#if defined(_WIN32)
+    _putenv_s(name.c_str(), value);
+#else
+    setenv(name.c_str(), value, 1);
+#endif
+}
+} // namespace
+
+TEST_CASE("process: an environment variable is read once and leaves the environment (--ticket-env)") {
+    const std::string name = "HAILSTONE_TEST_TAKE_ENV_" + std::to_string(platform::process_id());
+    set_test_env(name, "synthetic-ticket");
+    REQUIRE(std::getenv(name.c_str()) != nullptr);
+    const auto value = platform::take_environment_variable(name);
+    REQUIRE(value);
+    CHECK(*value == "synthetic-ticket");
+    CHECK(std::getenv(name.c_str()) == nullptr); // a process started now does not inherit it
+    CHECK_FALSE(platform::take_environment_variable(name));
+    CHECK_FALSE(platform::take_environment_variable(""));
+    CHECK_FALSE(platform::take_environment_variable("A=B"));
 }

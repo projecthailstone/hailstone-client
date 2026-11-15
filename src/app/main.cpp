@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <chrono>
+#include <charconv>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -50,6 +51,7 @@
 #include "app/window_icon.h"
 #include "platform/message_box.h"
 #include "platform/paths.h"
+#include "platform/process.h"
 #include "platform/window.h"
 #include "game/sky_clock.h"
 #include "render/camera.h"
@@ -127,6 +129,7 @@ struct Options {
     float ui_scale = 0.0f;                        // > 0 overrides the display scale
     int window_width = 1280, window_height = 720;  // the client window (--window-size)
     std::string user, password, character;        // client auto-login (testing)
+    hailstone::app::LoginLaunch login_launch;
     std::string host;                              // --host for the auto-login
     std::string server;                            // --server: a saved server (servers/<id>), by id or name
     std::string account;                           // --account: a saved account of that server
@@ -168,6 +171,13 @@ void usage() {
         "  --user U --password P --character C\n"
         "                     log in and enter the world without clicks (testing: the password shows in\n"
         "                     the process list to anyone on this computer; use a test account's)\n"
+        "  --ticket T        authenticate once with a launcher ticket (also: patchme /ticket:T)\n"
+        "  --ticket-env VAR  read the ticket from environment variable VAR (then removed from the\n"
+        "                     environment) instead of arguments. The server: --server, --host/--port,\n"
+        "                     or the eqhost.txt of the --game-dir / $EQ_GAME_DIR folder; never the\n"
+        "                     remembered asset folder's\n"
+        "  --world NAME|ID   play this exact world after login; without it a ticket stops at server\n"
+        "                     select. --character (also: /name:C) optionally enters a character\n"
         "  --host H --port P  the login server for --user (default: the dev server; never the\n"
         "                     remembered one), as a transient server that is not saved\n"
         "  --server S         pick the saved server S (its id, the servers/<id> folder, or its name) on\n"
@@ -320,7 +330,16 @@ void usage() {
 Options parse_args(int argc, char** argv) {
     Options o;
     if (const char* env = std::getenv("EQ_GAME_DIR")) o.game_dir = env;
+    std::vector<std::string_view> arguments;
+    for (int i = 1; i < argc; ++i) arguments.emplace_back(argv[i]);
+    std::vector<std::string> unknown; // logged after the loop: a ticket later in the line hides their values
     for (int i = 1; i < argc; ++i) {
+        std::size_t launch_at = static_cast<std::size_t>(i - 1);
+        if (hailstone::app::consume_login_launch_arg(o.login_launch, arguments, launch_at,
+                                                    hailstone::platform::take_environment_variable)) {
+            i = static_cast<int>(launch_at) + 1;
+            continue;
+        }
         auto arg = [&](const char* name) { return std::strcmp(argv[i], name) == 0; };
         auto need = [&](int n) {
             if (i + n >= argc) throw std::runtime_error(std::string(argv[i]) + " needs " + std::to_string(n) + " value(s)");
@@ -540,15 +559,20 @@ Options parse_args(int argc, char** argv) {
         } else if (arg("--host")) {
             need(1);
             o.host = argv[++i];
+            if (o.host.empty()) throw std::runtime_error("--host needs a login server address.");
         } else if (arg("--server")) {
             need(1);
             o.server = argv[++i];
+            if (o.server.empty()) throw std::runtime_error("--server needs a saved server id or name.");
         } else if (arg("--account")) {
             need(1);
             o.account = argv[++i];
         } else if (arg("--port")) {
             need(1);
-            o.port = std::atoi(argv[++i]);
+            const std::string_view text(argv[++i]);
+            const auto result = std::from_chars(text.data(), text.data() + text.size(), o.port);
+            if (result.ec != std::errc() || result.ptr != text.data() + text.size() || o.port < 1 || o.port > 65535)
+                throw std::runtime_error("--port must be an integer between 1 and 65535.");
         } else if (arg("--user")) {
             need(1);
             o.user = argv[++i];
@@ -672,9 +696,19 @@ Options parse_args(int argc, char** argv) {
             usage();
             std::exit(0);
         } else {
-            hailstone::log::warn("unknown argument: {}", argv[i]);
+            unknown.emplace_back(argv[i]);
         }
     }
+    for (const auto& line : hailstone::app::unknown_argument_warnings(o.login_launch, unknown))
+        hailstone::log::warn("{}", line);
+    // RoF2's /name:<char> is --character (login_launch.cpp).
+    if (!o.login_launch.character.empty()) {
+        if (!o.character.empty() && o.character != o.login_launch.character)
+            throw std::runtime_error("/name: and --character name different characters.");
+        o.character = o.login_launch.character;
+    }
+    hailstone::app::resolve_login_launch(o.login_launch, o.user, o.password, o.account,
+                                       !o.zone.empty() || o.ui_demo.has_value() || !o.model.codes.empty());
     return o;
 }
 
@@ -776,9 +810,11 @@ int main(int argc, char** argv) {
         }
         if (opts.zone.empty() && !opts.ui_demo) {
             app::ClientOptions c;
-            // The updater is for a player's own runs, not the test drives that stop after some frames.
+            // The updater is for a player's own runs, not the test drives that stop after some frames. A ticket
+            // launch keeps it, but is never restarted into another version before its one-use ticket is sent
+            // (update_at_start_allowed); the next start without a ticket finishes what update_at_start would do.
             c.updates = opts.frames == 0 && opts.screenshot.empty();
-            if (c.updates) {
+            if (c.updates && app::update_at_start_allowed(opts.login_launch)) {
                 // A cut-off install, or an update that never reached the login screen, is put back first; when the
                 // folder then holds another version than this one, that one is started instead.
                 const app::StartNote note = app::update_at_start(platform::install_dir(), release_version());
@@ -801,6 +837,8 @@ int main(int argc, char** argv) {
             c.auto_user = opts.user;
             c.auto_password = opts.password;
             core::wipe(opts.password); // run_client wipes c's copy once the client has it
+            c.login_launch = opts.login_launch;
+            core::wipe(opts.login_launch.ticket);
             c.auto_host = opts.host;
             c.auto_port = opts.port;
             c.server = opts.server;
@@ -1499,7 +1537,7 @@ int main(int argc, char** argv) {
             }
             if (ui_layer) ui_layer->render(*f);
             vk.end_frame(*f);
-            if (opts.frames && frame >= timed_from && vk.frames_presented() == 2) ++generated_frames;
+            if (opts.frames && frame >= timed_from && vk.frame_generated()) ++generated_frames;
             if (zone_renderer) drawn = zone_renderer->take_drawn();
         }
         return 0;

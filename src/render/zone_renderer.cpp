@@ -2363,11 +2363,10 @@ float effect_scroll_seconds(std::uint64_t scene_ms) {
 PlantSway plant_sway(const assets::Mesh& mesh, float height) {
     PlantSway s{std::clamp(0.04f * height, 0.08f, 3.0f), std::clamp(0.012f * height, 0.04f, 0.35f)};
     const bool generated = std::any_of(mesh.parts.begin(), mesh.parts.end(), [](const assets::MeshPart& p) { return p.lod_far > 0.0f; });
-    // A generated tree stands still, its sway heights (assets::Mesh::sway_heights) or not. Any sway, even each branch
-    // moving whole and no flutter, slid its stark needle sprays over each other and across the pixels: a flicker in
-    // the modern lighting (the only one with wind) standing by a tree, which shadows off did not stop (players'
-    // reports; the zone viewer: 0.67 % of pixels changing by more than 12 a frame by Lake Rathe's pines, 0.01 % still).
-    if (generated) s = PlantSway{0.0f, 0.0f};
+    // Its branches sway whole when it says how (assets::Mesh::sway_heights): no flutter, which moves each vertex on its
+    // own. Without them (a pack built before), it stands still. (It stood still for a while: the flicker by a swaying
+    // pine turned out to be its branch-end clumps, upright cards, gone since; with them gone the sway is calm.)
+    if (generated) s = mesh.sway_heights ? PlantSway{s.bend, 0.0f} : PlantSway{0.0f, 0.0f};
     return s;
 }
 

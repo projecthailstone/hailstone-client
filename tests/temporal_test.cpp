@@ -136,7 +136,9 @@ TEST_CASE("temporal: camera cuts drop the history") {
     // A frame's running or turning keeps it.
     CHECK_FALSE(camera_cut(a.view(), camera_at({1003.0f, 2001.0f, 50.0f}, 0.35f, 0.02f).view()));
     // A teleport, a snap round.
-    CHECK(camera_cut(a.view(), camera_at({1100.0f, 2000.0f, 50.0f}, 0.3f, 0.0f).view()));
+    // The chase camera pushed in by a tree (tens of units in a frame) is followed; a teleport is not.
+    CHECK_FALSE(camera_cut(a.view(), camera_at({1060.0f, 2000.0f, 50.0f}, 0.3f, 0.0f).view()));
+    CHECK(camera_cut(a.view(), camera_at({1300.0f, 2000.0f, 50.0f}, 0.3f, 0.0f).view()));
     CHECK(camera_cut(a.view(), camera_at({1000.0f, 2000.0f, 50.0f}, 1.3f, 0.0f).view()));
     CHECK(camera_cut(a.view(), camera_at({1000.0f, 2000.0f, 50.0f}, 0.3f, 0.9f).view()));
     // A broken matrix is a cut, not a kept history.
@@ -168,6 +170,14 @@ TEST_CASE("temporal: scene pipelines' blend states for the motion and reactive a
     CHECK(reactive.states[2].colorWriteMask == VK_COLOR_COMPONENT_R_BIT);
     CHECK(reactive.states[2].blendEnable == VK_TRUE);
     CHECK(reactive.states[2].colorBlendOp == VK_BLEND_OP_MAX);
+    // A character's blended part (a see-through shield): its motion over what shows through, with its depth in
+    // blue (it writes none), and the reactive mask.
+    const SceneBlends both = make_scene_blends(color, SceneOutput::MotionReactive, true);
+    CHECK(both.states[1].colorWriteMask ==
+          (VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT));
+    CHECK(both.states[1].blendEnable == VK_FALSE);
+    CHECK(both.states[2].colorWriteMask == VK_COLOR_COMPONENT_R_BIT);
+    CHECK(both.states[2].colorBlendOp == VK_BLEND_OP_MAX);
     // The sky, the spawns' boxes: neither.
     const SceneBlends nothing = make_scene_blends(color, SceneOutput::Nothing, true);
     CHECK(nothing.count == 3);

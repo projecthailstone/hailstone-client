@@ -116,6 +116,43 @@ std::FILE* open_c_file(const std::filesystem::path& path, const char* mode) {
 #endif
 }
 
+std::optional<std::string> take_environment_variable(const std::string& name) {
+    if (name.empty() || name.find('=') != std::string::npos || name.find('\0') != std::string::npos) return std::nullopt;
+#if defined(_WIN32)
+    // The process's own block (GetEnvironmentVariableW, what CreateProcess hands a child), by wide names so any
+    // character works; _wputenv_s with an empty value removes it from that block and the CRT's copy alike.
+    const int wn = MultiByteToWideChar(CP_UTF8, 0, name.data(), static_cast<int>(name.size()), nullptr, 0);
+    if (wn <= 0) return std::nullopt;
+    std::wstring wname(static_cast<std::size_t>(wn), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, name.data(), static_cast<int>(name.size()), wname.data(), wn);
+    const DWORD need = GetEnvironmentVariableW(wname.c_str(), nullptr, 0);
+    if (need == 0) return std::nullopt; // not set (an empty value reads as set, with need 1)
+    std::wstring wvalue(need, L'\0');
+    const DWORD got = GetEnvironmentVariableW(wname.c_str(), wvalue.data(), need);
+    wvalue.resize(got < need ? got : 0);
+    std::string value;
+    if (!wvalue.empty()) {
+        const int n = WideCharToMultiByte(CP_UTF8, 0, wvalue.data(), static_cast<int>(wvalue.size()), nullptr, 0,
+                                          nullptr, nullptr);
+        if (n > 0) {
+            value.resize(static_cast<std::size_t>(n));
+            WideCharToMultiByte(CP_UTF8, 0, wvalue.data(), static_cast<int>(wvalue.size()), value.data(), n, nullptr,
+                                nullptr);
+        }
+        SecureZeroMemory(wvalue.data(), wvalue.size() * sizeof(wchar_t));
+    }
+    _wputenv_s(wname.c_str(), L"");
+    SetEnvironmentVariableW(wname.c_str(), nullptr);
+    return value;
+#else
+    const char* found = std::getenv(name.c_str());
+    if (!found) return std::nullopt;
+    std::string value(found);
+    ::unsetenv(name.c_str());
+    return value;
+#endif
+}
+
 std::string system_description() {
     std::string out = SDL_GetPlatform();
 #if defined(_WIN32)

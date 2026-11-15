@@ -16,6 +16,7 @@ layout(set = 0, binding = 5) uniform sampler2D prev_img;     // the last real fr
 layout(set = 0, binding = 6) uniform sampler2D cur_img;      // this frame without the UI
 layout(set = 0, binding = 7) uniform sampler2D reactive_map; // the scene's reactive mask (scene size)
 layout(set = 0, binding = 0) uniform sampler2D depth_map;               // this frame's depth (scene size; nearest)
+layout(set = 0, binding = 1) uniform sampler2D motion_raw; // its motion; blue a see-through part's depth (0 none)
 layout(set = 0, binding = 2, r32ui) uniform readonly uimage2D key_img;      // fg_scatter.comp's: the key at each place
 layout(set = 0, binding = 9, r32ui) uniform readonly uimage2D prev_key_img; // and at each place a frame ago
 
@@ -54,7 +55,9 @@ bool edge_now(ivec2 at, vec2 uc, ivec2 size) {
     ivec2 q = ivec2(uc * vec2(size));
     for (int y = -1; y <= 1; ++y)
         for (int x = -1; x <= 1; ++x)
-            if (texelFetch(depth_map, clamp(q + ivec2(x, y), ivec2(0), size - 1), 0).r > d) return true;
+            if (max(texelFetch(depth_map, clamp(q + ivec2(x, y), ivec2(0), size - 1), 0).r,
+                    texelFetch(motion_raw, clamp(q + ivec2(x, y), ivec2(0), size - 1), 0).z) > d)
+                return true;
     return false;
 }
 

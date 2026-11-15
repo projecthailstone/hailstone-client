@@ -220,6 +220,7 @@ void UiDemo::draw(const DemoFrameInput& in) {
         case ui::LoginAction::ForgetAccount:
         case ui::LoginAction::PlayCharacter:
         case ui::LoginAction::MusicChanged:
+        case ui::LoginAction::ResumeToken:
             login_.status = {"Demo: the accounts are not changed here.", false};
             break;
         case ui::LoginAction::UpdateDownload:

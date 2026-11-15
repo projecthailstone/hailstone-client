@@ -847,6 +847,9 @@ local function loginCard(view, s, bh)
   ui.Dummy(0, 6 * s)
   if P.Primary("Log in", -1, bh * 1.2, view.ready) then submit = true end
   if submit and view.ready then eq.LoginDo("login") end
+  if view.sessionTicketAvailable and not view.busy then
+    if ui.Button("Sign in with session", -1, bh) then eq.LoginDo("resume_token") end
+  end
   ui.Dummy(0, 2 * s)
   -- (toggles of their own: ImGui's collapsing header reaches past the card's padding)
   if #view.gameFolders > 0 then

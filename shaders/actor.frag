@@ -43,7 +43,8 @@ layout(location = 5) in vec4 v_now;
 layout(location = 6) in vec4 v_then;
 
 layout(location = 0) out vec4 o_color;
-layout(location = 1) out vec2 o_motion;   // the opaque pass's (render/vk_context.h SceneOutput)
+layout(location = 1) out vec4 o_motion;   // the opaque and blended passes' (render/vk_context.h SceneOutput); blue
+                                          // the depth, which only the blended pass writes (MotionReactive)
 layout(location = 2) out float o_reactive; // the blended and additive passes'
 
 #define MOTION_SET 1
@@ -188,6 +189,6 @@ void main() {
         color = to_linear(mix(pc.fog_color.rgb, color, v_fog));
     }
     o_color = vec4(color, out_alpha);
-    o_motion = motion_uv(v_now, v_then);
+    o_motion = vec4(motion_uv(v_now, v_then), gl_FragCoord.z, 0.0);
     o_reactive = reactive_of(o_color);
 }

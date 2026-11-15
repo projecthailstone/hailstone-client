@@ -2,6 +2,8 @@
 
 #include <string>
 
+#include "app/login_launch.h"
+
 namespace hailstone::app {
 
 struct ClientOptions {
@@ -19,6 +21,7 @@ struct ClientOptions {
     // this character without any clicks. Empty = interactive.
     std::string auto_user;
     std::string auto_password;
+    LoginLaunch login_launch; // one-use launcher ticket and optional world; never persisted
     std::string auto_host;  // test logins: this server (default: the dev server, never the remembered one)
     int auto_port = 0;
     std::string server;     // --server: the saved server (id or name) picked on the login screen and by test logins

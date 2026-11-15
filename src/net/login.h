@@ -13,6 +13,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "net/packet.h"
@@ -181,6 +182,10 @@ public:
     // Connects to the first host; a failed connect moves on to the next (eqhost.txt Host, Host1, ...).
     void start(const std::string& host, std::uint16_t port, std::string user, std::string password);
     void start(std::vector<Host> hosts, std::string user, std::string password);
+    // A launcher-issued, opaque RoF2 ticket. Invalid tickets fail before connecting; a refusal never retries
+    // with a password. The ticket is held only until OP_Login is sent, and is never persisted.
+    void start_token(const std::string& host, std::uint16_t port, std::string token);
+    void start_token(std::vector<Host> hosts, std::string token);
     void update();
 
     void request_server_list();
@@ -191,7 +196,7 @@ public:
     // play_result().error_id): Yes sends the kick request for that server (Kicking), whose successful reply asks
     // to play there again (ServerSelectWnd's handler @0x10037740); No goes back to the server list.
     void answer_kick(bool yes);
-    // Closes the login session; the world connection does not need it.
+    // Closes the login session and clears credentials and the result; copy ticket() before calling this.
     void close();
 
     LoginState state() const { return state_; }
@@ -220,6 +225,10 @@ private:
     };
 
     void connect_next();
+    void begin(std::vector<Host> hosts);
+    void wipe_credentials();
+    void wipe_result();
+    Clock::time_point now() const;
     void fail(std::int32_t error_id, std::string text = {});
     void handle(const AppPacket& packet);
     // SendRequest: takes the next sequence, registers the request as pending, sends it.
@@ -236,7 +245,8 @@ private:
     std::string error_;
     std::int32_t error_id_ = 0;
     std::string notice_;
-    std::string user_, password_;
+    std::string user_, password_, token_;
+    bool token_login_ = false;
     Clock::time_point connect_deadline_;
     std::uint32_t sequence_ = 1;
     std::vector<Pending> pending_;
@@ -255,6 +265,9 @@ namespace login_codec {
 constexpr std::uint32_t kSequenceLimit = 0xffffff;
 // The handshake's body (CSHandshake): the protocol version.
 constexpr std::uint16_t kHandshakeVersion = 11;
+// Hailstone's input bound for opaque launcher tickets; the issuer's contents are not interpreted by the client.
+constexpr std::size_t kMaxLoginTokenBytes = 4096;
+bool valid_login_token(std::string_view token);
 
 AppPacket session_ready(std::uint32_t sequence);
 // CSPlayerLogin: DES-CBC of "user\0password\0token\0" and the token flag, zero-padded to 8 bytes.

@@ -209,6 +209,93 @@ TEST_CASE("eq.LoginSet and eq.LoginDo: the fields change, and the buttons ask th
     CHECK(ui.host.login_action == static_cast<int>(A::Quit));
 }
 
+TEST_CASE("Launcher ticket view: after a failed ticket the saved server's remember survives a password login, "
+          "and select works") {
+    test::ScratchDir dir("lua_eq_pregame_test");
+    Ui ui;
+    ui::LoginView v = login_view(dir.path());
+    v.profiles[1].remember = false; // Beta keeps no username: that must survive too
+    ui.host.login = &v;
+    REQUIRE(v.remember);
+
+    // The ticket went to Alpha's address: its view keeps nothing while the ticket is in use.
+    ui::begin_launcher_login_view(v, v.profiles[0]);
+    CHECK_FALSE(v.remember);
+    CHECK(v.username.empty());
+    // The ticket failed: back at the login screen (ClientApp::back_to_login) the saved server is as saved.
+    ui::end_launcher_login_view(v, "alpha", nullptr);
+    CHECK_FALSE(v.transient);
+    CHECK(v.selected == 0);
+    CHECK(v.remember);
+    CHECK(v.username == "first"); // its remembered account, as after any return to the login screen
+    // A password login now saves Alpha with its own remember, and the account stays in its list.
+    ui("eq.LoginSet('password', 'secret')");
+    const ServerProfile saved = ui::profile_from_view(v);
+    CHECK(saved.id == "alpha");
+    CHECK(saved.remember);
+    CHECK(saved.username == "first");
+    CHECK(saved.accounts.size() == 2);
+    CHECK(ui("return eq.LoginDo('select', 2)") == "true");
+    CHECK(v.selected == 1);
+    CHECK_FALSE(v.remember); // Beta's own
+
+    // A ticket to an address no saved server has: a transient view, whose server list is locked meanwhile.
+    ServerProfile elsewhere;
+    elsewhere.name = elsewhere.host = "ticket.example";
+    elsewhere.port = 5999;
+    ui::begin_launcher_login_view(v, elsewhere);
+    CHECK(v.transient);
+    CHECK(ui("return eq.LoginDo('select', 1)") == "false");
+    // Back with no session to resume: the server picked before the ticket, and select works again.
+    ui::end_launcher_login_view(v, "beta", nullptr);
+    CHECK_FALSE(v.transient);
+    CHECK(v.selected == 1);
+    CHECK_FALSE(v.remember);
+    CHECK(ui("return eq.LoginDo('select', 1)") == "true");
+    CHECK(v.selected == 0);
+    CHECK(v.remember);
+
+    // Back with a session for that address: it stays in the fields as a new server (Sign in with session finds
+    // it), not transient, so the list works and nothing is saved until a login.
+    ui::begin_launcher_login_view(v, elsewhere);
+    ui::end_launcher_login_view(v, "", &elsewhere);
+    CHECK_FALSE(v.transient);
+    CHECK(v.selected == -1);
+    CHECK(v.host == "ticket.example");
+    CHECK(v.port == 5999);
+    CHECK(v.remember); // a new server's default
+    CHECK(ui("return eq.LoginDo('select', 2)") == "true");
+    CHECK(v.selected == 1);
+}
+
+TEST_CASE("eq.LoginScreen: a session ticket offers an explicit sign-in without exposing its secret") {
+    Ui ui;
+    ui::LoginView v;
+    v.host = "127.0.0.1";
+    ui.host.login = &v;
+    CHECK(ui("held = eq.LoginScreen() return tostring(held.sessionTicketAvailable)") == "false");
+    CHECK(ui("return eq.LoginDo('resume_token')") == "false");
+    CHECK_FALSE(ui.host.login_action);
+
+    v.session_ticket_available = true;
+    CHECK(ui("held = eq.LoginScreen(held.revision) return tostring(held.sessionTicketAvailable)") == "true");
+    CHECK(ui("return eq.LoginScreen(held.revision)") == "true");
+    CHECK(ui("return tostring(held.ready) .. ' ' .. tostring(held.token) .. ' ' .. tostring(held.sessionTicket)") ==
+          "false nil nil");
+    CHECK(ui("return eq.LoginDo('resume_token')") == "true");
+    CHECK(ui.host.login_action == static_cast<int>(ui::LoginAction::ResumeToken));
+    ui.host.login_action.reset();
+
+    v.busy = true;
+    CHECK(ui("return eq.LoginDo('resume_token')") == "false");
+    CHECK_FALSE(ui.host.login_action);
+    v.busy = false;
+    v.session_ticket_available = false;
+    CHECK(ui("held = eq.LoginScreen(held.revision) return tostring(held.sessionTicketAvailable)") == "false");
+    CHECK(ui("return eq.LoginDo('resume_token')") == "false");
+    CHECK_FALSE(ui.host.login_action);
+}
+
 TEST_CASE("eq.LoginSet ui: a saved server keeps the interface at once, and only it; a new server keeps it once saved") {
     test::ScratchDir dir("lua_eq_pregame_test");
     Ui ui;

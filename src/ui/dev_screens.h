@@ -189,6 +189,7 @@ struct LoginView {
     std::string game_choice;
     StatusLine status;
     bool busy = false; // request in flight: inputs disabled, spinner shown
+    bool session_ticket_available = false; // the app holds a returned ticket for this login endpoint
     UpdateNotice update; // the updater's news; its buttons return the Update* actions
     AddonsView addons;   // the add-on manager's; its buttons return the Addon* actions
     // This build ("0.2.0-alpha (39b3e9da)", core/build_info.h build_version()), shown small on every login screen
@@ -214,14 +215,14 @@ struct LoginView {
 // actions are for the suggestion whose source is addons.choice: Look opens its install card, Later puts it away for
 // this run, Never for good on this server. AddonBrowse fetches the store's list (again with choice_on);
 // AddonStoreLook opens the install card of the store item whose source is addons.choice; AddonStart starts the
-// installed tool addons.choice.
+// installed tool addons.choice. ResumeToken asks the app to consume its returned ticket for this endpoint.
 enum class LoginAction {
     None, Submit, Quit, Save, Delete, OpenAssets, UseGameFolder, BrowseGameFolder, LoginBox, AccountsChanged,
     ForgetAccount, PlayCharacter, MusicChanged,
     UpdateDownload, UpdateRestart, UpdateSkip, UpdateNotes, OpenProject,
     AddonInspect, AddonInstall, AddonCancel, AddonUpdate, AddonRemove, AddonAuto, AddonFolder, AddonPage, AddonCheck,
     AddonRevoke, AddonAskAgain, AddonSuggestLook, AddonSuggestLater, AddonSuggestNever, AddonBrowse, AddonStoreLook,
-    AddonStart
+    AddonStart, ResumeToken
 };
 
 // A row of the login screen's Characters list: a character one of the server's accounts was seen to have.
@@ -269,6 +270,14 @@ bool forget_account(LoginView& view, Config& config, std::string_view username);
 void new_profile(LoginView& view);
 // Picks the profile with this id, else this name (both any case), for --server; false when there is none.
 bool select_profile_named(LoginView& view, std::string_view id_or_name);
+// A launcher ticket's login (app/login_launch.h): the view shows its server (the saved one with profile's id, else
+// a transient one) with no account in the fields, and keeps nothing (remember and save_password off).
+void begin_launcher_login_view(LoginView& view, const ServerProfile& profile);
+// The login screen again after a ticket's login, failed or ended: the normal view, not transient, with a saved
+// server's remember, account and saved password as select_profile shows them. The saved server is profile_id's;
+// else, given `endpoint`, that server as a new one (not saved until a login), so that Sign in with session still
+// finds it; else the first saved server.
+void end_launcher_login_view(LoginView& view, std::string_view profile_id, const ServerProfile* endpoint);
 // The view's server as a profile: the picked one's id and NMS keys with the edited fields, or for a new server an
 // id made from its name (the host when it has none). A test login's has no id. An empty name becomes the host.
 ServerProfile profile_from_view(const LoginView& view);

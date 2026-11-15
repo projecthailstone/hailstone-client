@@ -57,6 +57,7 @@ void ClientApp::draw_ui(float fps) {
     update_screen_picture();
     switch (screen_) {
     case Screen::Login: {
+        login_view_.session_ticket_available = login_token_session_.available(login_view_.host, login_view_.port);
         // The interface picked for the server on this screen is the one it shows in: the picked server's (or the one
         // chosen in its Interface list), switched to at once rather than at the login (its Lua state is not running
         // here: draw_ui comes before the UI's frame).

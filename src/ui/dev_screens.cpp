@@ -1045,6 +1045,10 @@ LoginAction login_screen(LoginView& view) {
     }
 
     ImGui::Spacing();
+    if (view.session_ticket_available && !view.busy) {
+        ImGui::SetCursorPosX(label_w);
+        if (ImGui::Button("Sign in with session")) action = LoginAction::ResumeToken;
+    }
     bool ready = !view.username.empty() && !view.password.empty() && !view.host.empty();
     ImGui::BeginDisabled(!ready);
     ImGui::SetCursorPosX(label_w);
@@ -1239,6 +1243,39 @@ bool select_profile_named(LoginView& view, std::string_view id_or_name) {
     if (!p) return false;
     select_profile(view, static_cast<int>(p - view.profiles.data()));
     return true;
+}
+
+void begin_launcher_login_view(LoginView& view, const ServerProfile& profile) {
+    if (profile.id.empty() || !select_profile_named(view, profile.id)) {
+        view.selected = -1;
+        view.transient = true;
+        view.accounts.clear();
+        view.worlds.clear();
+        view.account_choice.clear();
+        view.quick_selected = -1;
+    }
+    view.name = profile.name;
+    view.host = profile.host;
+    view.port = profile.port;
+    view.ui = profile.ui;
+    view.username.clear();
+    core::wipe(view.password);
+    view.remember = false;
+    view.save_password = false;
+}
+
+void end_launcher_login_view(LoginView& view, std::string_view profile_id, const ServerProfile* endpoint) {
+    view.transient = false;
+    if (!profile_id.empty() && select_profile_named(view, profile_id)) return;
+    if (endpoint) {
+        new_profile(view);
+        view.name = endpoint->name;
+        view.host = endpoint->host;
+        view.port = std::clamp(endpoint->port, 1, 65535);
+        if (!endpoint->ui.empty()) view.ui = endpoint->ui;
+        return;
+    }
+    select_profile(view, view.profiles.empty() ? -1 : 0);
 }
 
 ServerProfile profile_from_view(const LoginView& view) {

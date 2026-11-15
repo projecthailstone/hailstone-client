@@ -27,6 +27,7 @@
 #include "game/world_state.h"
 #include "render/actor_layers.h"
 #include "render/actor_surface.h"
+#include "render/bone_history.h"
 #include "render/culling.h"
 #include "render/gpu.h"
 #include "render/scene_lighting.h"
@@ -504,9 +505,10 @@ private:
     // motion; this frame's where none were kept).
     static constexpr std::uint32_t kMaxBones = 65536;
     std::array<Buffer, VkContext::kFramesInFlight> bones_{};
-    // The bones drawn per motion_key: this frame's so far, and the last frame's (frame_bones_ is which frame).
-    std::unordered_map<std::uint64_t, std::vector<glm::mat4>> bones_now_, bones_before_;
-    std::uint64_t frame_bones_ = 0;
+    // The bones drawn per motion_key, this frame's and the last frame's, and the frame's two halves of the buffer
+    // built on the CPU before they are copied in (kept from frame to frame, so they are not reallocated).
+    BoneHistory bone_history_;
+    std::vector<glm::mat4> staged_bones_, staged_bones_before_;
     bool scene_ = true;
     std::array<void*, VkContext::kFramesInFlight> bones_mapped_{};
 

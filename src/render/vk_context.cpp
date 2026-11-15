@@ -220,9 +220,12 @@ SceneBlends make_scene_blends(const VkPipelineColorBlendAttachmentState& color, 
     // The motion is written as it is (the last draw over a pixel is the one in front, as the depth test keeps it);
     // the reactive mask keeps the largest of what was drawn over the pixel.
     VkPipelineColorBlendAttachmentState motion{};
-    motion.colorWriteMask = output == SceneOutput::Motion ? VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT : 0u;
+    // A see-through part with motion of its own also writes its depth in blue (kMotionFormat): it writes no depth.
+    const bool writes_motion = output == SceneOutput::Motion || output == SceneOutput::MotionReactive;
+    motion.colorWriteMask = writes_motion ? VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT : 0u;
+    if (output == SceneOutput::MotionReactive) motion.colorWriteMask |= VK_COLOR_COMPONENT_B_BIT;
     VkPipelineColorBlendAttachmentState reactive{};
-    if (output == SceneOutput::Reactive) {
+    if (output == SceneOutput::Reactive || output == SceneOutput::MotionReactive) {
         reactive.colorWriteMask = VK_COLOR_COMPONENT_R_BIT;
         reactive.blendEnable = VK_TRUE;
         reactive.srcColorBlendFactor = reactive.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
@@ -1698,6 +1701,7 @@ void VkContext::begin_overlay(const FrameInfo& frame) {
     if (taa) {
         const bool keep = history_valid_ && !camera_cut(prev_view_.view, view->view);
         kept_history = keep;
+        fg_camera_steady_ = !history_valid_ || !camera_cut(prev_view_.view, view->view, kFrameGenMaxStep, kHistoryMaxTurn);
         PrepPush prep;
         if (history_valid_) prep.reproject = reprojection(prev_view_.view, prev_view_.proj, view->view, view->proj);
         prep.depth = glm::vec4(depth_x, depth_y, scene_options_.ao_strength, ao ? 1.0f : 0.0f);
@@ -2078,10 +2082,13 @@ std::optional<std::uint32_t> VkContext::finish_frame_gen(const FrameInfo& frame)
     state.enabled = true;
     state.temporal_frame = fg_temporal_;
     state.history_kept = fg_history_kept_;
+    state.camera_steady = fg_camera_steady_;
     state.previous_ready = picture_ready_;
     std::optional<std::uint32_t> generated;
-    if (frame_gen_ready(state)) {
-        // A second image for the in-between frame. With min + 2 images it may be waited for (FIFO frees one each
+    const bool ready = frame_gen_ready(state);
+    fg_generated_last_ = false;
+    if (ready || frame_gen_repeat(state)) {
+        // A second image for the in-between frame (or the real one again). With min + 2 images it may be waited for (FIFO frees one each
         // refresh: that wait is what holds the game at half the refresh); with fewer, only taken when free.
         const std::uint64_t timeout =
             frame_gen_fits(static_cast<std::uint32_t>(images_.size()), min_image_count_) ? UINT64_MAX : 0;
@@ -2093,20 +2100,23 @@ std::optional<std::uint32_t> VkContext::finish_frame_gen(const FrameInfo& frame)
             std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - wait_from).count();
         if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) {
             if (r == VK_SUBOPTIMAL_KHR) resize_pending_ = true;
-            frame_gen_->record_motion(cmd, kFrameGenTime);
-            FrameGen::SynthPush push;
-            push.view_w = static_cast<float>(view_extent_.width);
-            push.view_h = static_cast<float>(view_extent_.height);
-            push.t = kFrameGenTime;
-            push.reactive = reactive_.image ? 1.0f : 0.0f;
-            draw_into(cmd, generated_, view_extent_, fg_synth_pipeline_, frame_gen_->synth_layout(),
-                      frame_gen_->synth_set(slot), &push, sizeof(push));
-            composite_into(cmd, index, frame_gen_->composite_set(slot, true));
+            if (ready) {
+                frame_gen_->record_motion(cmd, kFrameGenTime);
+                FrameGen::SynthPush push;
+                push.view_w = static_cast<float>(view_extent_.width);
+                push.view_h = static_cast<float>(view_extent_.height);
+                push.t = kFrameGenTime;
+                push.reactive = reactive_.image ? 1.0f : 0.0f;
+                draw_into(cmd, generated_, view_extent_, fg_synth_pipeline_, frame_gen_->synth_layout(),
+                          frame_gen_->synth_set(slot), &push, sizeof(push));
+            }
+            composite_into(cmd, index, frame_gen_->composite_set(slot, ready));
             image_barrier(cmd, images_[index], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                           VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                           VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
             generated = index;
-            ++fg_stats_.generated;
+            fg_generated_last_ = ready;
+            ++(ready ? fg_stats_.generated : fg_stats_.skipped_cut);
         } else if (r == VK_ERROR_OUT_OF_DATE_KHR) {
             resize_pending_ = true;
             ++fg_stats_.skipped_no_image;
@@ -2115,8 +2125,6 @@ std::optional<std::uint32_t> VkContext::finish_frame_gen(const FrameInfo& frame)
         } else {
             ++fg_stats_.skipped_no_image;
         }
-    } else {
-        ++fg_stats_.skipped_cut;
     }
     // The real frame, left as the frame's own image always is at this point (the screenshot and the present follow).
     composite_into(cmd, frame.image_index, frame_gen_->composite_set(slot, false));
@@ -2155,7 +2163,8 @@ void VkContext::end_frame(const FrameInfo& frame) {
     }
     // --screenshot-generated: the in-between frame saved as asked and the real one beside it (the two are one frame
     // apart; the real one before the in-between came from the last frame).
-    const bool shot_generated = !screenshot_path_.empty() && screenshot_generated_ && generated.has_value();
+    const bool shot_generated =
+        !screenshot_path_.empty() && screenshot_generated_ && generated.has_value() && fg_generated_last_;
     const VkDeviceSize shot_bytes = VkDeviceSize{extent_.width} * extent_.height * 4;
     if (!screenshot_path_.empty()) {
         // The command buffer is open: a failure here is logged and the frame goes on without the copy (a throw

@@ -81,7 +81,10 @@ struct FrameRates {
     float displayed_fps = 0.0f;
     float generated_share = 0.0f;
 };
-FrameRates frame_rates(const std::vector<float>& ms, const std::vector<std::uint8_t>& presented);
+// `generated`, when given (same length), says which frames' second image was an in-between frame (else the real
+// frame shown again: a cut); without it, every frame with two images had one.
+FrameRates frame_rates(const std::vector<float>& ms, const std::vector<std::uint8_t>& presented,
+                       const std::vector<std::uint8_t>& generated = {});
 
 struct PerfInputs {
     const render::ZoneRenderStats* zone = nullptr;
@@ -102,7 +105,10 @@ public:
     // At the end of `phase`: the time since the last mark (or begin_frame) is charged to it.
     void mark(FramePhase phase);
     // After the frame is presented: how many images it put on the screen (VkContext::frames_presented).
-    void set_presented(std::uint32_t images) { current_presented_ = static_cast<std::uint8_t>(images); }
+    void set_presented(std::uint32_t images, bool generated) {
+        current_presented_ = static_cast<std::uint8_t>(images);
+        current_generated_ = generated ? 1u : 0u;
+    }
     void draw(const PerfInputs& in);
 
     void toggle() { open_ = !open_; }
@@ -133,9 +139,11 @@ private:
     std::array<float, kFrames> frame_ms_{};
     std::array<PhaseTimes, kFrames> phase_ms_{};
     std::array<std::uint8_t, kFrames> presented_{};
+    std::array<std::uint8_t, kFrames> generated_{};
     PhaseTimes current_{};
     SectionAverages sections_;
     std::uint8_t current_presented_ = 1;
+    std::uint8_t current_generated_ = 0;
     std::size_t head_ = 0;  // next slot to write
     std::size_t count_ = 0; // filled slots
     NetRate world_rate_, zone_rate_;

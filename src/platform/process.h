@@ -1,7 +1,8 @@
 #pragma once
 
 // This process and its threads as the operating system sees them: its id, its memory, a background thread's
-// priority, a lock file held for the process's life, a C file opened by path, and the system's name for bug reports.
+// priority, a lock file held for the process's life, a C file opened by path, an environment variable taken out of
+// the environment, and the system's name for bug reports.
 
 #include <cstdint>
 #include <cstdio>
@@ -37,6 +38,11 @@ std::FILE* open_c_file(const std::filesystem::path& path, const char* mode);
 // now on (a tool's command-line mode). True when it did; elsewhere, where the streams already go to the terminal,
 // it does nothing and returns true.
 bool attach_parent_console();
+
+// Reads the environment variable `name` and removes it from this process's environment, so that the processes it
+// starts afterwards do not inherit it (a launcher's ticket: --ticket-env). Nullopt when it is not set. The copy is the
+// caller's to wipe (core/wipe.h). Not thread-safe, like the environment itself: call it before threads start.
+std::optional<std::string> take_environment_variable(const std::string& name);
 
 // The system, for bug reports: "Linux, CachyOS (kernel 7.3.0-4-cachyos), wayland", "Windows 10.0.26100".
 std::string system_description();

@@ -23,7 +23,7 @@ layout(push_constant) uniform Push {
 } pc;
 
 layout(location = 0) out vec4 o_color;
-layout(location = 1) out vec2 o_motion;
+layout(location = 1) out vec4 o_motion; // blue: a see-through part's depth there (render/vk_context.h kMotionFormat)
 
 #include "ao_blur.glsl"
 
@@ -34,9 +34,9 @@ void main() {
     if (pc.depth.w > 0.0 && d > 0.0) c *= mix(1.0, blurred_ao(ao_map, depth_map, p, pc.depth.xy), pc.depth.z);
     bool drawn = pc.jitter.z > 0.5;
     o_color = vec4(c, drawn ? texelFetch(reactive_map, p, 0).r : 0.0);
-    vec2 own = drawn ? texelFetch(object_motion, p, 0).xy : vec2(30000.0);
+    vec4 own = drawn ? texelFetch(object_motion, p, 0) : vec4(30000.0, 30000.0, 0.0, 0.0);
     if (own.x < 10000.0) { // render/vk_context.h kMotionUnset (30000) is far above any real motion (a few UV)
-        o_motion = own;
+        o_motion = vec4(own.xy, own.z, 0.0);
         return;
     }
 
@@ -47,9 +47,9 @@ void main() {
     vec4 prev = pc.reproject * vec4(ndc, d, 1.0);
     if (prev.w <= 1e-6) {
         // Behind last frame's camera: nothing to follow. Far outside the screen, so the resolve drops its history.
-        o_motion = vec2(4.0);
+        o_motion = vec4(4.0, 4.0, 0.0, 0.0);
         return;
     }
     vec2 moved = prev.xy / prev.w - ndc;
-    o_motion = vec2(moved.x * 0.5, -moved.y * 0.5);
+    o_motion = vec4(moved.x * 0.5, -moved.y * 0.5, 0.0, 0.0);
 }

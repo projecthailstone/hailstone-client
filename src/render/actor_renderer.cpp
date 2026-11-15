@@ -1051,15 +1051,17 @@ void ActorRenderer::prepare(const FrameInfo& frame, std::span<const ActorDraw> a
     stats_.upload_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - u0).count();
     rebuild_descriptors(frame.frame_slot);
 
-    auto* bones = static_cast<glm::mat4*>(bones_mapped_[frame.frame_slot]);
+    // The frame's bones are built on the CPU and copied into the mapped buffer at once: it is write-only memory to the
+    // CPU, and reading it back (the last frame's bones for the motion) is slow.
+    staged_bones_.clear();
+    staged_bones_before_.clear();
     std::uint32_t used = 0;
     // The temporal upscaler's motion: a new frame makes this frame's bones the last frame's.
     const bool motion = scene_ && vk_.scene_motion();
-    if (motion && frame_bones_ != vk_.frames_begun()) {
-        frame_bones_ = vk_.frames_begun();
-        std::swap(bones_now_, bones_before_);
-        bones_now_.clear();
-    }
+    if (motion)
+        bone_history_.begin_frame(vk_.frames_begun());
+    else if (bone_history_.size())
+        bone_history_.clear();
     std::vector<assets::BonePose> local, previous;
     std::vector<glm::mat4> world;
     for (std::size_t i = 0; i < actors.size(); ++i) {
@@ -1091,24 +1093,24 @@ void ActorRenderer::prepare(const FrameInfo& frame, std::span<const ActorDraw> a
         glm::mat4 instance = instance_matrix(a);
         const std::uint32_t first = used;
         prepared_[i].bone_offset = used;
-        for (const auto& w : world) bones[used++] = instance * w;
+        for (const auto& w : world) staged_bones_.push_back(instance * w);
+        used = static_cast<std::uint32_t>(staged_bones_.size());
         // A frame ago, beside them (the same bones, or this frame's for an instance new or changed since).
-        const std::uint32_t count = used - first;
-        const std::vector<glm::mat4>* before = nullptr;
-        if (motion && a.motion_key) {
-            auto it = bones_before_.find(a.motion_key);
-            if (it != bones_before_.end() && it->second.size() == count) before = &it->second;
-            bones_now_[a.motion_key].assign(bones + first, bones + used);
-        }
         if (motion) {
+            const glm::mat4* now = staged_bones_.data() + first;
+            const std::vector<glm::mat4>* before =
+                a.motion_key ? bone_history_.keep(a.motion_key, now, used - first) : nullptr;
             if (before)
-                std::copy(before->begin(), before->end(), bones + kMaxBones + first);
+                staged_bones_before_.insert(staged_bones_before_.end(), before->begin(), before->end());
             else
-                std::copy(bones + first, bones + used, bones + kMaxBones + first);
+                staged_bones_before_.insert(staged_bones_before_.end(), now, now + (used - first));
         }
         ++stats_.instances;
     }
     if (used) {
+        auto* bones = static_cast<glm::mat4*>(bones_mapped_[frame.frame_slot]);
+        std::memcpy(bones, staged_bones_.data(), sizeof(glm::mat4) * used);
+        if (motion) std::memcpy(bones + kMaxBones, staged_bones_before_.data(), sizeof(glm::mat4) * used);
         vmaFlushAllocation(vk_.allocator(), bones_[frame.frame_slot].allocation, 0, sizeof(glm::mat4) * used);
         if (motion)
             vmaFlushAllocation(vk_.allocator(), bones_[frame.frame_slot].allocation, sizeof(glm::mat4) * kMaxBones,
@@ -1784,9 +1786,13 @@ void ActorRenderer::create_pipelines(const std::filesystem::path& shader_dir) {
             ba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
             ba.alphaBlendOp = VK_BLEND_OP_ADD;
         }
-        // The opaque pass draws the characters' own motion; the blended and additive ones the reactive mask.
-        const SceneBlends blends =
-            vk_.scene_blends(ba, pass == 0 ? SceneOutput::Motion : SceneOutput::Reactive, scene_);
+        // The opaque pass draws the characters' own motion; the blended one (a see-through shield, hair) its motion
+        // too, over what shows through it, and the reactive mask; the additive one (glows, faint and spread past the
+        // body) the reactive mask alone.
+        const SceneOutput output = pass == 0   ? SceneOutput::Motion
+                                   : pass == 1 ? SceneOutput::MotionReactive
+                                               : SceneOutput::Reactive;
+        const SceneBlends blends = vk_.scene_blends(ba, output, scene_);
         const VkPipelineColorBlendStateCreateInfo cb = blends.info();
         VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
         info.pNext = &ri;

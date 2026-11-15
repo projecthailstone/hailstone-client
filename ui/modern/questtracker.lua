@@ -168,6 +168,8 @@ local function draw(x, y, w, h, s)
       quest(task, s)
     end
   end
+  -- Include the last quest's trailing cursor spacing in the child's content extent.
+  ui.Dummy(0, 0)
   ui.PopFont()
   ui.EndChild()
   ui.PopStyleColor()

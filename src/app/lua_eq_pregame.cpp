@@ -335,6 +335,7 @@ void emit_login(Out& o, const ui::LoginView& v) {
     o.boolean("transient", v.transient);
     o.str("version", v.version); // this build (LoginView::version), "" none
     o.boolean("ready", login_ready(v));
+    o.boolean("sessionTicketAvailable", v.session_ticket_available);
     o.table();
     for (std::size_t i = 0; i < v.profiles.size(); ++i) {
         const ServerProfile& p = v.profiles[i];
@@ -425,6 +426,7 @@ void emit_login(Out& o, const ui::LoginView& v) {
 // the table the script holds, eq.LoginScreen gives true while nothing changed (keep that table; nothing is built),
 // else a new view. (The same holds for eq.ServerSelect and eq.CharacterSelect.)
 // view: revision, busy, status {text, error}, transient (a test login: no saved servers), ready (Login can go),
+//   sessionTicketAvailable (the app holds a returned ticket for this endpoint; no ticket value is exposed),
 //   servers {name, host, port, id, ui}, selected (0: a new server), name, host, port, username, password, remember,
 //   savePassword, canSavePasswords, music, ui, defaultUi, uiPacks {id, name, description, input},
 //   accounts {username, passwordSaved, box, canBox, world, character, characters {name, world, level, classes}},
@@ -509,6 +511,7 @@ SavedAccount* account_named(ui::LoginView& v, std::string_view username) {
 
 // ok = eq.LoginDo(action [, arg [, value]]): what the login screen's buttons do.
 //   "login"            log in with the fields (only when ready)
+//   "resume_token"     use the app's returned session ticket (sessionTicketAvailable, not busy)
 //   "quit"             quit the client
 //   "updateDownload"   download the release the view's update offers (or try a failed download again)
 //   "updateRestart"    install the downloaded release and start it (update.canRestart)
@@ -665,6 +668,9 @@ int LoginDo(lua_State* L) {
     } else if (what == "login") {
         ok = login_ready(v);
         if (ok) action = A::Submit;
+    } else if (what == "resume_token") {
+        ok = v.session_ticket_available;
+        if (ok) action = A::ResumeToken;
     } else if (what == "select") {
         if (!v.transient) ui::select_profile(v, index_arg(L, 2, v.profiles.size()));
         else ok = false;

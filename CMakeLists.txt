@@ -313,6 +313,8 @@ add_library(hailstone_engine STATIC
   src/app/spell_ui.cpp
   src/app/bug_report.cpp
   src/app/startup_error.cpp
+  src/app/login_launch.cpp
+  src/app/login_token_session.cpp
   src/app/updater.cpp
   src/app/update_install.cpp
   src/app/addon_install.cpp
@@ -1023,6 +1025,8 @@ if(HAILSTONE_BUILD_TESTS)
     tests/bug_report_test.cpp
     tests/bug_report_window_test.cpp
     tests/startup_error_test.cpp
+    tests/login_launch_test.cpp
+    tests/login_token_session_test.cpp
     tests/gpu_requirements_test.cpp
     tests/gpu_ipc_test.cpp
     tests/gpu_cache_protocol_test.cpp
@@ -1048,6 +1052,7 @@ if(HAILSTONE_BUILD_TESTS)
     tests/plugin_ui_sandbox_test.cpp
     tests/lighting_test.cpp
     tests/shadows_test.cpp
+    tests/bone_history_test.cpp
     tests/culling_test.cpp
     tests/shadow_chunks_test.cpp
     tests/wrap_math_test.cpp

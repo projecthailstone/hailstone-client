@@ -21,6 +21,20 @@
 
 namespace hailstone::net {
 
+namespace {
+
+// Plaintext login bodies also contain passwords and returned session keys. Clear their allocation before release.
+struct WipeBytes {
+    std::vector<std::byte>& bytes;
+    ~WipeBytes() {
+        bytes.resize(bytes.capacity());
+        volatile std::byte* p = bytes.data();
+        for (std::size_t i = 0; i < bytes.size(); ++i) p[i] = std::byte{0};
+    }
+};
+
+} // namespace
+
 namespace login_codec {
 
 namespace {
@@ -48,13 +62,16 @@ AppPacket player_login(std::uint32_t sequence, const std::string& user, const st
                        const std::string& token, bool token_login) {
     // CSPlayerLogin::WriteBody @0x10020510; EncryptBody zero-pads and DES-CBC encrypts (key and IV zero).
     ByteWriter plain;
+    plain.reserve(user.size() + password.size() + token.size() + 4);
     put_cstring(plain, user);
     put_cstring(plain, password);
     put_cstring(plain, token);
     plain.le<std::uint8_t>(token_login ? 1 : 0);
+    auto body = plain.take();
+    const WipeBytes wipe_body{body};
     ByteWriter w;
     write_header(w, sequence, 2);
-    w.bytes(des::zero_cbc_encrypt(plain.data()));
+    w.bytes(des::zero_cbc_encrypt(body));
     return {login_op::Login, w.take()};
 }
 
@@ -108,7 +125,12 @@ AppPacket login_request(std::uint32_t sequence, const std::string& user, const s
 }
 
 AppPacket token_login_request(std::uint32_t sequence, const std::string& token) {
+    need(valid_login_token(token), "invalid login token");
     return player_login(sequence, "", "", token, true);
+}
+
+bool valid_login_token(std::string_view token) {
+    return !token.empty() && token.size() <= kMaxLoginTokenBytes && token.find('\0') == std::string_view::npos;
 }
 
 AppPacket server_list_request(std::uint32_t sequence) {
@@ -164,6 +186,7 @@ LoginReplyBase parse_handshake_reply(std::span<const std::byte> data) {
 LoginResult parse_login_reply(std::span<const std::byte> data) {
     // SCPlayerLoginReply::ReadBody @0x10020bb0.
     auto body = reply_body(login_op::LoginAccepted, data);
+    const WipeBytes wipe_body{body};
     ByteReader r(body);
     auto base = read_base(r);
     LoginResult res;
@@ -337,7 +360,7 @@ bool locale_matches(const std::string& server_country, const std::string& client
 
 LoginClient::LoginClient() : LoginClient(Options{}) {}
 LoginClient::LoginClient(Options options) : options_(std::move(options)) {}
-LoginClient::~LoginClient() = default;
+LoginClient::~LoginClient() { close(); }
 
 void LoginClient::start(const std::string& host, std::uint16_t port, std::string user, std::string password) {
     start(std::vector<Host>{{host, port}}, std::move(user), std::move(password));
@@ -345,11 +368,33 @@ void LoginClient::start(const std::string& host, std::uint16_t port, std::string
 }
 
 void LoginClient::start(std::vector<Host> hosts, std::string user, std::string password) {
-    hosts_ = std::move(hosts);
-    host_index_ = 0;
+    close();
     user_ = std::move(user);
     password_ = std::move(password);
     core::wipe(password);
+    begin(std::move(hosts));
+}
+
+void LoginClient::start_token(const std::string& host, std::uint16_t port, std::string token) {
+    start_token(std::vector<Host>{{host, port}}, std::move(token));
+    core::wipe(token);
+}
+
+void LoginClient::start_token(std::vector<Host> hosts, std::string token) {
+    close();
+    token_login_ = true;
+    if (!login_codec::valid_login_token(token)) {
+        core::wipe(token);
+        return fail(0, "The login ticket is empty, too long or contains a NUL byte.");
+    }
+    token_ = std::move(token);
+    core::wipe(token);
+    begin(std::move(hosts));
+}
+
+void LoginClient::begin(std::vector<Host> hosts) {
+    hosts_ = std::move(hosts);
+    host_index_ = 0;
     error_.clear();
     error_id_ = 0;
     notice_.clear();
@@ -360,6 +405,22 @@ void LoginClient::start(std::vector<Host> hosts, std::string user, std::string p
     connect_next();
 }
 
+void LoginClient::wipe_credentials() {
+    core::wipe(password_);
+    core::wipe(token_);
+    user_.clear();
+}
+
+void LoginClient::wipe_result() {
+    core::wipe(login_.session_key);
+    core::wipe(login_.token);
+    login_ = {};
+}
+
+LoginClient::Clock::time_point LoginClient::now() const {
+    return options_.session.clock ? options_.session.clock() : Clock::now();
+}
+
 // LoginClient::ConnectToLoginServer: a new LoginServerAPI (sequence counter 1, nothing pending) per attempt.
 void LoginClient::connect_next() {
     const Host& h = hosts_[host_index_];
@@ -368,7 +429,7 @@ void LoginClient::connect_next() {
     sequence_ = 1;
     pending_.clear();
     state_ = LoginState::Connecting;
-    connect_deadline_ = Clock::now() + options_.connect_timeout;
+    connect_deadline_ = now() + options_.connect_timeout;
 }
 
 void LoginClient::fail(std::int32_t error_id, std::string text) {
@@ -376,6 +437,8 @@ void LoginClient::fail(std::int32_t error_id, std::string text) {
     error_ = text.empty() || error_id != 0 ? login_error_text(error_id) : std::move(text);
     state_ = LoginState::Failed;
     pending_.clear();
+    wipe_credentials();
+    wipe_result();
     log::debug("login: {} ({})", error_, error_id);
     if (session_) session_->disconnect();
 }
@@ -384,12 +447,12 @@ void LoginClient::send_request(std::uint16_t opcode, std::chrono::milliseconds t
                                const std::function<AppPacket(std::uint32_t)>& build) {
     // LoginServerAPI::SendRequest @0x100135f0: the counter goes up before every request, wrapping to 1.
     if (++sequence_ >= login_codec::kSequenceLimit) sequence_ = 1;
-    pending_.push_back({opcode, sequence_, Clock::now() + timeout});
+    pending_.push_back({opcode, sequence_, now() + timeout});
     session_->send(build(sequence_));
 }
 
 void LoginClient::send_list_request() {
-    last_list_request_ = Clock::now();
+    last_list_request_ = now();
     send_request(login_op::ServerListRequest, options_.list_timeout,
                  [](std::uint32_t seq) { return login_codec::server_list_request(seq); });
 }
@@ -397,12 +460,18 @@ void LoginClient::send_list_request() {
 // LoginServerAPI::OnTimeout: the canned replies of BuildTimeoutReplies.
 void LoginClient::on_timeout(const Pending& p) {
     switch (p.opcode) {
+    case login_op::SessionReady:
+        // Hailstone launcher policy: short-lived tickets must not leave an unresponsive sign-in pending forever.
+        // The original password path has no canned handshake-timeout reply and keeps its existing behaviour.
+        if (token_login_) return fail(login_error::Timeout);
+        break;
     case login_op::Login:
     case login_op::ServerListRequest: return fail(login_error::Timeout);
     case login_op::PlayEverquestRequest: return fail(login_error::JoinFailed);
     case login_op::KickPlayer: return fail(login_error::Timeout);
-    default: log::debug("login: request 0x{:04x} (sequence {}) timed out", p.opcode, p.sequence); return;
+    default: break;
     }
+    log::debug("login: request 0x{:04x} (sequence {}) timed out", p.opcode, p.sequence);
 }
 
 void LoginClient::update() {
@@ -416,7 +485,7 @@ void LoginClient::update() {
             send_request(login_op::SessionReady, options_.connect_timeout,
                          [](std::uint32_t seq) { return login_codec::session_ready(seq); });
             state_ = LoginState::Handshake;
-        } else if (session_->state() == SessionState::Disconnected || Clock::now() > connect_deadline_) {
+        } else if (session_->state() == SessionState::Disconnected || now() > connect_deadline_) {
             // OnConnectionTerminated in state 2: the next eqhost.txt host, or 6011 when none is left.
             log::debug("login: no session with {}:{}", hosts_[host_index_].host, hosts_[host_index_].port);
             session_.reset();
@@ -436,9 +505,9 @@ void LoginClient::update() {
                          state_ == LoginState::KickOffered || state_ == LoginState::Kicking;
         return fail(logged_in ? login_error::Terminated : login_error::NoConnection);
     }
-    auto now = Clock::now();
+    const auto current_time = now();
     for (std::size_t i = 0; i < pending_.size(); ++i) {
-        if (now <= pending_[i].deadline) continue;
+        if (current_time <= pending_[i].deadline) continue;
         Pending p = pending_[i];
         pending_.erase(pending_.begin() + static_cast<std::ptrdiff_t>(i));
         on_timeout(p);
@@ -449,7 +518,7 @@ void LoginClient::update() {
     bool listing = state_ == LoginState::RequestingList || state_ == LoginState::ServerList ||
                    state_ == LoginState::RequestingPlay || state_ == LoginState::KickOffered ||
                    state_ == LoginState::Kicking;
-    if (listing && now - last_list_request_ > options_.list_refresh) send_list_request();
+    if (listing && current_time - last_list_request_ > options_.list_refresh) send_list_request();
 }
 
 void LoginClient::handle(const AppPacket& packet) {
@@ -471,13 +540,13 @@ void LoginClient::handle(const AppPacket& packet) {
             if (state_ != LoginState::Handshake) break;
             auto reply = login_codec::parse_handshake_reply(packet.data);
             if (!reply.success) return fail(reply.error_id);
-            // SendStoredLogin: a password login, or a token login when a token is stored.
-            std::string user = user_, password = password_;
+            // Explicit token authentication sends empty user/password fields. A token failure never falls back
+            // to another credential type, and a launcher's one-use ticket is forgotten as soon as it is sent.
             send_request(login_op::Login, options_.login_timeout, [&](std::uint32_t s) {
-                return login_codec::login_request(s, user, password);
+                return token_login_ ? login_codec::token_login_request(s, token_)
+                                    : login_codec::login_request(s, user_, password_);
             });
-            core::wipe(password);
-            core::wipe(password_);
+            wipe_credentials();
             state_ = LoginState::Authenticating;
             break;
         }
@@ -581,6 +650,12 @@ void LoginClient::answer_kick(bool yes) {
 
 void LoginClient::close() {
     if (session_) session_->disconnect();
+    session_.reset();
+    pending_.clear();
+    wipe_credentials();
+    wipe_result();
+    token_login_ = false;
+    state_ = LoginState::Idle;
 }
 
 std::optional<WorldTicket> LoginClient::ticket() const {

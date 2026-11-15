@@ -24,6 +24,15 @@ TEST_CASE("frame generation: a frame is made only between two real frames in a r
     FrameGenState first = s; // the first frame since the pictures were made: nothing to start from
     first.previous_ready = false;
     CHECK_FALSE(frame_gen_ready(first));
+    FrameGenState snap = s; // the chase camera pushed in by a tree: the history goes on, no frame is made
+    snap.camera_steady = false;
+    CHECK_FALSE(frame_gen_ready(snap));
+    // Where none is made the real frame is shown twice, keeping the pace; with frame generation off, neither.
+    CHECK_FALSE(frame_gen_repeat(s));
+    CHECK(frame_gen_repeat(snap));
+    CHECK(frame_gen_repeat(cut));
+    CHECK(frame_gen_repeat(first));
+    CHECK_FALSE(frame_gen_repeat(off));
     CHECK(kFrameGenTime == doctest::Approx(0.5f));
 }
 

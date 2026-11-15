@@ -31,7 +31,59 @@ bool has_files(const std::optional<std::filesystem::path>& dir) {
 
 } // namespace
 
+void ClientApp::start_token_login(bool named_server, const std::filesystem::path& eqhost) {
+    const ServerProfile* named = nullptr;
+    if (named_server) {
+        const auto id = ui::selected_profile_id(login_view_);
+        for (const auto& p : login_view_.profiles)
+            if (p.id == id) named = &p;
+    }
+    const auto from_game = eqhost.empty() ? std::nullopt : profile_from_eqhost_file(eqhost);
+    // eqhost.txt only from a folder named for this run: a remembered one may be another server's.
+    ServerProfile profile = token_login_profile(opts_.server, named, from_game,
+                                                asset_source_ == AssetFolderSource::Override, login_view_.profiles,
+                                                opts_.auto_host, opts_.auto_port);
+    pre_launch_profile_id_ = ui::selected_profile_id(login_view_);
+    ui::begin_launcher_login_view(login_view_, profile);
+    launcher_view_ = true;
+    login_view_.busy = true;
+    login_view_.status = {"Signing in with launcher ticket...", false};
+    server_profile_ = std::move(profile);
+    token_login_active_ = true;
+    login_ = std::make_unique<net::LoginClient>();
+    login_->start_token(server_profile_.host, static_cast<std::uint16_t>(server_profile_.port),
+                         opts_.login_launch.ticket);
+    core::wipe(opts_.login_launch.ticket);
+    auto_play_sent_ = false;
+}
+
+void ClientApp::start_session_login() {
+    ServerProfile profile = ui::profile_from_view(login_view_);
+    if (login_view_.selected < 0) profile.id.clear(); // a ticket's unsaved server (end_launcher_login_view): no id yet
+    LoginLaunch renewed;
+    if (!login_token_session_.take(profile.host, profile.port, renewed.ticket)) {
+        login_view_.status = {"This server has no session token. Sign in again.", true};
+        return;
+    }
+    token_login_active_ = true;
+    login_view_.credentials = nullptr;
+    login_view_.username.clear();
+    core::wipe(login_view_.password);
+    login_view_.save_password = false;
+    login_view_.busy = true;
+    login_view_.status = {"Signing in with session...", false};
+    login_ = std::make_unique<net::LoginClient>();
+    login_->start_token(profile.host, static_cast<std::uint16_t>(profile.port), renewed.ticket);
+    apply_server_profile(profile);
+    use_ui_pack(profile.ui);
+    auto_play_sent_ = false;
+}
+
 void ClientApp::start_login() {
+    // This is a new, explicit interactive login; a launcher credential is never reused here.
+    token_login_active_ = false;
+    login_token_session_.clear(); // an explicit account/password login replaces any previous session identity
+    if (opts_.auto_user.empty()) login_view_.credentials = &platform::system_credentials();
     login_view_.status = {"Connecting...", false};
     ServerProfile profile = ui::profile_from_view(login_view_);
     // Test auto-logins (--user) must not overwrite the player's saved servers, nor a box set's other windows
@@ -141,7 +193,7 @@ void ClientApp::reload_saved_accounts() {
 }
 
 void ClientApp::note_listed_characters() {
-    if (server_profile_.id.empty() || !opts_.auto_user.empty() || login_view_.username.empty()) return;
+    if (token_login_active_ || server_profile_.id.empty() || !opts_.auto_user.empty() || login_view_.username.empty()) return;
     std::vector<SavedCharacter> list;
     std::string signature = char_view_.server_name;
     for (const auto& c : char_view_.characters) {
@@ -157,7 +209,7 @@ void ClientApp::note_listed_characters() {
 
 void ClientApp::note_entered_character(const std::string& name) {
     // A test login's server is not saved; the account is the one this login used.
-    if (server_profile_.id.empty() || !opts_.auto_user.empty() || login_view_.username.empty()) return;
+    if (token_login_active_ || server_profile_.id.empty() || !opts_.auto_user.empty() || login_view_.username.empty()) return;
     if (note_account_character(server_profile_.id, login_view_.username, char_view_.server_name, name,
                                login_view_.servers_dir))
         reload_saved_accounts();
@@ -165,6 +217,9 @@ void ClientApp::note_entered_character(const std::string& name) {
 
 void ClientApp::login_action(ui::LoginAction action) {
     switch (action) {
+    case ui::LoginAction::ResumeToken:
+        if (!login_view_.busy) start_session_login();
+        break;
     case ui::LoginAction::LoginBox:
         start_box_login();
         break;
@@ -387,6 +442,10 @@ void ClientApp::reload_server_files(bool at_login) {
 }
 
 void ClientApp::back_to_login(std::string message, bool is_error) {
+    const bool was_token = token_login_active_;
+    token_login_active_ = false;
+    core::wipe(opts_.login_launch.ticket);
+    if (is_error) login_token_session_.clear();
     link_death_since_.reset();
     if (eq_api_) eq_api_->save_layout();
     // Hailstone: the chat's lines to the character's history (a link death, a camp to the server list, a lost
@@ -417,7 +476,27 @@ void ClientApp::back_to_login(std::string message, bool is_error) {
     box_character_.clear();
     login_view_.quick_selected = std::max(login_view_.quick_selected, ui::default_quick_character(login_view_));
     // A saved password is in the fields again (the next login needs no typing).
-    ui::pick_account(login_view_, login_view_.username);
+    if (was_token) {
+        opts_.login_launch.world.clear();
+        opts_.login_launch.token_requested = false;
+        opts_.auto_character.clear();
+        login_view_.username.clear();
+        core::wipe(login_view_.password);
+        login_view_.credentials = &platform::system_credentials();
+        if (std::exchange(launcher_view_, false)) {
+            // The launcher's view (transient, remember off) gives way to the normal one, so that the server list
+            // works again and a password login saves the profile's own remember and save_password; its remembered
+            // account (with a saved password) is in the fields as after any return to the login screen.
+            const bool session = login_token_session_.available(server_profile_.host, server_profile_.port);
+            const std::string id = !server_profile_.id.empty() ? server_profile_.id
+                                   : session                  ? std::string()
+                                                              : pre_launch_profile_id_;
+            ui::end_launcher_login_view(login_view_, id, server_profile_.id.empty() && session ? &server_profile_ : nullptr);
+        }
+        message += login_token_session_.available(login_view_.host, login_view_.port)
+                       ? " Sign in with session to reconnect, or log in here."
+                       : " Sign in again from your launcher for a fresh ticket, or log in here.";
+    } else ui::pick_account(login_view_, login_view_.username);
     login_view_.status = {std::move(message), is_error};
     window_.set_mouse_captured(false);
 }
@@ -437,8 +516,12 @@ void ClientApp::update_login() {
     login_->update();
     switch (login_->state()) {
     case net::LoginState::LoggedIn:
+        // The issuer may rotate a token for the next explicit login. It is bound to this endpoint, consumed once,
+        // and never confused with the original one-use launcher ticket (which was already wiped).
+        login_token_session_.remember(server_profile_.host, server_profile_.port, login_->login_result().token);
         // The server took the password: now it is kept, when the account saves it (a box window's already is).
-        if (opts_.auto_user.empty() && opts_.account.empty()) ui::save_login_password(login_view_);
+        if (!token_login_active_ && opts_.auto_user.empty() && opts_.account.empty())
+            ui::save_login_password(login_view_);
         // And it leaves the fields: nothing needs it again (a saved one comes back from the keyring on the login
         // screen, return_to_login), and a crash dump or bug report from in game must not hold it.
         core::wipe(login_view_.password);
@@ -461,18 +544,25 @@ void ClientApp::update_login() {
         screen_ = Screen::Servers;
         // A test login plays the first world at once (HAILSTONE_SERVER_SELECT=1 keeps the server select up: testing); a
         // box login the world played last on this server (the server select's quick connect), else the first.
-        if ((!opts_.auto_user.empty() || box_play_) && !auto_play_sent_ && !servers_.empty() &&
+        if ((!opts_.auto_user.empty() || box_play_ || (token_login_active_ && !opts_.login_launch.world.empty())) &&
+            !auto_play_sent_ && !servers_.empty() &&
             !hailstone::core::env("SERVER_SELECT")) {
             auto_play_sent_ = true;
-            server_view_.busy = true;
             const net::ServerInfo* world = &servers_.front();
-            if (box_play_) {
+            if (!opts_.login_launch.world.empty()) {
+                world = launcher_world(servers_, opts_.login_launch.world);
+                if (!world) {
+                    server_view_.status = {"The launcher's world was not found uniquely. Choose a world.", true};
+                    break;
+                }
+            } else if (box_play_) {
                 // The account's world (the character's), else the world played last on this server.
                 std::string last = !box_world_.empty() ? box_world_
                                                        : config_.get_string("login.last_world." + server_profile_.id);
                 for (const auto& s : servers_)
                     if (!last.empty() && (s.name == last || saved_character_key_part(s.name) == last)) world = &s;
             }
+            server_view_.busy = true;
             login_->request_play(world->id);
         }
         break;
@@ -511,7 +601,7 @@ void ClientApp::update_login() {
 void ClientApp::take_server_list() {
     servers_listed_serial_ = login_->servers_serial();
     servers_ = login_->servers();
-    if (!server_profile_.id.empty() && opts_.auto_user.empty() && opts_.account.empty()) {
+    if (!token_login_active_ && !server_profile_.id.empty() && opts_.auto_user.empty() && opts_.account.empty()) {
         // The worlds for the login screen's account World lists (written only when they changed).
         std::vector<std::string> names;
         for (const auto& s : servers_) names.push_back(s.name);

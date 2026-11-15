@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
@@ -92,6 +93,31 @@ TEST_CASE("login requests, byte for byte (eqmain.dll's CSHandshake, CSPlayerLogi
     auto play = login_codec::play_request(5, 2);
     CHECK(play.opcode == login_op::PlayEverquestRequest);
     CHECK(play.data == hex("05000000" "00" "00" "00000000" "02000000")); // + opcode: 16 bytes
+}
+
+TEST_CASE("token login rejects invalid tickets and preserves the whole bounded opaque ticket") {
+    CHECK_FALSE(login_codec::valid_login_token(""));
+    CHECK_FALSE(login_codec::valid_login_token(std::string("one\0two", 7)));
+    CHECK_FALSE(login_codec::valid_login_token(std::string(login_codec::kMaxLoginTokenBytes + 1, 'x')));
+    CHECK_THROWS_AS(login_codec::token_login_request(3, ""), std::runtime_error);
+    CHECK_THROWS_AS(login_codec::token_login_request(3, std::string("one\0two", 7)), std::runtime_error);
+    CHECK_THROWS_AS(login_codec::token_login_request(3, std::string(login_codec::kMaxLoginTokenBytes + 1, 'x')),
+                    std::runtime_error);
+
+    // The ticket is opaque: the client does not impose one issuer's alphabet or prefix.
+    std::string token(login_codec::kMaxLoginTokenBytes, 'x');
+    token.front() = '+';
+    token.back() = '=';
+    REQUIRE(login_codec::valid_login_token(token));
+    const auto packet = login_codec::token_login_request(3, token);
+    const auto plaintext = des::zero_cbc_decrypt(std::span(packet.data).subspan(10));
+    REQUIRE(plaintext);
+    ByteReader fields(*plaintext);
+    CHECK(fields.cstring().empty());
+    CHECK(fields.cstring().empty());
+    CHECK(fields.cstring() == token);
+    CHECK(fields.le<std::uint8_t>() == 1);
+    while (fields.remaining()) CHECK(fields.le<std::uint8_t>() == 0);
 }
 
 namespace {

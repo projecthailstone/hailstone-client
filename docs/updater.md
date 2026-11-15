@@ -168,6 +168,11 @@ The install waits while the box set's other windows run (they use the same files
   `failed.txt`, starts the old version and quits; the old version shows why (`note.txt`).
 - **A different version than the pending one** (the player put one in by hand) ends the pending state.
 
+A launcher's ticket launch (`/ticket:`, `--ticket`, `--ticket-env`; docs/protocol/login.md "Launcher tickets") skips
+`update_at_start`: its restart starts the other version without the command line, and a one-use ticket would be lost
+with it. The next start without a ticket does that work. The updater and the add-on manager otherwise run as on any
+player's run.
+
 ## Making a release
 
 1. Set the version (`project(VERSION)`, `HAILSTONE_VERSION_LABEL`) and build each platform's Release, with

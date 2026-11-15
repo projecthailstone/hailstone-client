@@ -125,13 +125,16 @@ std::vector<SectionAverages::Row> SectionAverages::rows() const {
 }
 
 FrameRates frame_rates(const std::vector<float>& ms, const std::vector<std::uint8_t>& presented) {
+FrameRates frame_rates(const std::vector<float>& ms, const std::vector<std::uint8_t>& presented,
+                       const std::vector<std::uint8_t>& generated) {
     FrameRates r;
     const float total = std::accumulate(ms.begin(), ms.end(), 0.0f);
     if (ms.empty() || total <= 0.0f || presented.size() != ms.size()) return r;
+    const bool told = generated.size() == ms.size();
     std::uint64_t images = 0, with_generated = 0;
-    for (std::uint8_t p : presented) {
-        images += p;
-        with_generated += p > 1 ? 1u : 0u;
+    for (std::size_t i = 0; i < presented.size(); ++i) {
+        images += presented[i];
+        with_generated += (told ? generated[i] != 0 : presented[i] > 1) ? 1u : 0u;
     }
     r.rendered_fps = 1000.0f * static_cast<float>(ms.size()) / total;
     r.displayed_fps = 1000.0f * static_cast<float>(images) / total;
@@ -155,12 +158,14 @@ void PerfUi::begin_frame() {
             phase_ms_[head_] = current_;
             sections_.add(std::move(sections), std::move(bytes));
             presented_[head_] = current_presented_;
+            generated_[head_] = current_generated_;
             head_ = (head_ + 1) % kFrames;
             count_ = std::min(count_ + 1, kFrames);
         }
     }
     current_.fill(0.0f);
     current_presented_ = 1;
+    current_generated_ = 0;
     frame_start_ = last_mark_ = now;
 }
 
@@ -220,14 +225,15 @@ void PerfUi::draw(const PerfInputs& in) {
 
     // The history in time order, oldest first.
     std::vector<float> ms(count_);
-    std::vector<std::uint8_t> presented(count_);
+    std::vector<std::uint8_t> presented(count_), generated(count_);
     for (std::size_t i = 0; i < count_; ++i) {
         ms[i] = frame_ms_[(head_ + kFrames - count_ + i) % kFrames];
         presented[i] = presented_[(head_ + kFrames - count_ + i) % kFrames];
+        generated[i] = generated_[(head_ + kFrames - count_ + i) % kFrames];
     }
     const std::optional<render::FrameGenStats> fg =
         in.gpu ? std::optional<render::FrameGenStats>(in.gpu->frame_gen_stats()) : std::nullopt;
-    const FrameRates rates = frame_rates(ms, presented);
+    const FrameRates rates = frame_rates(ms, presented, generated);
 
     if (!ms.empty()) {
         float sum = std::accumulate(ms.begin(), ms.end(), 0.0f);
@@ -285,7 +291,7 @@ void PerfUi::draw(const PerfInputs& in) {
             }
             row("  total", "%llu generated, %llu real frames", static_cast<unsigned long long>(fg->generated),
                 static_cast<unsigned long long>(fg->real));
-            row("  skipped", "%llu at cuts and resizes, %llu no free image",
+            row("  shown twice", "%llu at cuts and camera snaps; %llu skipped, no free image",
                 static_cast<unsigned long long>(fg->skipped_cut),
                 static_cast<unsigned long long>(fg->skipped_no_image));
             row("Pacing", "%s, %u images (min %u), %s", fg->present_mode, fg->images, fg->min_images,

@@ -803,6 +803,52 @@ TEST_CASE("UI packs: each draws the login, server select and character select sc
             CHECK(s.api.replaces("LoginScreen"));
             CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
             if (std::string(pack) == "modern") CHECK(ImGui::FindWindowByName("###modern.pregame.login.boxset") != nullptr);
+            // A returned ticket is an optional action, usable without a password, and hidden while busy.
+            lua_State* login_lua = s.lua.state();
+            REQUIRE(luaL_dostring(login_lua, R"lua(
+sessionButtons, clickSession = 0, false
+local button, invisible = ui.Button, ui.InvisibleButton
+ui.Button = function(label, ...)
+  local hit = button(label, ...)
+  if label == "Sign in with session" then
+    sessionButtons = sessionButtons + 1
+    return clickSession or hit
+  end
+  return hit
+end
+ui.InvisibleButton = function(id, ...)
+  local hit = invisible(id, ...)
+  if id == "##resume_token" then
+    sessionButtons = sessionButtons + 1
+    return clickSession or hit
+  end
+  return hit
+end
+)lua") == LUA_OK);
+            auto session_buttons = [&] {
+                lua_getglobal(login_lua, "sessionButtons");
+                const auto n = lua_tointeger(login_lua, -1);
+                lua_pop(login_lua, 1);
+                return n;
+            };
+            s.frames(2);
+            CHECK(session_buttons() == 0);
+            login.session_ticket_available = true;
+            REQUIRE(luaL_dostring(login_lua, "clickSession = true") == LUA_OK);
+            s.frames(2);
+            CHECK(session_buttons() > 0);
+            CHECK(s.host.login_action == static_cast<int>(ui::LoginAction::ResumeToken));
+            s.host.login_action.reset();
+            login.busy = true;
+            REQUIRE(luaL_dostring(login_lua, "sessionButtons = 0") == LUA_OK);
+            s.frames(2);
+            CHECK(session_buttons() == 0);
+            CHECK_FALSE(s.host.login_action);
+            login.busy = false;
+            login.session_ticket_available = false;
+            s.frames(2);
+            CHECK(session_buttons() == 0);
+            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
             // The updater's notice in each of its states (docs/updater.md).
             login.update.version = "9.0.0";
             login.update.current = "0.1.0-alpha";
