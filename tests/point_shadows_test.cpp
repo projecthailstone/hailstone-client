@@ -3,9 +3,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 #include "assets/model.h"
+#include "game/scene_light.h"
 #include "render/point_shadows.h"
 #include "render/scene_lighting.h"
 
@@ -120,6 +122,89 @@ TEST_CASE("point shadows: the scene lighting gets the built slots, their cubes, 
     // Far off, the shadow is faded out.
     shadows.apply(lighting, lights, glm::vec3(kPointShadowRange + 100.0f, 0, 0), 512);
     CHECK(lighting.point_shadow_params.x == 0.0f);
+}
+
+TEST_CASE("point shadows: apply marks the scene's lights with their fields and lists the zone lights' fields") {
+    std::vector<assets::PointLight> lights = {light_at({0, 0, 0}, 60), light_at({40, 0, 0}, 60)};
+    PointShadows shadows(2);
+    auto builds = shadows.update(lights, glm::vec3(0.0f), 0.016f);
+    shadows.mark_built(builds[0]);
+    shadows.update(lights, glm::vec3(0.0f), 1.0f);
+    shadows.mark_built(shadows.update(lights, glm::vec3(0.0f), 0.016f)[0]);
+    shadows.update(lights, glm::vec3(0.0f), 1.0f);
+    // The scene's list: another light, the second zone light as the list has it, and one a little off the first.
+    std::vector<game::LightSource> scene_lights(3);
+    scene_lights[0] = {{500, 0, 0}, {1, 1, 1}, 50};
+    scene_lights[1] = {{40, 0, 0}, {1, 0.7f, 0.4f}, 60};
+    scene_lights[2] = {{0, 0, 1}, {1, 0.7f, 0.4f}, 60}; // a unit away: not the first's
+    SceneLighting lighting = make_scene_lighting(game::SceneLight{}, scene_lights, 0, LightingMode::Modern);
+    lighting.lights[0].color.w = 5.0f; // a stale mark is cleared
+    shadows.apply(lighting, lights, glm::vec3(0.0f), 512);
+    REQUIRE(lighting.point_shadow_params.x == 2.0f);
+    // The fields in the slots' order, each its zone light's.
+    auto entries = shadows.entry_lights();
+    REQUIRE(entries.size() == 2);
+    for (std::size_t k = 0; k < entries.size(); ++k) {
+        REQUIRE(entries[k] >= 0);
+        CHECK(glm::vec3(lighting.point_shadow_light[k]) == lights[static_cast<std::size_t>(entries[k])].position);
+    }
+    const std::size_t second = entries[0] == 1 ? 0 : 1;
+    CHECK(lighting.lights[0].color.w == 0.0f);
+    CHECK(lighting.lights[1].color.w == static_cast<float>(second + 1));
+    CHECK(lighting.lights[2].color.w == 0.0f);
+    // Out of range: no fields, no marks.
+    shadows.apply(lighting, lights, glm::vec3(kPointShadowRange + 100.0f, 0, 0), 512);
+    CHECK(shadows.entry_lights().empty());
+    CHECK(lighting.lights[1].color.w == 0.0f);
+}
+
+TEST_CASE("shadow filter: four filtered taps give the 3 x 3 grid's result (shaders/lighting.glsl shadow_pcf)") {
+    // A map of depths, compared as the sampler does (LESS_OR_EQUAL; outside it, the border's 1: lit).
+    constexpr int kSize = 8;
+    float depth[kSize][kSize];
+    std::uint32_t seed = 12345u;
+    auto next = [&] {
+        seed = seed * 1664525u + 1013904223u;
+        return static_cast<float>(seed >> 8) / static_cast<float>(1u << 24);
+    };
+    for (auto& row : depth)
+        for (float& d : row) d = next();
+    const float ref = 0.5f;
+    auto lit = [&](int x, int y) {
+        if (x < 0 || y < 0 || x >= kSize || y >= kSize) return 1.0f;
+        return ref <= depth[y][x] ? 1.0f : 0.0f;
+    };
+    // One hardware-filtered comparison at texel coordinates (x, y): the four texels round it, weighted bilinearly.
+    auto tap = [&](float x, float y) {
+        const float tx = x - 0.5f, ty = y - 0.5f;
+        const float bx = std::floor(tx), by = std::floor(ty);
+        const float fx = tx - bx, fy = ty - by;
+        const int ix = static_cast<int>(bx), iy = static_cast<int>(by);
+        return (1 - fx) * (1 - fy) * lit(ix, iy) + fx * (1 - fy) * lit(ix + 1, iy) + (1 - fx) * fy * lit(ix, iy + 1) +
+               fx * fy * lit(ix + 1, iy + 1);
+    };
+    auto nine = [&](float x, float y) {
+        float sum = 0.0f;
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx) sum += tap(x + static_cast<float>(dx), y + static_cast<float>(dy));
+        return sum / 9.0f;
+    };
+    // shadow_pcf, in texel coordinates (its uv / inv_size).
+    auto four = [&](float x, float y) {
+        const glm::vec2 t(x - 0.5f, y - 0.5f);
+        const glm::vec2 base = glm::floor(t);
+        const glm::vec2 f = t - base;
+        const glm::vec2 wa = 2.0f - f, wb = 1.0f + f;
+        const glm::vec2 a = base - 0.5f + 1.0f / wa;
+        const glm::vec2 b = base + 1.5f + f / wb;
+        return (wa.x * wa.y * tap(a.x, a.y) + wb.x * wa.y * tap(b.x, a.y) + wa.x * wb.y * tap(a.x, b.y) +
+                wb.x * wb.y * tap(b.x, b.y)) /
+               9.0f;
+    };
+    for (int i = 0; i < 400; ++i) {
+        const float x = next() * static_cast<float>(kSize + 2) - 1.0f, y = next() * static_cast<float>(kSize + 2) - 1.0f;
+        CHECK(four(x, y) == doctest::Approx(nine(x, y)).epsilon(1e-5));
+    }
 }
 
 namespace {

@@ -157,7 +157,7 @@ std::vector<std::uint32_t> PointShadows::update(std::span<const assets::PointLig
 }
 
 void PointShadows::apply(SceneLighting& lighting, std::span<const assets::PointLight> lights, const glm::vec3& camera,
-                         std::uint32_t size) const {
+                         std::uint32_t size) {
     std::uint32_t n = 0;
     for (std::uint32_t i = 0; i < slots_.size(); ++i) {
         const Slot& s = slots_[i];
@@ -167,6 +167,7 @@ void PointShadows::apply(SceneLighting& lighting, std::span<const assets::PointL
         if (strength <= 0.0f) continue;
         lighting.point_shadow_light[n] = glm::vec4(l.position, l.radius);
         lighting.point_shadow_slot[n] = glm::vec4(static_cast<float>(cube_of(i) * kPointShadowFaces), strength, 0.0f, 0.0f);
+        entry_light_[n] = s.light;
         ++n;
     }
     for (std::uint32_t k = 0; k < dynamic_.size(); ++k) {
@@ -175,10 +176,26 @@ void PointShadows::apply(SceneLighting& lighting, std::span<const assets::PointL
         lighting.point_shadow_light[n] = glm::vec4(s.position, s.radius);
         lighting.point_shadow_slot[n] = glm::vec4(static_cast<float>(dynamic_cube(k) * kPointShadowFaces), s.strength,
                                                   0.0f, 0.0f);
+        entry_light_[n] = -1;
         ++n;
     }
+    entry_count_ = n;
     lighting.point_shadow_params = glm::vec4(static_cast<float>(n), size ? 1.0f / static_cast<float>(size) : 0.0f,
                                              kPointShadowFaceScale, kPointShadowNear);
+    // Each of the scene's lights with its field, the first that has its position and radius (the shaders' match
+    // before it moved here: within 0.1 unit, its radius within 0.01), so a pixel reads its shadow straight away.
+    const int count = std::clamp(static_cast<int>(lighting.params.y + 0.5f), 0, static_cast<int>(kMaxSceneLights));
+    for (int i = 0; i < count; ++i) {
+        GpuPointLight& l = lighting.lights[static_cast<std::size_t>(i)];
+        l.color.w = 0.0f;
+        for (std::uint32_t k = 0; k < n; ++k) {
+            const glm::vec3 d = glm::vec3(lighting.point_shadow_light[k]) - glm::vec3(l.position_radius);
+            if (glm::dot(d, d) <= 0.01f && std::abs(lighting.point_shadow_light[k].w - l.position_radius.w) <= 0.01f) {
+                l.color.w = static_cast<float>(k + 1);
+                break;
+            }
+        }
+    }
 }
 
 } // namespace hailstone::render

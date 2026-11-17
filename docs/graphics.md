@@ -1191,9 +1191,13 @@ The zone's lights, the light the player carries and the spells' cast shadows in 
   alpha-tested parts of those within reach and on the face's side over the cache (`render/point_shadow_pass.h`
   takes the object renderer beside the actor renderer). In a town that keeps most slots near doors live: a cube
   copy and a few small draws each a frame.
-- **Reading:** the zone, character and object shaders find a light among the shadowed ones by its position
-  (`point_shadow`): a normal offset growing as the surface turns from the light, then 3 x 3 hardware-filtered
-  comparisons. In the zone a blocked light loses its pool and its MPL share, and the baked vertex colour, which
+- **Reading:** each light carries its shadow's index among the shadowed ones (`GpuPointLight::color.w`, + 1; 0 for
+  none), so the zone, character and object shaders read it straight away (`point_shadow`) instead of searching the
+  shadowed lights for each light at each pixel. The match by position and radius is made on the CPU once a frame:
+  `PointShadows::apply` marks the scene's light list, and `ZoneRenderer::set_light_shadows` writes the marks of the
+  zone lights whose shadow changed into the light grid's buffer (`PointShadows::entry_lights`, a few bytes with
+  `vkCmdUpdateBuffer` before the scene). Then a normal offset growing as the surface turns from the light, and 3 x 3
+  hardware-filtered comparisons in four taps (`shadow_pcf`, below). In the zone a blocked light loses its pool and its MPL share, and the baked vertex colour, which
   counts every light with nothing in its way, gives back what the light would have added there
   (`game::point_light_term`'s weight), never below a third of it.
 
@@ -1201,7 +1205,7 @@ The zone's lights, the light the player carries and the spells' cast shadows in 
   (`render::dynamic_shadow_slots`: one for the carried light from 3 slots up, one for spells from 5, two from 7; so
   the default 8 leaves 5 for the zone's lights, and fewer slots all go to the zone). They are kept for them even when
   nothing shines, so a spell coming and going does not evict a zone light's cache. Each frame
-  `PointShadows::set_dynamic` takes them exactly as the scene's light list has them (the shaders match by position):
+  `PointShadows::set_dynamic` takes them exactly as the scene's light list has them (`apply` matches by position):
   the carried light at chest height, then the spells in range scored as the zone's lights are. They have no cache:
   their live cube is drawn whole every frame, the zone chunks in reach and the characters, so they cost the most (the
   zone's chunks in the light's sphere are found once a frame for its six faces, `ZoneRenderer::point_reach`, and each
@@ -1417,7 +1421,9 @@ transparent preview is resolved and unpremultiplied for ImGui. The world shader 
 - **Tinted baked light** (`baked_to_linear` in `shaders/lighting.glsl`): the zone's vertex colours, special ambient,
   MPL term and lights' colours were tinted by their builders on a display. Converted channel by channel they grow
   far more saturated in linear light (befallen's grey-blue walls went a vivid pure blue), so 70 % of the conversion
-  scales the colour by its grey's (the balance as it was seen) and 30 % converts it as is.
+  scales the colour by its grey's (the balance as it was seen) and 30 % converts it as is. The point lights' colours
+  are converted once on the CPU (`render::baked_to_linear`, the same formula) into `GpuPointLight::linear`, for the
+  scene's lights and the zone's light grid, so the per-pixel light loops do no `pow`s.
 - **Uncoloured meshes**: a zone mesh whose vertices are all the loader's opaque white (an EQG placement without
   lighting data) takes no baked light in the modern lighting: it is lit by the sky, the sun and the lights, as the
   doors are; its white had added a full display white, glaring beside the ground.
@@ -1447,7 +1453,12 @@ transparent preview is resolved and unpremultiplied for ImGui. The world shader 
   the scene) and `ObjectRenderer::draw_shadow` (the doors and ground objects `prepare` placed, opaque and
   alpha-tested parts, no culling; `shaders/object_shadow.*`);
   sampled with a 1.5-texel normal offset and 3 x 3 hardware-filtered comparisons, fading out over the last 15 %. The
-  sun term of the zone, character and object shaders is multiplied by it.
+  sun term of the zone, character and object shaders is multiplied by it. The 3 x 3 grid (the lights' cubes use it
+  too) takes four taps, not nine (`shadow_pcf` in `shaders/lighting.glsl`): along each axis the nine weigh the four
+  texels they cover (1 - f, 1, 1, f) / 3, which one filtered tap between texels -1 and 0 weighted 2 - f and one
+  between 1 and 2 weighted 1 + f give exactly; the products of the two axes' weights are the nine's 2-D weights.
+  `tests/point_shadows_test.cpp` checks the two agree. The hardware's sub-texel precision (8 bits on most GPUs)
+  rounds the taps' places, so an edge can differ from the nine taps by a step of that size.
 
 - **Ambient occlusion** (`shaders/ao.frag`, `shaders/ao_kernel.glsl`, `render/vk_context.h` AoView): after McGuire et al.'s scalable AO, on
   the resolved depth: view positions rebuilt from the reverse-Z projection terms, the normal from the nearer

@@ -84,7 +84,7 @@ void main() {
         for (int i = 0; i < count; ++i)
             light += point_light_modern(lighting.lights[i], v_world, sn, 0.0) *
                      point_shadow(point_map, lighting.point_shadow_light, lighting.point_shadow_slot,
-                                  lighting.point_shadow_params, lighting.lights[i].position_radius, v_world, n);
+                                  lighting.point_shadow_params, lighting.lights[i].color.w, v_world, n);
         vec3 surface = to_linear(tex.rgb) * max(light, vec3(lighting.params.w));
         if (pc.maps != 0u)
             surface += pack_specular(sn, normalize(lighting.camera.xyz - v_world), lighting.to_light.xyz,

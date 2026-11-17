@@ -42,6 +42,16 @@
 namespace hailstone::render {
 
 namespace {
+// The light grid's first buffer (prepare, zone.frag ZoneLights): this header (origin, 1 / cell; width, height, light
+// count), then the zone's lights as GpuPointLight.
+struct LightGridHeader {
+    glm::vec4 grid;
+    glm::uvec4 dims;
+};
+static_assert(sizeof(LightGridHeader) == 32 && sizeof(GpuPointLight) == 48);
+} // namespace
+
+namespace {
 // What a step of the zone's build leaves in memory, so a build that holds much more than its geometry can be read
 // (debug level). The time counts from the start of this build (Prepared::started).
 void mark(const char* phase, std::chrono::steady_clock::time_point start) {
@@ -447,6 +457,10 @@ void ZoneRenderer::upload(Prepared& p) {
                   textures_.size() - static_cast<std::size_t>(shared));
     }
     light_grid_buffers_[0] = upload.buffer(p.lights, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    light_shadow_marks_.assign(
+        p.lights.size() > sizeof(LightGridHeader) ? (p.lights.size() - sizeof(LightGridHeader)) / sizeof(GpuPointLight) : 0,
+        0.0f);
+    light_shadow_marked_.clear();
     light_grid_buffers_[1] = upload.buffer(p.grid_cells, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     light_grid_buffers_[2] = upload.buffer(p.grid_indices, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     vertex_buffer_ = upload.buffer_pieces(std::as_bytes(std::span(p.vertices)), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
@@ -1913,14 +1927,14 @@ ZoneRenderer::PreparedPtr ZoneRenderer::prepare(const assets::Zone& zone, const 
     // their light numbers. Each buffer holds at least one element, for a zone without lights.
     {
         LightGrid grid = build_light_grid(zone.lights);
-        struct Header { glm::vec4 grid; glm::uvec4 dims; };
         std::vector<std::byte>& lights = prep.lights;
-        lights.resize(sizeof(Header));
-        Header h{glm::vec4(grid.origin, 1.0f / grid.cell, 0.0f),
+        lights.resize(sizeof(LightGridHeader));
+        LightGridHeader h{glm::vec4(grid.origin, 1.0f / grid.cell, 0.0f),
                  glm::uvec4(grid.width, grid.height, static_cast<std::uint32_t>(zone.lights.size()), 0u)};
         std::memcpy(lights.data(), &h, sizeof(h));
         for (const auto& l : zone.lights) {
-            GpuPointLight g{glm::vec4(l.position, l.radius), glm::vec4(l.color, 0.0f)};
+            GpuPointLight g{glm::vec4(l.position, l.radius), glm::vec4(l.color, 0.0f),
+                            glm::vec4(baked_to_linear(l.color), 0.0f)};
             const auto* b = reinterpret_cast<const std::byte*>(&g);
             lights.insert(lights.end(), b, b + sizeof(g));
         }
@@ -2655,6 +2669,69 @@ void ZoneRenderer::draw_shadow(const FrameInfo& frame, std::uint32_t cascade) {
                                &pc);
         }, LodPick{min_level, false});
     }
+}
+
+void ZoneRenderer::set_light_shadows(const FrameInfo& frame, std::span<const int> entry_lights) {
+    const Buffer& buffer = light_grid_buffers_[0];
+    if (!buffer.buffer || light_shadow_marks_.empty()) return;
+    // The lights to look at: those marked now (they may lose or change their mark) and the fields' (they may gain it).
+    std::array<std::uint32_t, kMaxPointShadows * 2> look{};
+    std::size_t look_count = 0;
+    auto add = [&](std::uint32_t light) {
+        if (light >= light_shadow_marks_.size() || look_count == look.size()) return;
+        for (std::size_t i = 0; i < look_count; ++i)
+            if (look[i] == light) return;
+        look[look_count++] = light;
+    };
+    for (std::uint32_t light : light_shadow_marked_) add(light);
+    for (int light : entry_lights)
+        if (light >= 0) add(static_cast<std::uint32_t>(light));
+    // A light's mark: the first field that is it, its index + 1; else 0.
+    struct Mark { std::uint32_t light; float value; };
+    std::array<Mark, kMaxPointShadows * 2> changes{};
+    std::size_t change_count = 0;
+    light_shadow_marked_.clear();
+    for (std::size_t i = 0; i < look_count; ++i) {
+        const std::uint32_t light = look[i];
+        float value = 0.0f;
+        for (std::size_t k = 0; k < entry_lights.size(); ++k)
+            if (entry_lights[k] == static_cast<int>(light)) {
+                value = static_cast<float>(k + 1);
+                break;
+            }
+        if (value != 0.0f) light_shadow_marked_.push_back(light);
+        if (value != light_shadow_marks_[light]) changes[change_count++] = {light, value};
+    }
+    if (change_count == 0) return;
+
+    VkCommandBuffer cmd = frame.cmd;
+    // The frames before read the buffer in their fragment shaders: they finish before it is written.
+    VkBufferMemoryBarrier2 b{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+    b.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    b.srcAccessMask = 0;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    b.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.buffer = buffer.buffer;
+    b.offset = 0;
+    b.size = VK_WHOLE_SIZE;
+    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep.bufferMemoryBarrierCount = 1;
+    dep.pBufferMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cmd, &dep);
+    for (std::size_t i = 0; i < change_count; ++i) {
+        const Mark& m = changes[i];
+        const VkDeviceSize at = sizeof(LightGridHeader) + VkDeviceSize{m.light} * sizeof(GpuPointLight) +
+                                offsetof(GpuPointLight, color) + 3 * sizeof(float);
+        vkCmdUpdateBuffer(cmd, buffer.buffer, at, sizeof(float), &m.value);
+        light_shadow_marks_[m.light] = m.value;
+    }
+    // Then this frame's scene reads the marks.
+    b.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    b.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+    vkCmdPipelineBarrier2(cmd, &dep);
 }
 
 void ZoneRenderer::point_reach(const glm::vec3& light, float radius, PointReach& out) const {

@@ -197,7 +197,7 @@ void main() {
         for (int i = 0; i < count; ++i)
             light += point_light_modern(lighting.lights[i], v_world, sn, 0.4) *
                      point_shadow(point_map, lighting.point_shadow_light, lighting.point_shadow_slot,
-                                  lighting.point_shadow_params, lighting.lights[i].position_radius, v_world, n);
+                                  lighting.point_shadow_params, lighting.lights[i].color.w, v_world, n);
         light = max(light, vec3(lighting.params.w));
         vec3 shaded = to_linear(base) * light;
         if (lava) {

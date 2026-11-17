@@ -10,8 +10,11 @@
 //
 // The lights that move (the one the player carries, the spells' brightest) have slots of their own, kept out of the
 // zone lights' share (dynamic_shadow_slots). They have no cache: each frame their live cube is drawn whole, the zone
-// round them and the characters, but the bodies they sit inside (set_dynamic). The shaders find them, as every
-// shadowed light, by position, so set_dynamic takes them exactly as the scene's light list has them.
+// round them and the characters, but the bodies they sit inside (set_dynamic). A light is matched with its shadow, as
+// every shadowed light, by position and radius, so set_dynamic takes them exactly as the scene's light list has them.
+// The match is made on the CPU (apply), not per pixel: each light carries its shadow's index in
+// GpuPointLight::color.w, the scene's lights from apply, the zone's from ZoneRenderer::set_light_shadows with
+// entry_lights.
 //
 // A face is this client's mapping, the same in the shaders that draw and read it (shaders/lighting.glsl
 // point_shadow_face): faces 0..5 look along +x, -x, +y, -y, +z, -z; the face's two other axes, in order, divided by
@@ -126,15 +129,22 @@ public:
     std::uint32_t dynamic_cube(std::uint32_t k) const { return total_ + slot_count() + k; }
 
     // Fills SceneLighting's point shadow fields (`size` texels per face side) from the built slots and the used
-    // moving ones, fading each out over the last quarter of kPointShadowRange from `camera`.
+    // moving ones, fading each out over the last quarter of kPointShadowRange from `camera`, and marks each of the
+    // scene's lights (SceneLighting::lights, make_scene_lighting's) with its field (GpuPointLight::color.w: the
+    // field's index + 1 where the field's light has its position and radius, else 0). Records entry_lights.
     void apply(SceneLighting& lighting, std::span<const assets::PointLight> lights, const glm::vec3& camera,
-               std::uint32_t size) const;
+               std::uint32_t size);
+    // The zone light (its number in apply's `lights`) each of the last apply's point shadow fields is, in order;
+    // -1 for a moving light's.
+    std::span<const int> entry_lights() const { return {entry_light_.data(), entry_count_}; }
 
 private:
     std::vector<Slot> slots_;
     std::vector<DynamicSlot> dynamic_; // DynamicShadowSlots::carried first, then the spells'
     std::uint32_t carried_slots_ = 0;
     std::uint32_t total_ = 0;
+    std::array<int, kMaxPointShadows> entry_light_{};
+    std::size_t entry_count_ = 0;
 };
 
 } // namespace hailstone::render

@@ -140,12 +140,12 @@ void zone_point_lights(vec3 p, vec3 n, float wrap, out vec3 display, out vec3 po
         if (falloff <= 0.0) continue;
         float facing = clamp((dot(n, d * inversesqrt(max(d2, 1e-6))) + wrap) / (1.0 + wrap), 0.0, 1.0);
         float shadow = point_shadow(point_map, scene.point_shadow_light, scene.point_shadow_slot,
-                                    scene.point_shadow_params, l.position_radius, v_rest, n);
+                                    scene.point_shadow_params, l.color.w, v_rest, n);
         float f = flicker(index, l.color.rgb) * shadow;
         counted += l.color.rgb * facing * falloff;
         blocked += l.color.rgb * facing * falloff * (1.0 - shadow);
         display += min(l.color.rgb * 0.25 * facing * falloff * f, vec3(0.5));
-        pools += baked_to_linear(l.color.rgb) * 3.0 * facing * light_pool(d2, r) * f;
+        pools += l.linear.rgb * 3.0 * facing * light_pool(d2, r) * f;
     }
 }
 
@@ -193,7 +193,7 @@ vec3 modern_light(vec3 n, vec3 sn, bool foliage) {
     for (int i = 0; i < count; ++i)
         light += point_light_modern(scene.lights[i], v_world, sn, foliage ? 0.5 : 0.0) *
                  point_shadow(point_map, scene.point_shadow_light, scene.point_shadow_slot, scene.point_shadow_params,
-                              scene.lights[i].position_radius, v_rest, n);
+                              scene.lights[i].color.w, v_rest, n);
     return light;
 }
 

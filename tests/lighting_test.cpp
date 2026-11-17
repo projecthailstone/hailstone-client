@@ -368,9 +368,9 @@ TEST_CASE("particle lights: the glowing emitters, merged when close, by their ti
 }
 
 TEST_CASE("make_scene_lighting: the shader block; classic carries no lights") {
-    static_assert(sizeof(render::GpuPointLight) == 32);
+    static_assert(sizeof(render::GpuPointLight) == 48);
     static_assert(sizeof(render::SceneLighting) ==
-                  30 * 16 + 4 * 64 + (2 * render::kMaxPointShadows + 1) * 16 + render::kMaxSceneLights * 32);
+                  30 * 16 + 4 * 64 + (2 * render::kMaxPointShadows + 1) * 16 + render::kMaxSceneLights * 48);
     game::SceneLight scene;
     scene.ambient = {0.1f, 0.2f, 0.3f};
     scene.directional = {0.5f, 0.5f, 0.5f};
@@ -393,10 +393,32 @@ TEST_CASE("make_scene_lighting: the shader block; classic carries no lights") {
     CHECK(modern.params.y == static_cast<float>(render::kMaxSceneLights)); // cut to the cap
     CHECK(modern.params.z == 1.0f);
     CHECK(modern.lights[31].position_radius == glm::vec4(1, 2, 3, 30));
-    CHECK(modern.lights[31].color == glm::vec4(0.5f, 0.25f, 1, 0));
+    CHECK(modern.lights[31].color == glm::vec4(0.5f, 0.25f, 1, 0)); // w: no shadow until PointShadows::apply
+    // The colour in linear, worked out once for the shaders (shaders/lighting.glsl point_light_modern).
+    const glm::vec3 linear = render::baked_to_linear({0.5f, 0.25f, 1.0f});
+    CHECK(modern.lights[31].linear == glm::vec4(linear, 0.0f));
     auto few = render::make_scene_lighting(scene, std::span(lights).first(2), 5, render::LightingMode::Modern);
     CHECK(few.params.y == 2.0f);
     CHECK(few.params.z == 2.0f); // no more dynamic lights than lights
+}
+
+TEST_CASE("baked_to_linear: a grey converts as sRGB does, a tint keeps more of its balance than channel by channel") {
+    auto srgb = [](float v) { return v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f); };
+    const glm::vec3 grey = render::baked_to_linear(glm::vec3(0.5f));
+    CHECK(grey.r == doctest::Approx(srgb(0.5f)));
+    CHECK(grey.g == doctest::Approx(srgb(0.5f)));
+    CHECK(grey.b == doctest::Approx(srgb(0.5f)));
+    CHECK(render::baked_to_linear(glm::vec3(0.0f)) == glm::vec3(0.0f));
+    CHECK(render::baked_to_linear(glm::vec3(-1.0f, 0.0f, 0.0f)) == glm::vec3(0.0f)); // negatives clamp
+    // befallen's grey-blue (60, 60, 140): 30 % channel by channel, 70 % the whole colour scaled by its grey's.
+    const glm::vec3 c = glm::vec3(60.0f, 60.0f, 140.0f) / 255.0f;
+    const float y = 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b;
+    const glm::vec3 each(srgb(c.r), srgb(c.g), srgb(c.b));
+    const glm::vec3 want = glm::mix(each, c * (srgb(y) / y), 0.7f);
+    const glm::vec3 got = render::baked_to_linear(c);
+    CHECK(got.r == doctest::Approx(want.r));
+    CHECK(got.b == doctest::Approx(want.b));
+    CHECK(got.b / got.r < each.b / each.r); // less saturated than the plain conversion
 }
 
 TEST_CASE("lighting modes by name: enhanced is the old name of modern") {

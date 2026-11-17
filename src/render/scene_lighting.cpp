@@ -26,7 +26,21 @@ float smoothstep(float e0, float e1, float x) {
     return t * t * (3.0f - 2.0f * t);
 }
 
+// shaders/lighting.glsl to_linear, one channel.
+float srgb_to_linear(float v) {
+    v = std::max(v, 0.0f);
+    return v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f);
+}
+
 } // namespace
+
+glm::vec3 baked_to_linear(const glm::vec3& display) {
+    const glm::vec3 c = glm::max(display, glm::vec3(0.0f));
+    const float y = glm::dot(c, glm::vec3(0.2126f, 0.7152f, 0.0722f));
+    const glm::vec3 kept = c * (srgb_to_linear(y) / std::max(y, 1e-4f));
+    const glm::vec3 each(srgb_to_linear(c.r), srgb_to_linear(c.g), srgb_to_linear(c.b));
+    return glm::mix(each, kept, 0.7f);
+}
 
 namespace {
 
@@ -159,6 +173,7 @@ SceneLighting make_scene_lighting(const game::SceneLight& scene, std::span<const
     for (std::size_t i = 0; i < n; ++i) {
         out.lights[i].position_radius = glm::vec4(lights[i].position, lights[i].radius);
         out.lights[i].color = glm::vec4(lights[i].color, 0.0f);
+        out.lights[i].linear = glm::vec4(baked_to_linear(lights[i].color), 0.0f);
     }
     out.params = glm::vec4(modern ? 1.0f : 0.0f, static_cast<float>(n), static_cast<float>(std::min(dynamic, n)), 0.0f);
     out.to_light = glm::vec4(daylight.to_light, 0.0f);

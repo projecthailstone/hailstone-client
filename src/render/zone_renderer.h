@@ -252,6 +252,11 @@ public:
     };
     void point_reach(const glm::vec3& light, float radius, PointReach& out) const;
     void draw_point_shadow(const FrameInfo& frame, const PointReach& reach, std::uint32_t face);
+    // Marks the zone's lights with their shadows for zone.frag (GpuPointLight::color.w in the light grid's buffer):
+    // `entry_lights` is PointShadows::entry_lights, the zone light each SceneLighting point shadow field belongs to.
+    // Only the lights whose mark changed are written, into the buffer itself in `frame`'s commands (outside any
+    // rendering, before the scene reads it); the frames before keep reading theirs, as the queue runs in order.
+    void set_light_shadows(const FrameInfo& frame, std::span<const int> entry_lights);
     // Whether the zone has water surfaces (the water map is worth drawing).
     bool has_water() const;
     // The zone's animation clock (assets/object_animation.h), ms since the zone was loaded: the objects that play their
@@ -455,6 +460,9 @@ private:
     // The zone's lights for the modern lighting's per-pixel pass (render/light_grid.h): the lights with the grid's
     // header, the cells, the cells' light numbers (zone.frag's set 1, bindings 1 to 3).
     std::array<Buffer, 3> light_grid_buffers_{};
+    // set_light_shadows: each zone light's mark as the buffer holds it (0 none), and the lights marked now.
+    std::vector<float> light_shadow_marks_;
+    std::vector<std::uint32_t> light_shadow_marked_;
     Buffer vertex_buffer_;
     Buffer instance_buffer_; // GpuInstance: the identity, then the instanced models' placements
     // The animated objects' moving nodes (assets/object_animation.h). Motion k (>= 1) is node motions_[k - 1].node of

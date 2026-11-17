@@ -39,6 +39,8 @@ std::vector<std::uint32_t> plan_point_shadows(PointShadows& shadows, const VkCon
 void draw_point_shadows(VkContext& vk, const FrameInfo& frame, PointShadows& shadows,
                         std::span<const assets::PointLight> lights, std::span<const std::uint32_t> builds,
                         ZoneRenderer& zone, ActorRenderer* actors, ObjectRenderer* objects) {
+    // The zone's lights learn which of this frame's shadows is theirs (plan_point_shadows's apply), before the scene.
+    zone.set_light_shadows(frame, shadows.entry_lights());
     ZoneRenderer::PointReach reach; // a light's chunks in reach, found once for its six faces
     for (std::uint32_t slot : builds) {
         const auto& l = lights[static_cast<std::size_t>(shadows.slots()[slot].light)];

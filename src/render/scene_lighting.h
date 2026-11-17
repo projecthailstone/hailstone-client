@@ -87,10 +87,19 @@ glm::vec3 cloud_light(const Daylight& daylight);
 
 inline constexpr std::size_t kMaxSceneLights = 32;
 
+// shaders/lighting.glsl PointLightGpu: the scene's lights (SceneLighting::lights) and the zone's light grid
+// (ZoneRenderer, zone.frag's ZoneLights).
 struct GpuPointLight {
     glm::vec4 position_radius{0.0f}; // xyz world position, w radius
+    // Display values; w: the light's shadow among SceneLighting's point shadow fields, its index + 1, 0 none
+    // (PointShadows::apply for the scene's lights, ZoneRenderer::set_light_shadows for the zone's).
     glm::vec4 color{0.0f};
+    glm::vec4 linear{0.0f}; // baked_to_linear(color), so the shaders need not work it out per pixel
 };
+
+// The zones' baked light to linear, as shaders/lighting.glsl baked_to_linear: most of the conversion scales the
+// colour as a whole by its grey's, keeping a tint's balance as its builders saw it, a share channel by channel.
+glm::vec3 baked_to_linear(const glm::vec3& display);
 
 // std140 and std430 lay this out the same (vec4s and mat4s only); shaders/lighting.glsl SCENE_LIGHTING_FIELDS.
 struct SceneLighting {

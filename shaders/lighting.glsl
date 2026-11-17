@@ -3,7 +3,8 @@
 
 struct PointLightGpu {
     vec4 position_radius; // xyz world position, w radius
-    vec4 color;
+    vec4 color;  // display values; w: its shadow among the point shadow fields, its index + 1 (0 none; point_shadow)
+    vec4 linear; // baked_to_linear(color), worked out once on the CPU (render::baked_to_linear), for the modern lighting
 };
 
 // render/scene_lighting.h SceneLighting, as a block's members (the zone's Scene uniform block, the actor and object
@@ -187,12 +188,33 @@ vec3 point_light_modern(PointLightGpu l, vec3 p, vec3 n, float wrap) {
     if (dist2 >= r * r) return vec3(0.0);
     float ndl = dot(n, d * inversesqrt(max(dist2, 1e-6)));
     float lambert = clamp((ndl + wrap) / (1.0 + wrap), 0.0, 1.0);
-    return baked_to_linear(l.color.rgb) * 2.5 * lambert * light_pool(dist2, r);
+    return l.linear.rgb * 2.5 * lambert * light_pool(dist2, r);
+}
+
+// A 3 x 3 grid of hardware-filtered (2 x 2) comparisons a texel apart round `uv` in layer `layer` of `map`, against
+// depth `ref`, in four taps. Along each axis the grid weighs the four texels it covers (1 - f, 1, 1, f) / 3, f the
+// point's place between texel centres; one filtered tap between texels -1 and 0, weighted 2 - f, and one between 1
+// and 2, weighted 1 + f, give exactly those, so the four (their products) are the nine's result. `inv_size` is
+// 1 / the map's size in texels.
+float shadow_pcf(sampler2DArrayShadow map, vec2 uv, float layer, float ref, float inv_size) {
+    vec2 t = uv / inv_size - 0.5;
+    vec2 base = floor(t);
+    vec2 f = t - base;
+    vec2 wa = 2.0 - f, wb = 1.0 + f;
+    // Texel i's centre is at i + 0.5: tap a sits 1 / (2 - f) of the way from texel base - 1's to texel base's, tap b
+    // f / (1 + f) of the way from texel base + 1's to texel base + 2's.
+    vec2 a = (base - 0.5 + 1.0 / wa) * inv_size;
+    vec2 b = (base + 1.5 + f / wb) * inv_size;
+    float sum = wa.x * wa.y * texture(map, vec4(a.x, a.y, layer, ref)) +
+                wb.x * wa.y * texture(map, vec4(b.x, a.y, layer, ref)) +
+                wa.x * wb.y * texture(map, vec4(a.x, b.y, layer, ref)) +
+                wb.x * wb.y * texture(map, vec4(b.x, b.y, layer, ref));
+    return sum / 9.0;
 }
 
 // The sun's or moon's shadow at world point `p` (render/shadows.h; the SceneLighting shadow fields): 1 lit, 0 in
 // shadow. The point moves 1.5 texels along the normal `n` first, against acne; a 3 x 3 grid of hardware-filtered
-// comparisons softens the edge; the shadow fades out over the last 15 % of the shadow distance.
+// comparisons softens the edge (shadow_pcf); the shadow fades out over the last 15 % of the shadow distance.
 float shadow_visibility(sampler2DArrayShadow map, mat4 view_proj[4], vec4 splits, vec4 texel, vec4 params,
                         vec4 origin, vec4 forward, vec3 p, vec3 n) {
     if (params.x < 0.5) return 1.0;
@@ -202,10 +224,7 @@ float shadow_visibility(sampler2DArrayShadow map, mat4 view_proj[4], vec4 splits
     vec4 s = view_proj[c] * vec4(p + n * (texel[c] * 1.5), 1.0);
     vec3 q = s.xyz / s.w;
     vec2 uv = q.xy * 0.5 + 0.5;
-    float sum = 0.0;
-    for (int y = -1; y <= 1; ++y)
-        for (int x = -1; x <= 1; ++x) sum += texture(map, vec4(uv + vec2(x, y) * params.y, float(c), q.z));
-    return mix(sum / 9.0, 1.0, smoothstep(splits.w * 0.85, splits.w, depth));
+    return mix(shadow_pcf(map, uv, float(c), q.z, params.y), 1.0, smoothstep(splits.w * 0.85, splits.w, depth));
 }
 
 // The zone lights' shadows (render/point_shadows.h). The face a direction `d` from the light falls on (0..5: +x,
@@ -234,35 +253,30 @@ vec4 point_shadow_clip(vec3 d, uint face, float scale, float radius) {
     return vec4(xy * scale, (along - kNear) * radius / max(radius - kNear, 1e-3), along);
 }
 
-// How much of the light `light` (its position and radius) reaches world point `p` (normal `n`) past what stands
-// between: 1 lit, 0 in shadow; 1 for a light without a shadow (not among the SceneLighting point shadow fields, which
-// match on both, so two lights in one spot do not share a cube). The point moves 1.5
-// texels along the normal, towards the light's side, first; a 3 x 3 grid of hardware-filtered comparisons softens
-// the edge. The slot's strength fades the shadow in and out.
-float point_shadow(sampler2DArrayShadow map, vec4 lights[8], vec4 slots[8], vec4 params, vec4 light, vec3 p, vec3 n) {
-    int count = int(params.x + 0.5);
-    for (int i = 0; i < count; ++i) {
-        vec3 dl = lights[i].xyz - light.xyz;
-        if (dot(dl, dl) > 0.01 || abs(lights[i].w - light.w) > 0.01) continue;
-        vec3 d = p - light.xyz;
-        float dist = length(d);
-        // A texel's world size there: the face spans twice the distance along its axis.
-        float texel = 2.0 * dist * params.y / params.z;
-        // Further along the normal the more the surface turns from the light (where acne starts).
-        float facing = abs(dot(n, d)) / max(dist, 1e-4);
-        vec3 q = d + n * (dot(n, d) <= 0.0 ? 1.0 : -1.0) * texel * (1.5 + 2.5 * (1.0 - facing));
-        vec2 ndc;
-        uint face = point_shadow_face(q, params.z, ndc);
-        float ref = (length(q) - texel * 1.5) / lights[i].w;
-        if (ref >= 1.0) return 1.0; // past the cube's reach it holds nothing
-        vec2 uv = ndc * 0.5 + 0.5;
-        float layer = slots[i].x + float(face);
-        float sum = 0.0;
-        for (int y = -1; y <= 1; ++y)
-            for (int x = -1; x <= 1; ++x) sum += texture(map, vec4(uv + vec2(x, y) * params.y, layer, ref));
-        return mix(1.0, sum / 9.0, slots[i].y);
-    }
-    return 1.0;
+// How much of a light reaches world point `p` (normal `n`) past what stands between: 1 lit, 0 in shadow. `which` is
+// the light's PointLightGpu::color.w, its shadow's index among the SceneLighting point shadow fields + 1, set on the
+// CPU (render::PointShadows::apply for the scene's lights, ZoneRenderer::set_light_shadows for the zone's), where
+// the fields match it by position and radius, so two lights in one spot do not share a cube; 0, or an index past
+// the fields' count, is a light without a shadow. The point moves 1.5 texels along the normal, towards the light's
+// side, first; a 3 x 3 grid of hardware-filtered comparisons softens the edge (shadow_pcf). The slot's strength fades
+// the shadow in and out.
+float point_shadow(sampler2DArrayShadow map, vec4 lights[8], vec4 slots[8], vec4 params, float which, vec3 p, vec3 n) {
+    int i = int(which + 0.5) - 1;
+    if (i < 0 || i >= int(params.x + 0.5)) return 1.0;
+    vec4 light = lights[i];
+    vec3 d = p - light.xyz;
+    float dist = length(d);
+    // A texel's world size there: the face spans twice the distance along its axis.
+    float texel = 2.0 * dist * params.y / params.z;
+    // Further along the normal the more the surface turns from the light (where acne starts).
+    float facing = abs(dot(n, d)) / max(dist, 1e-4);
+    vec3 q = d + n * (dot(n, d) <= 0.0 ? 1.0 : -1.0) * texel * (1.5 + 2.5 * (1.0 - facing));
+    vec2 ndc;
+    uint face = point_shadow_face(q, params.z, ndc);
+    float ref = (length(q) - texel * 1.5) / light.w;
+    if (ref >= 1.0) return 1.0; // past the cube's reach it holds nothing
+    vec2 uv = ndc * 0.5 + 0.5;
+    return mix(1.0, shadow_pcf(map, uv, slots[i].x + float(face), ref, params.y), slots[i].y);
 }
 
 // How far above a point the cover map's top surface still shelters it (render/cover_map.h kShelterReach). Higher up,
