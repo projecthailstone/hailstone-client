@@ -1,7 +1,5 @@
 #include "render/scene_recorder.h"
 
-#include <algorithm>
-
 #include "core/worker_pool.h"
 #include "render/vk_util.h"
 
@@ -49,14 +47,8 @@ void SceneRecorder::add(const FrameInfo& frame, const void* lane, Job job) {
         job(frame);
         return;
     }
-    auto it = std::find(lanes_.begin(), lanes_.end(), lane);
-    std::size_t index = static_cast<std::size_t>(it - lanes_.begin());
-    if (it == lanes_.end()) {
-        lanes_.push_back(lane);
-        by_lane_.emplace_back();
-    }
-    by_lane_[index].push_back(jobs_.size());
-    jobs_.push_back({index, target_, std::move(job), VK_NULL_HANDLE});
+    lanes_.add(lane, target_);
+    jobs_.push_back({std::move(job), VK_NULL_HANDLE});
 }
 
 VkCommandBuffer SceneRecorder::take(Pool& pool) {
@@ -75,7 +67,7 @@ VkCommandBuffer SceneRecorder::take(Pool& pool) {
 void SceneRecorder::record(const FrameInfo& frame) {
     if (!active_ || jobs_.empty()) return;
     auto& pools = pools_[slot_];
-    while (pools.size() < lanes_.size()) {
+    while (pools.size() < lanes_.lanes()) {
         VkCommandPoolCreateInfo ci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
         ci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
         ci.queueFamilyIndex = vk_.queue_family();
@@ -84,31 +76,26 @@ void SceneRecorder::record(const FrameInfo& frame) {
         pools.push_back(std::move(p));
     }
     // The buffers are taken here, on this thread: a pool is touched by one thread at a time.
-    for (auto& q : jobs_) q.cmd = take(pools[q.lane]);
-    // Each target's inheritance, asked once here; the jobs point at these while they record.
-    std::vector<VkCommandBufferInheritanceRenderingInfo> renderings;
-    renderings.reserve(targets_.size());
-    for (const auto& t : targets_) renderings.push_back(t.rendering());
-    std::vector<VkCommandBufferInheritanceInfo> inheritances(targets_.size(),
-                                                             {VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO});
-    for (std::size_t i = 0; i < targets_.size(); ++i) inheritances[i].pNext = &renderings[i];
+    for (std::size_t j = 0; j < jobs_.size(); ++j) jobs_[j].cmd = take(pools[lanes_.lane_of(j)]);
+    // Each target's inheritance, asked once here (both lists are sized before any points into the other).
+    renderings_.clear();
+    for (const auto& t : targets_) renderings_.push_back(t.rendering());
+    inheritances_.assign(targets_.size(), {VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO});
+    for (std::size_t i = 0; i < targets_.size(); ++i) inheritances_[i].pNext = &renderings_[i];
 
     try {
-        core::parallel_for(lanes_.size(), 1, [&](std::size_t begin, std::size_t end) {
-            for (std::size_t lane = begin; lane < end; ++lane)
-                for (std::size_t j : by_lane_[lane]) {
-                    Queued& q = jobs_[j];
-                    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-                    bi.flags = VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT |
-                               VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-                    bi.pInheritanceInfo = &inheritances[q.target];
-                    vk_check(vkBeginCommandBuffer(q.cmd, &bi), "vkBeginCommandBuffer (scene)");
-                    targets_[q.target].state(q.cmd);
-                    FrameInfo own = frame;
-                    own.cmd = q.cmd;
-                    q.job(own);
-                    vk_check(vkEndCommandBuffer(q.cmd), "vkEndCommandBuffer (scene)");
-                }
+        lanes_.record([&](std::size_t j) {
+            Queued& q = jobs_[j];
+            const std::size_t target = lanes_.target_of(j);
+            VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+            bi.flags = VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT | VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            bi.pInheritanceInfo = &inheritances_[target];
+            vk_check(vkBeginCommandBuffer(q.cmd, &bi), "vkBeginCommandBuffer (scene)");
+            targets_[target].state(q.cmd);
+            FrameInfo own = frame;
+            own.cmd = q.cmd;
+            q.job(own);
+            vk_check(vkEndCommandBuffer(q.cmd), "vkEndCommandBuffer (scene)");
         });
     } catch (...) {
         reset(); // the buffers left recording are reset with their pool, kFramesInFlight frames on
@@ -118,8 +105,9 @@ void SceneRecorder::record(const FrameInfo& frame) {
 
 void SceneRecorder::execute(const FrameInfo& frame, std::size_t target) {
     execute_.clear();
-    for (const auto& q : jobs_)
-        if (q.target == target && q.cmd != VK_NULL_HANDLE) execute_.push_back(q.cmd);
+    lanes_.each_in(target, [&](std::size_t j) {
+        if (jobs_[j].cmd != VK_NULL_HANDLE) execute_.push_back(jobs_[j].cmd);
+    });
     if (!execute_.empty())
         vkCmdExecuteCommands(frame.cmd, static_cast<std::uint32_t>(execute_.size()), execute_.data());
 }
@@ -136,7 +124,6 @@ void SceneRecorder::flush(const FrameInfo& frame) {
 void SceneRecorder::reset() {
     jobs_.clear();
     lanes_.clear();
-    by_lane_.clear();
 }
 
 } // namespace hailstone::render

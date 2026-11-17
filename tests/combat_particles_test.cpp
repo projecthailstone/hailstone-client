@@ -19,6 +19,7 @@
 #include "assets/character.h"
 #include "assets/object_animation.h"
 #include "core/byte_io.h"
+#include "core/worker_pool.h"
 #include "game/collision.h"
 #include "game/missiles.h"
 #include "game/path_trail.h"
@@ -620,6 +621,91 @@ TEST_CASE("An actor can carry independent EQG and WLD held-item effects") {
     CHECK(particles.simulation().emitters().size() == 1);
     CHECK(particles.cloud_simulation().emitters().size() == 1);
     CHECK(particles.cloud_simulation().definitions().size() == 2);
+}
+
+TEST_CASE("Actor emitters stepped on a worker match the inline step, drawn a frame later") {
+    // The scene's emitters step in simulate_async, on a worker, after the frame; the others step inside update. Both
+    // read the same poses, so after each step the particles are the same; between update and the step (when the
+    // scene draws) the worker's are the frame before's.
+    core::WorkerPool pool(2);
+    core::set_workers(&pool);
+    struct Unset {
+        ~Unset() { core::set_workers(nullptr); }
+    } unset;
+    auto d = dot();
+    d.duration = -9999.0f;
+    d.follow_attachment = 1;
+    d.bone_orientation = 1;
+    d.per_tick = 1;
+    d.ticks_per_second = 30.0f;
+    auto definition = std::make_shared<assets::EmitterDefinition>(d);
+    assets::CharacterMesh mesh;
+    assets::MeshEmitter eqg;
+    eqg.bone = 0;
+    eqg.emitter.emitter = 1;
+    mesh.emitters.push_back(eqg);
+    auto cloud = eqg;
+    cloud.bone = 1;
+    cloud.local = glm::translate(glm::mat4(1), glm::vec3(3, 0, 0));
+    cloud.cloud = definition;
+    mesh.emitters.push_back(cloud);
+    app::ActorEmitters inline_step({assets::EmitterDefinition{}, d});
+    app::ActorEmitters worker_step({assets::EmitterDefinition{}, d}, {}, true);
+    std::array<app::ActorEmitters::Actor, 2> actors{{{7, &mesh}, {8, &mesh, false, 0.5f}}};
+    glm::mat4 world(1.0f);
+    auto pose = [&](std::uint32_t id, int bone, glm::mat4& out) {
+        out = world;
+        out[3].y += static_cast<float>(id) * 10.0f + static_cast<float>(bone);
+        return true;
+    };
+    auto same = [](const game::ParticleSystem& a, const game::ParticleSystem& b) {
+        REQUIRE(a.emitters().size() == b.emitters().size());
+        for (std::size_t e = 0; e < a.emitters().size(); ++e) {
+            const auto& ea = a.emitters()[e];
+            const auto& eb = b.emitters()[e];
+            CHECK(ea.actor == eb.actor);
+            CHECK(near(ea.origin, eb.origin));
+            REQUIRE(ea.particles.size() == eb.particles.size());
+            for (std::size_t p = 0; p < ea.particles.size(); ++p) {
+                CHECK(near(ea.particles[p].position, eb.particles[p].position));
+                CHECK(ea.particles[p].color.a == doctest::Approx(eb.particles[p].color.a));
+                CHECK(ea.particles[p].age == doctest::Approx(eb.particles[p].age));
+            }
+        }
+    };
+    std::vector<game::Emitter> before, before_clouds; // the inline step's particles as of the last frame
+    for (int frame = 0; frame < 40; ++frame) {
+        world = glm::rotate(glm::mat4(1.0f), 0.05f * static_cast<float>(frame), glm::vec3(0, 0, 1));
+        world[3] = glm::vec4(2.0f * static_cast<float>(frame), 0, 0, 1);
+        const float dt = frame % 3 == 0 ? 0.016f : 0.033f;
+        inline_step.update(dt, actors, pose, {});
+        worker_step.update(dt, actors, pose, {});
+        if (frame > 0) {
+            // As the scene draws it: the emitters this frame started, last frame's particles.
+            const auto& drawn = worker_step.simulation().emitters();
+            REQUIRE(drawn.size() == before.size());
+            for (std::size_t e = 0; e < drawn.size(); ++e) {
+                REQUIRE(drawn[e].particles.size() == before[e].particles.size());
+                for (std::size_t p = 0; p < drawn[e].particles.size(); ++p)
+                    CHECK(near(drawn[e].particles[p].position, before[e].particles[p].position));
+            }
+            CHECK(worker_step.cloud_simulation().emitters().size() == before_clouds.size());
+        }
+        worker_step.simulate_async(dt, pose);
+        same(inline_step.simulation(), worker_step.simulation());
+        same(inline_step.cloud_simulation(), worker_step.cloud_simulation());
+        before = inline_step.simulation().emitters();
+        before_clouds = inline_step.cloud_simulation().emitters();
+    }
+    CHECK(inline_step.emitters() == 4);
+    CHECK_FALSE(inline_step.simulation().emitters().front().particles.empty());
+    // An actor gone: both stop its emitters at the next update.
+    inline_step.update(0.016f, std::span(actors.data(), 1), pose, {});
+    worker_step.update(0.016f, std::span(actors.data(), 1), pose, {});
+    worker_step.simulate_async(0.016f, pose);
+    same(inline_step.simulation(), worker_step.simulation());
+    same(inline_step.cloud_simulation(), worker_step.cloud_simulation());
+    CHECK(worker_step.emitters() == 2);
 }
 
 TEST_CASE("Instanced item clouds keep independent spawn, object and missile attachment lifetimes") {

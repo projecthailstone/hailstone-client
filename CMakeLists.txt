@@ -1116,6 +1116,7 @@ if(HAILSTONE_BUILD_TESTS)
     tests/latest_jobs_test.cpp
     tests/worker_pool_test.cpp
     tests/precise_sleep_test.cpp
+    tests/scene_lanes_test.cpp
     tests/animation_track_test.cpp
     tests/character_memory_test.cpp
     tests/character_share_test.cpp

@@ -275,6 +275,28 @@ public:
     // bones from upper_clip when it has one), model space.
     static void pose_bones(const ActorDraw& a, std::vector<assets::BonePose>& local,
                            std::vector<assets::BonePose>& previous, std::vector<glm::mat4>& world);
+    // drawn_bone's pose of one spawn: model-space bones and the instance matrix, posed as bone_world poses them
+    // when not valid, then read until marked stale. local/previous: pose_bones' scratch.
+    struct BonePoseCache {
+        std::vector<glm::mat4> bones;
+        glm::mat4 instance{1.0f};
+        bool valid = false;
+    };
+    static bool cached_bone_world(const ActorDraw& a, int bone, BonePoseCache& cache,
+                                  std::vector<assets::BonePose>& local, std::vector<assets::BonePose>& previous,
+                                  glm::mat4& world);
+    // One instance of prepare's to pose: actors[actor] with `mesh`, into its slice [first, first + count) of the
+    // frame's bones.
+    struct PoseJob {
+        std::size_t actor = 0;
+        const assets::CharacterMesh* mesh = nullptr;
+        std::uint32_t first = 0, count = 0;
+        bool posed = false;
+    };
+    // Poses, skins (the mesh's skin bones after the skeleton's) and places each job's instance into its own slice of
+    // `bones`, on the workers (core::parallel_for). A job whose skin bindings fail, or that makes other than `count`
+    // bones, is left posed false and its slice unwritten.
+    static void pose_instances(std::span<const ActorDraw> actors, std::span<PoseJob> jobs, std::span<glm::mat4> bones);
     // Whether it stands: drawn in its stand (P01) or idle (O01) clip, or the rest pose; eqgame's STND and IDLE
     // animations (app/actor_emitters.h: the model emitters those start). False when it was not drawn.
     static bool standing(const ActorDraw& a);
@@ -490,13 +512,8 @@ private:
     std::unordered_map<std::uint32_t, SpawnState> spawns_;
     std::unordered_set<std::uint32_t> drawn_;
     std::unordered_map<std::uint32_t, ActorDraw> last_draws_; // the spawns drawn last frame, for spawn_pose
-    // drawn_bone's poses of last_draws_, by spawn: model-space bones and the instance matrix. An entry is marked
-    // stale when its spawn's last_draws_ entry is written, and keeps its storage for the next pose.
-    struct BonePoseCache {
-        std::vector<glm::mat4> bones;
-        glm::mat4 instance{1.0f};
-        bool valid = false;
-    };
+    // drawn_bone's poses of last_draws_, by spawn. An entry is marked stale when its spawn's last_draws_ entry is
+    // written, and keeps its storage for the next pose.
     mutable std::unordered_map<std::uint32_t, BonePoseCache> bone_cache_;
     // When prepare_spawns last dropped the entries of spawns not drawn (the display clock), and how often it does.
     std::uint32_t last_bone_sweep_ms_ = 0;
@@ -532,13 +549,7 @@ private:
     // built on the CPU before they are copied in (kept from frame to frame, so they are not reallocated).
     BoneHistory bone_history_;
     std::vector<glm::mat4> staged_bones_, staged_bones_before_;
-    // prepare's instances to pose, each with its slice of staged_bones_ (posed on the workers, kept for its memory).
-    struct PoseJob {
-        std::size_t actor = 0;
-        const assets::CharacterMesh* mesh = nullptr;
-        std::uint32_t first = 0, count = 0;
-        bool posed = false;
-    };
+    // prepare's instances to pose, each with its slice of staged_bones_ (kept for its memory).
     std::vector<PoseJob> pose_jobs_;
     static constexpr std::size_t kPoseGrain = 4; // instances a worker takes at a time
     bool scene_ = true;

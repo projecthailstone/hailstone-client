@@ -47,7 +47,9 @@ class ActorEmitters {
 public:
     ActorEmitters(render::VkContext& vk, const GameDir& game, const std::filesystem::path& shader_dir,
                   bool scene = true);
-    explicit ActorEmitters(std::vector<assets::EmitterDefinition> definitions, game::HeightTables heights = {});
+    // Without a renderer (the tests). `async`: stepped by simulate_async as the scene's are, not by update.
+    explicit ActorEmitters(std::vector<assets::EmitterDefinition> definitions, game::HeightTables heights = {},
+                           bool async = false);
     // The simulations as of the last step (waiting for a step still running on a worker).
     const game::ParticleSystem& simulation() const { finish(); return particles_; }
     const game::ParticleSystem& cloud_simulation() const { finish(); return clouds_; }

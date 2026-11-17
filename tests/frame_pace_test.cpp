@@ -8,6 +8,7 @@
 #include <limits>
 
 #include "app/frame_pace.h"
+#include "platform/precise_sleep.h"
 
 using namespace hailstone;
 using std::chrono::milliseconds;
@@ -141,4 +142,27 @@ TEST_CASE("Frame pace: the light-screen condition keeps the zone-in settle light
     CHECK(app::is_light_screen(true, true));        // InGame while settling: the loading overlay is still drawn
     CHECK(app::is_light_screen(false, false));      // a pre-game screen
     CHECK(app::is_light_screen(false, true));
+}
+
+TEST_CASE("Frame pace: the light-screen cap holds through the deadline schedule and the precise wait") {
+    // As the loop takes it: display.max_fps through effective_max_fps, then frame_pace on a light screen.
+    CHECK(app::frame_pace(app::effective_max_fps(0, 144.0f), 0, true, milliseconds(0), true).cap == 240);
+    // Auto with no refresh rate from the system is unlimited, so a light screen holds it at 240 too.
+    CHECK(app::frame_pace(app::effective_max_fps(app::kMaxFpsAuto, 0.0f), 0, true, milliseconds(0), true).cap == 240);
+    // Auto with a refresh rate is a set cap, followed as it is.
+    CHECK(app::frame_pace(app::effective_max_fps(app::kMaxFpsAuto, 144.0f), 0, true, milliseconds(0), true).cap ==
+          138);
+    // A few frames of the loop's wait at that cap take at least their periods: the light screen does not spin.
+    const auto pace = app::frame_pace(app::effective_max_fps(0, 0.0f), 0, true, milliseconds(0), true);
+    REQUIRE(pace.cap == app::kLightScreenCap);
+    const std::chrono::microseconds period(1000000 / pace.cap);
+    const auto start = std::chrono::steady_clock::now();
+    auto deadline = start;
+    constexpr int kFrames = 12;
+    for (int i = 0; i < kFrames; ++i) {
+        deadline = app::next_frame_deadline(deadline, std::chrono::steady_clock::now(), period);
+        platform::precise_sleep_until(deadline);
+    }
+    // Only the lower bound: how late a busy machine wakes is not this test's business.
+    CHECK(std::chrono::steady_clock::now() - start >= kFrames * period);
 }

@@ -907,16 +907,44 @@ bool ActorRenderer::drawn_bone(std::uint32_t id, int bone, glm::mat4& world) con
     if (it == last_draws_.end()) return false;
     const ActorDraw& a = it->second;
     if (!a.model || !a.clip || bone < 0) return false;
-    BonePoseCache& c = bone_cache_[id];
+    // Posed once until this spawn is drawn again.
+    return cached_bone_world(a, bone, bone_cache_[id], bone_local_, bone_previous_, world);
+}
+
+bool ActorRenderer::cached_bone_world(const ActorDraw& a, int bone, BonePoseCache& c,
+                                      std::vector<assets::BonePose>& local, std::vector<assets::BonePose>& previous,
+                                      glm::mat4& world) {
+    if (!a.model || !a.clip || bone < 0) return false;
     if (!c.valid) {
-        // Posed as bone_world poses it, once until this spawn is drawn again.
-        pose_bones(a, bone_local_, bone_previous_, c.bones);
+        pose_bones(a, local, previous, c.bones);
         c.instance = instance_matrix(a);
         c.valid = true;
     }
     if (static_cast<std::size_t>(bone) >= c.bones.size()) return false;
     world = c.instance * c.bones[static_cast<std::size_t>(bone)];
     return true;
+}
+
+void ActorRenderer::pose_instances(std::span<const ActorDraw> actors, std::span<PoseJob> jobs,
+                                   std::span<glm::mat4> bones) {
+    core::parallel_for(jobs.size(), kPoseGrain, [&](std::size_t begin, std::size_t end) {
+        thread_local std::vector<assets::BonePose> local, previous;
+        thread_local std::vector<glm::mat4> world;
+        for (std::size_t j = begin; j < end; ++j) {
+            PoseJob& job = jobs[j];
+            job.posed = false;
+            const ActorDraw& a = actors[job.actor];
+            pose_bones(a, local, previous, world);
+            a.model->skin(world);
+            if (!job.mesh->append_skin_bones(world) || world.size() != job.count ||
+                std::size_t{job.first} + job.count > bones.size())
+                continue;
+            const glm::mat4 instance = instance_matrix(a);
+            glm::mat4* out = bones.data() + job.first;
+            for (std::size_t b = 0; b < world.size(); ++b) out[b] = instance * world[b];
+            job.posed = true;
+        }
+    });
 }
 
 bool ActorRenderer::drawn_transform(std::uint32_t id, glm::mat4& world) const {
@@ -1141,21 +1169,7 @@ void ActorRenderer::prepare(const FrameInfo& frame, std::span<const ActorDraw> a
         used += static_cast<std::uint32_t>(count);
     }
     staged_bones_.resize(used);
-    core::parallel_for(pose_jobs_.size(), kPoseGrain, [&](std::size_t begin, std::size_t end) {
-        thread_local std::vector<assets::BonePose> local, previous;
-        thread_local std::vector<glm::mat4> world;
-        for (std::size_t j = begin; j < end; ++j) {
-            PoseJob& job = pose_jobs_[j];
-            const ActorDraw& a = actors[job.actor];
-            pose_bones(a, local, previous, world);
-            a.model->skin(world);
-            if (!job.mesh->append_skin_bones(world) || world.size() != job.count) continue;
-            const glm::mat4 instance = instance_matrix(a);
-            glm::mat4* out = staged_bones_.data() + job.first;
-            for (std::size_t b = 0; b < world.size(); ++b) out[b] = instance * world[b];
-            job.posed = true;
-        }
-    });
+    pose_instances(actors, pose_jobs_, staged_bones_);
     if (motion) staged_bones_before_.resize(used);
     for (const PoseJob& job : pose_jobs_) {
         if (!job.posed) {

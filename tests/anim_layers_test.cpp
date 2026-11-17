@@ -1,6 +1,13 @@
 #include <doctest/doctest.h>
 
+#include <cmath>
+#include <vector>
+
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
+
 #include "assets/character.h"
+#include "core/worker_pool.h"
 #include "game/anim_layers.h"
 #include "game/world_state.h"
 #include "render/actor_layers.h"
@@ -385,6 +392,136 @@ TEST_CASE("an upper-body clip poses only the upper group's bones") {
     CHECK(local[0].translation.x == doctest::Approx(1.0f));
     CHECK(local[1].translation.x == doctest::Approx(1.0f));
     CHECK(local[2].translation.x == doctest::Approx(10.0f));
+}
+
+namespace {
+
+// A three-bone chain whose root moves by `x`, with an inverse bind on its last bone.
+struct PoseFixture {
+    assets::CharacterModel model;
+    assets::AnimationClip clip;
+    PoseFixture() {
+        model.parents = {-1, 0, 1};
+        model.order = {0, 1, 2};
+        model.inverse_bind.assign(3, glm::mat4(1.0f));
+        model.inverse_bind[2][3] = {0, 0, -4, 1};
+        clip.frame_count = 1;
+        clip.tracks.resize(3);
+        for (std::size_t b = 0; b < 3; ++b) {
+            assets::BonePose p;
+            p.translation = glm::vec3(1.0f, static_cast<float>(b), 2.0f);
+            p.rotation = glm::angleAxis(0.3f * static_cast<float>(b + 1), glm::vec3(0, 0, 1));
+            clip.tracks[b].push_back(p);
+        }
+    }
+};
+
+bool near_mat(const glm::mat4& a, const glm::mat4& b) {
+    for (int c = 0; c < 4; ++c)
+        for (int r = 0; r < 4; ++r)
+            if (std::abs(a[c][r] - b[c][r]) > 1e-4f) return false;
+    return true;
+}
+
+} // namespace
+
+TEST_CASE("Actor posing on the workers writes each instance's bones into its own slice, as posed one by one") {
+    PoseFixture f;
+    assets::CharacterMesh plain, skinned, broken;
+    skinned.skin_bindings.push_back({2, glm::translate(glm::mat4(1.0f), glm::vec3(0, 0, 3))});
+    broken.skin_bindings.push_back({9, glm::mat4(1.0f)}); // a host bone past the skeleton: not posed
+    std::vector<render::ActorDraw> actors(11);
+    for (std::size_t i = 0; i < actors.size(); ++i) {
+        actors[i].model = &f.model;
+        actors[i].clip = &f.clip;
+        actors[i].position = {10.0f * static_cast<float>(i), 5.0f, 1.0f};
+        actors[i].yaw = 0.3f * static_cast<float>(i);
+        actors[i].scale = 1.0f + 0.1f * static_cast<float>(i);
+    }
+    // As prepare plans them: each its slice, one after another, in the actors' order.
+    auto plan = [&](std::vector<render::ActorRenderer::PoseJob>& jobs) {
+        jobs.clear();
+        std::uint32_t used = 0;
+        for (std::size_t i = 0; i < actors.size(); ++i) {
+            const assets::CharacterMesh* mesh = i == 8 ? &broken : i % 3 == 1 ? &skinned : &plain;
+            auto count = static_cast<std::uint32_t>(3 + mesh->skin_bindings.size());
+            if (i == 4) ++count; // planned for more bones than it makes: not posed
+            jobs.push_back({i, mesh, used, count, true});
+            used += count;
+        }
+        return used;
+    };
+    // The one-by-one pose each slice must hold.
+    auto expected = [&](const render::ActorRenderer::PoseJob& job) {
+        std::vector<assets::BonePose> local, previous;
+        std::vector<glm::mat4> world;
+        render::ActorRenderer::pose_bones(actors[job.actor], local, previous, world);
+        f.model.skin(world);
+        REQUIRE(job.mesh->append_skin_bones(world));
+        for (auto& w : world) w = render::ActorRenderer::draw_matrix(actors[job.actor]) * w;
+        return world;
+    };
+    const glm::mat4 untouched(-7.0f);
+    for (unsigned workers : {0u, 3u}) {
+        CAPTURE(workers);
+        core::WorkerPool pool(workers);
+        core::set_workers(&pool);
+        std::vector<render::ActorRenderer::PoseJob> jobs;
+        std::vector<glm::mat4> bones(plan(jobs), untouched);
+        render::ActorRenderer::pose_instances(actors, jobs, bones);
+        core::set_workers(nullptr);
+        for (const auto& job : jobs) {
+            CAPTURE(job.actor);
+            const bool fails = job.actor == 4 || job.actor == 8;
+            CHECK(job.posed == !fails);
+            if (fails) {
+                for (std::uint32_t b = 0; b < job.count; ++b) CHECK(bones[job.first + b] == untouched);
+                continue;
+            }
+            const auto want = expected(job);
+            REQUIRE(want.size() == job.count);
+            for (std::uint32_t b = 0; b < job.count; ++b) CHECK(near_mat(bones[job.first + b], want[b]));
+        }
+    }
+    // A slice past the end of the frame's bones is not written.
+    std::vector<render::ActorRenderer::PoseJob> past{{0, &plain, 2, 3, true}};
+    std::vector<glm::mat4> small(4, untouched);
+    render::ActorRenderer::pose_instances(actors, past, small);
+    CHECK_FALSE(past[0].posed);
+    for (const auto& m : small) CHECK(m == untouched);
+}
+
+TEST_CASE("A drawn actor's bones are posed once and kept until the pose is marked stale") {
+    PoseFixture f;
+    render::ActorDraw a;
+    a.model = &f.model;
+    a.clip = &f.clip;
+    a.position = {10, 20, 30};
+    a.scale = 2.0f;
+    render::ActorRenderer::BonePoseCache cache;
+    std::vector<assets::BonePose> local, previous;
+    glm::mat4 world(0.0f), direct(0.0f);
+    for (int b = 0; b < 3; ++b) {
+        REQUIRE(render::ActorRenderer::cached_bone_world(a, b, cache, local, previous, world));
+        REQUIRE(render::ActorRenderer::bone_world(a, b, direct));
+        CHECK(near_mat(world, direct));
+    }
+    CHECK(cache.valid);
+    // Kept: the instance moving does not change what the cache gives until it is marked stale.
+    const glm::mat4 kept = world;
+    a.position.x += 50.0f;
+    REQUIRE(render::ActorRenderer::cached_bone_world(a, 2, cache, local, previous, world));
+    CHECK(near_mat(world, kept));
+    cache.valid = false;
+    REQUIRE(render::ActorRenderer::cached_bone_world(a, 2, cache, local, previous, world));
+    REQUIRE(render::ActorRenderer::bone_world(a, 2, direct));
+    CHECK(near_mat(world, direct));
+    CHECK_FALSE(near_mat(world, kept));
+    // As bone_world: a bone past the skeleton, a negative one or no clip give nothing.
+    CHECK_FALSE(render::ActorRenderer::cached_bone_world(a, 3, cache, local, previous, world));
+    CHECK_FALSE(render::ActorRenderer::cached_bone_world(a, -1, cache, local, previous, world));
+    a.clip = nullptr;
+    CHECK_FALSE(render::ActorRenderer::cached_bone_world(a, 0, cache, local, previous, world));
 }
 
 TEST_CASE("Actor role zero position uses the posed name bone before inverse bind") {

@@ -25,6 +25,7 @@
 #include <functional>
 #include <vector>
 
+#include "render/scene_lanes.h"
 #include "render/vk_context.h"
 
 namespace hailstone::render {
@@ -75,8 +76,6 @@ private:
         std::size_t used = 0;
     };
     struct Queued {
-        std::size_t lane = 0;
-        std::size_t target = 0;
         Job job;
         VkCommandBuffer cmd = VK_NULL_HANDLE;
     };
@@ -90,9 +89,11 @@ private:
     std::vector<Target> targets_;
     std::size_t target_ = 0; // add's
     std::vector<Queued> jobs_;
-    std::vector<const void*> lanes_;                // this frame's lanes, by index
-    std::vector<std::vector<std::size_t>> by_lane_; // each lane's jobs, in order
-    std::vector<VkCommandBuffer> execute_;          // execute's buffers, in the jobs' order
+    SceneLanes lanes_; // each job's lane and target
+    // record's inheritance for each target, asked once a frame; the jobs point at these while they record.
+    std::vector<VkCommandBufferInheritanceRenderingInfo> renderings_;
+    std::vector<VkCommandBufferInheritanceInfo> inheritances_;
+    std::vector<VkCommandBuffer> execute_; // execute's buffers, in the jobs' order
     std::uint32_t slot_ = 0;
     bool active_ = false;
 };

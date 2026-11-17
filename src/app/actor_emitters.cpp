@@ -27,8 +27,9 @@ std::string_view triggered_clip(std::int32_t animation) {
 }
 } // namespace
 
-ActorEmitters::ActorEmitters(std::vector<assets::EmitterDefinition> definitions, game::HeightTables heights)
-    : particles_(std::move(definitions)), heights_(std::move(heights)) {}
+ActorEmitters::ActorEmitters(std::vector<assets::EmitterDefinition> definitions, game::HeightTables heights,
+                             bool async)
+    : particles_(std::move(definitions)), heights_(std::move(heights)), async_(async) {}
 
 ActorEmitters::ActorEmitters(render::VkContext& vk, const GameDir& game, const std::filesystem::path& shader_dir,
                              bool scene)
