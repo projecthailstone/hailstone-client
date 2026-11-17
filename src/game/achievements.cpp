@@ -19,6 +19,12 @@ bool shape(const net::AchievementState& state, const net::AchievementDefinition&
     }
     return true;
 }
+// Buckets 0..2 carry runtime counts; bucket 3 is descriptive only.
+bool shown_in(const net::AchievementDefinition& definition, std::uint32_t component) {
+    for (const auto bucket : {0u, 1u, 2u})
+        if (definition.component_indices[bucket].contains(component)) return true;
+    return false;
+}
 bool same_name(std::string_view a, std::string_view b) {
     if (a.size() != b.size()) return false;
     const auto lower = [](unsigned char c) { return c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c; };
@@ -34,7 +40,7 @@ void Achievements::changed() {
 }
 void Achievements::reset() {
     catalog_.reset(); catalog_token_ = core::next_process_identity();
-    states_.clear(); requirements_.clear(); primary_serial_.reset();
+    states_.clear(); requirements_.clear();
     primary_ready_ = progress_ready_ = shown_ = detail_shown_ = false;
     selection_.reset(); detail_link_.reset(); comparison_.clear(); comparison_name_.clear();
     compare_request_.reset(); link_request_.reset(); earned_.clear();
@@ -89,16 +95,13 @@ void Achievements::receive_catalog(net::AchievementCatalog catalog) {
         link_request_->retired = true;
     }
     catalog_ = std::move(catalog); catalog_token_ = core::next_process_identity(); states_ = std::move(states);
-    requirements_.clear(); primary_serial_.reset(); primary_ready_ = progress_ready_ = false;
+    requirements_.clear(); primary_ready_ = progress_ready_ = false;
     comparison_.clear(); comparison_name_.clear(); earned_.clear(); selection_.reset(); detail_link_.reset();
     detail_shown_ = false; detail_revision_ = core::next_process_identity(); changed();
 }
 bool Achievements::receive_primary(net::AchievementPrimary primary) {
+    // The leading u32 orders nothing: RoF2's 0x618f handler (0x403b90) steps over it unread.
     if (!catalog_ || primary.updates.size() > states_.size()) return false;
-    if (primary_serial_) {
-        const auto delta = primary.serial - *primary_serial_;
-        if (!delta || delta >= 0x80000000u) return false;
-    }
     std::set<std::uint32_t> indices;
     for (std::size_t i = 0; i < primary.updates.size(); ++i) {
         const auto& update = primary.updates[i];
@@ -113,7 +116,7 @@ bool Achievements::receive_primary(net::AchievementPrimary primary) {
         if (!full && old && progress_ready_) update.state.counts = old->counts;
         old = std::move(update.state);
     }
-    states_ = std::move(states); primary_serial_ = primary.serial;
+    states_ = std::move(states);
     primary_ready_ = primary_ready_ || full;
     if (full) { progress_ready_ = false; requirements_.clear(); }
     changed(); return true;
@@ -124,9 +127,9 @@ bool Achievements::receive_progress(const std::vector<net::AchievementProgress>&
     bool difference = !progress_ready_;
     for (const auto& entry : progress) {
         const auto found = catalog_->definition_indices.find(entry.achievement_id);
-        if (found == catalog_->definition_indices.end() || entry.requirement_type > 2) return false;
+        if (found == catalog_->definition_indices.end()) return false;
         const auto& definition = catalog_->definitions[found->second];
-        if (!definition.component_indices[entry.requirement_type].contains(entry.component_id)) return false;
+        if (!shown_in(definition, entry.component_id)) return false;
         const RequirementKey key{entry.achievement_id, entry.component_id, entry.requirement_id, entry.requirement_type};
         const auto old = requirements.find(key);
         difference = difference || old == requirements.end() || old->second != entry.current_count;
@@ -139,14 +142,21 @@ bool Achievements::receive_progress(const std::vector<net::AchievementProgress>&
         for (auto& value : state->counts[type]) value = 0;
     // RoF2 sums distinct requirement records for a visible component. Keep a bounded full-key
     // replacement map, and widen only the presentation sum; it never decides achievement status.
+    // The record's type is part of its key only: RoF2's 0x2b42 handler (0x403020) finds the component
+    // by id in buckets 0, 1 and 2 and sets each one holding it to the sum for (achievement, component)
+    // over every requirement id and type (0x7c53b0).
     for (const auto& [key, value] : requirements) {
         const auto [id, component, requirement, type] = key;
-        (void)requirement;
+        (void)requirement; (void)type;
         const auto definition = catalog_->definition_indices.at(id);
-        const auto index = catalog_->definitions[definition].component_indices[type].at(component);
         if (!states[definition]) return false;
-        auto& aggregate = states[definition]->counts[type][index];
-        aggregate = aggregate.value_or(0) + value;
+        for (const auto bucket : {0u, 1u, 2u}) {
+            const auto& indices = catalog_->definitions[definition].component_indices[bucket];
+            const auto index = indices.find(component);
+            if (index == indices.end()) continue;
+            auto& aggregate = states[definition]->counts[bucket][index->second];
+            aggregate = aggregate.value_or(0) + value;
+        }
     }
     requirements_ = std::move(requirements); states_ = std::move(states); progress_ready_ = true;
     changed(); return true;

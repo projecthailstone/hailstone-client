@@ -277,7 +277,6 @@ std::optional<std::vector<AchievementProgress>> decode_achievement_progress(cons
             value.achievement_id = r.le<std::uint32_t>(); value.component_id = r.le<std::uint32_t>();
             value.requirement_id = r.le<std::uint32_t>(); value.requirement_type = r.le<std::uint32_t>();
             value.current_count = r.le<std::uint32_t>();
-            if (value.requirement_type > 2) throw std::out_of_range("invalid achievement progress bucket");
             result.push_back(value);
         }
         return result;

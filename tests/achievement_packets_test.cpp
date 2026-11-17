@@ -127,8 +127,9 @@ TEST_CASE("achievement packets: exact progress framing preserves full requiremen
     CHECK((*value)[0].requirement_id == 70000);
     CHECK((*value)[0].requirement_type == 1);
     CHECK((*value)[0].current_count == 9);
-    auto bad = fixture::progress(); bad.data[16] = std::byte{3};
-    CHECK_FALSE(decode_achievement_progress(bad));
+    auto kind = fixture::progress(); kind.data[16] = std::byte{4}; // a requirement kind, not a bucket
+    const auto typed = decode_achievement_progress(kind);
+    REQUIRE(typed); CHECK((*typed)[0].requirement_type == 4);
     auto trailing = fixture::progress(); trailing.data.push_back(std::byte{0});
     CHECK_FALSE(decode_achievement_progress(trailing));
     ByteWriter empty; empty.le<std::uint32_t>(0);

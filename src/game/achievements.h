@@ -94,7 +94,6 @@ private:
     std::uint64_t catalog_token_ = 0, revision_ = 0, detail_revision_ = 0;
     std::vector<std::optional<net::AchievementState>> states_;
     std::map<RequirementKey, std::uint32_t> requirements_;
-    std::optional<std::uint32_t> primary_serial_;
     bool primary_ready_ = false, progress_ready_ = false, shown_ = false, detail_shown_ = false;
     std::optional<AchievementSelection> selection_;
     std::optional<net::AchievementLink> detail_link_;
