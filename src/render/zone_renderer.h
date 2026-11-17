@@ -294,6 +294,11 @@ public:
     void set_scene_light(const game::SceneLight& light);
     // The modern mode's switch, daylight and dynamic lights (render/scene_lighting.h); classic: params.x 0.
     void set_lighting(const SceneLighting& lighting);
+    // Turns the depth pre-pass on or off from the next frame (SceneOptions::depth_prepass: display.depth_prepass, the
+    // Options window's Depth Pre-pass). On the main thread, before the frame is recorded. A neighbour zone has none.
+    void set_depth_prepass(bool on) { depth_prepass_on_ = on; }
+    // Whether a frame draws the pre-pass (draw_depth): switched on, its pipelines built, in the modern lighting.
+    static bool prepass_draws(bool on, bool built, bool modern) { return on && built && modern; }
     // How far the replacement models' levels of detail reach (render/lod_bands.h), times their own distances: the
     // tree detail setting (display.tree_detail). 0.25 to 4.
     void set_lod_scale(float scale) { lod_scale_ = std::clamp(scale, 0.25f, 4.0f); }
@@ -491,8 +496,10 @@ private:
     VkPipelineLayout layout_ = VK_NULL_HANDLE;
     VkPipeline pipelines_[3]{};
     // SceneOptions::depth_prepass: the depth-only pipeline, and the opaque colour pipeline that tests equal and writes
-    // no depth (the pre-pass wrote it).
-    bool depth_prepass_ = false;
+    // no depth (the pre-pass wrote it). Built with the zone whether the pre-pass is on or not (not for a neighbour
+    // zone), so set_depth_prepass switches it from one frame to the next.
+    bool depth_prepass_built_ = false;
+    bool depth_prepass_on_ = false; // set_depth_prepass
     bool depth_drawn_ = false; // draw_depth wrote this frame's depth: the next opaque draw may test equal
     VkPipeline depth_pipeline_ = VK_NULL_HANDLE;
     VkPipeline opaque_equal_pipeline_ = VK_NULL_HANDLE;

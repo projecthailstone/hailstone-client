@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Options > Display has a Depth Pre-pass switch (modern lighting; both UI packs): the zone's shapes are drawn once without lighting, so only what is in front is lit. It takes effect at once, so you can compare the frame rate on and off; it was a setting read only when a zone loaded. It stays off by default
 - Modern lighting: the sun's and the lights' shadows and the lights themselves cost the graphics card less, most in towns full of lamps: each light now knows which shadow is its own instead of every pixel searching for it, a light's colour is converted once instead of at every pixel, and each soft shadow edge takes four samples instead of nine with the same result
 - Environmental particles: legacy server-placed effects now draw from invisible particle switches, restoring missing waterfall cascades
 - `/doability` takes the name of any of your abilities as well as the Actions window's button (`/doability Bash`, `/doability fury`, in any case): a skill, a discipline or an activated AA, used as its Ability Book row is; a name that is more than one kind's is the skill's first, then the discipline's, then the AA's. A number still means button 1-10

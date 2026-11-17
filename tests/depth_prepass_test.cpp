@@ -15,6 +15,7 @@
 
 #include "assets/model.h"
 #include "render/material_state.h"
+#include "render/zone_renderer.h"
 
 using namespace hailstone;
 
@@ -159,4 +160,24 @@ TEST_CASE("lawn: a zero-height blade does not divide by its height") {
     // No other division by the height.
     const std::regex divide(R"(/\s*height\b)");
     CHECK(std::distance(std::sregex_iterator(code.begin(), code.end(), divide), std::sregex_iterator()) == 1);
+}
+
+// display.depth_prepass is switched in the game (the Options window, ZoneRenderer::set_depth_prepass) from one frame
+// to the next: a zone builds the pre-pass's pipelines whether it is on or not, and draws it only when it is.
+TEST_CASE("depth pre-pass: drawn when switched on, its pipelines built, in the modern lighting") {
+    using render::ZoneRenderer;
+    CHECK(ZoneRenderer::prepass_draws(true, true, true));
+    CHECK_FALSE(ZoneRenderer::prepass_draws(false, true, true));  // switched off
+    CHECK_FALSE(ZoneRenderer::prepass_draws(true, false, true));  // a neighbour zone, or no zone_depth.frag.spv
+    CHECK_FALSE(ZoneRenderer::prepass_draws(true, true, false));  // the classic lighting has nothing to save
+}
+
+TEST_CASE("depth pre-pass: both UI packs' Options windows offer the switch") {
+    for (const char* pack : {"modern", "gamepad"}) {
+        std::ifstream in(std::string(HAILSTONE_SOURCE_DIR "/ui/") + pack + "/options.lua", std::ios::binary);
+        REQUIRE(in);
+        const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+        INFO(pack);
+        CHECK(text.find("\"depth_prepass\"") != std::string::npos);
+    }
 }

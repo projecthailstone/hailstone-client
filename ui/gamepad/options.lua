@@ -281,6 +281,7 @@ local PAGES = {
       optionRow("Upscaler (next start)", "upscaler", upscalerChoices()),
       optionRow("Frame generation (Temporal, FSR 3.1)", "frame_gen", "bool"),
       optionRow("Ambient occlusion", "ao", "bool"),
+      optionRow("Depth pre-pass", "depth_prepass", "bool"),
       optionRow("Grass", "grass", "bool"),
       optionRow("Grass distance", "flora_distance", { 400, 1200, 100, " units" }),
       optionRow("Grass density", "grass_density", { 25, 200, 25, " %" }),

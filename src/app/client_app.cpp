@@ -543,6 +543,7 @@ int ClientApp::run() {
                 settle_frame_.shadow_builds = point_builds.size();
                 if (zone_renderer_) {
                     zone_renderer_->set_lighting(lighting);
+                    zone_renderer_->set_depth_prepass(vk_.scene_options().depth_prepass);
                     zone_renderer_->set_lod_scale(static_cast<float>(tree_detail_) / 100.0f);
                 }
                 // The zone's exits for the map and its zone finder (EqHost::zone_exits), once its zone points are in.

@@ -849,6 +849,8 @@ std::optional<int> ClientApp::display_option(std::string_view name) const {
         return render::upscaler_choice(config_.get_string("display.upscaler", "off"),
                                        upscaler_providers());
     if (name == "distance_blur") return config_.get_bool("display.distance_blur", true) ? 1 : 0;
+    // The zone's depth pre-pass (render/zone_renderer.h set_depth_prepass), off by default; switched at once.
+    if (name == "depth_prepass") return config_.get_bool("display.depth_prepass", false) ? 1 : 0;
     if (name == "color_grade") return config_.get_bool("display.color_grade", true) ? 1 : 0;
     if (name == "neighbour_zones") return neighbour_zones_ ? 1 : 0;
     if (name == "horizon_hills") return horizon_hills_ ? 1 : 0;
@@ -993,7 +995,7 @@ bool ClientApp::set_display_option(std::string_view name, int value) {
     } else if (name == "lighting") {
         lighting_command(value == 0 ? "modern" : "classic"); // saves and applies
         return true;
-    } else if (name == "ao" || name == "distance_blur" || name == "color_grade") {
+    } else if (name == "ao" || name == "distance_blur" || name == "color_grade" || name == "depth_prepass") {
         config_.set_bool("display." + std::string(name), value != 0);
     } else if (name == "render_scale") {
         config_.set_int("display.render_scale", std::clamp(value, render::kMinRenderScalePercent, 100));

@@ -920,7 +920,7 @@ private:
     // display.msaa (samples, read at start-up), display.tonemap (auto | none | agx | aces; auto is AgX with the modern
     // lighting and none with the classic), display.exposure (EV), display.shadows (the shadow map's size per cascade,
     // 0 off; the modern lighting only), display.ao (screen-space ambient occlusion, the modern lighting only),
-    // display.distance_blur, display.depth_prepass (the zone's depth pre-pass, the modern lighting only),
+    // display.distance_blur, display.depth_prepass (the zone's depth pre-pass, the modern lighting only; switched from the next frame),
     // display.bloom (0 off .. 1), display.brightness / contrast / gamma (the grade after the
     // tonemap), display.render_scale (percent, 33..100: below 100 the upscaler upscales), display.sharpness (0..1) and
     // display.upscaler (off, the default | fsr1 | taa | fsr3, read at start-up: render/temporal.h). The Options window's Display page sets them

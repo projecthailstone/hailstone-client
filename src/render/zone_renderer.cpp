@@ -551,8 +551,10 @@ ZoneRenderer::ZoneRenderer(VkContext& vk, PreparedPtr prepared, const std::files
     distant_squares_ = std::move(prepared->distant_squares);
     distant_shown_ = distant_indices_;
     // A neighbour zone (behind_) keeps its single pass: its ties go by the draw order (GREATER, first drawn wins),
-    // which an equal test over the pre-pass's written depth would turn around.
-    depth_prepass_ = vk.scene_options().depth_prepass && !behind_;
+    // which an equal test over the pre-pass's written depth would turn around. Any other zone builds the pre-pass's
+    // pipelines whether it is on or not (set_depth_prepass switches it at once); it starts as the options have it.
+    depth_prepass_built_ = !behind_;
+    depth_prepass_on_ = vk.scene_options().depth_prepass;
     using Ms = std::chrono::duration<float, std::milli>;
     auto step = std::chrono::steady_clock::now();
     const auto lap = [&step] {
@@ -2237,11 +2239,11 @@ void ZoneRenderer::create_pipelines(const std::filesystem::path& shader_dir) {
     // colour. Its shader is optional: an install without it draws the single pass.
     const std::filesystem::path depth_shader = shader_dir / "zone_depth.frag.spv";
     std::error_code missing;
-    if (depth_prepass_ && !std::filesystem::exists(depth_shader, missing)) {
-        log::warn("depth pre-pass off: no {}", depth_shader.string());
-        depth_prepass_ = false;
+    if (depth_prepass_built_ && !std::filesystem::exists(depth_shader, missing)) {
+        log::warn("depth pre-pass unavailable: no {}", depth_shader.string());
+        depth_prepass_built_ = false;
     }
-    if (depth_prepass_) {
+    if (depth_prepass_built_) {
         // Both pipelines take the opaque pass's coverage, so an edge covers the same samples in each.
         spec_value.coverage = coverage;
         ms.alphaToCoverageEnable = VK_FALSE;
@@ -2407,7 +2409,8 @@ void ZoneRenderer::draw(const FrameInfo& frame, const glm::mat4& view_proj, cons
     const bool modern = modern_lighting();
     // The equal pipeline only where draw_depth wrote this frame's depth (a caller that draws without it, the model
     // viewer, would otherwise test equal against an empty buffer and lose the world).
-    const bool prepassed = depth_prepass_ && modern && depth_drawn_;
+    // draw_depth decided for this frame: the pre-pass switched off since does not change the frame it drew.
+    const bool prepassed = depth_prepass_built_ && modern && depth_drawn_;
     if (phase != ZonePhase::Translucent) depth_drawn_ = false;
     auto modern_water = [&](const Draw& d) { return modern && d.liquid == Liquid::Water; };
     auto late = [&](const Draw& d) {
@@ -2460,7 +2463,7 @@ void ZoneRenderer::draw(const FrameInfo& frame, const glm::mat4& view_proj, cons
 void ZoneRenderer::draw_depth(const FrameInfo& frame, const glm::mat4& view_proj, const glm::vec3& camera_pos,
                               const game::ViewDistance& view, double time_seconds) {
     // The modern lighting's: the classic one has no per-pixel shading to save.
-    if (!depth_prepass_ || !modern_lighting() || draws_.empty()) return;
+    if (!prepass_draws(depth_prepass_on_, depth_prepass_built_, modern_lighting()) || draws_.empty()) return;
     VkCommandBuffer cmd = frame.cmd;
     const std::uint64_t time_ms = begin_draw(frame, view_proj, camera_pos, view, time_seconds);
     const Frustum frustum = frustum_from(view_proj);
