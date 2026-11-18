@@ -14,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -101,6 +102,14 @@ public:
     std::uint32_t visual_generation() const { return visual_generation_; }
     bool visual_surfaces(const glm::vec2& low,const glm::vec2& high,
                          const std::function<bool(const game::CollisionTriangle&)>& visit,std::uint32_t& work) const;
+    // Hailstone's grass (render::FloraRenderer::set_cover): the drawn doors, ground objects and placed items whose
+    // bounds touch [lo, hi], their drawn triangles copied into the world; the test is true where one lies over a spot
+    // as assets::covers_from_above takes a placed object's (kObjectCoverClearance, kObjectCoverReach). Empty when none
+    // touches. The test holds no reference to this.
+    std::function<bool(const glm::vec3&)> flora_cover(glm::vec2 lo, glm::vec2 hi) const;
+    // Where such cover came, went or moved since the last call (each an object's bounds, lo and hi), emptied by it.
+    // A door swinging is not counted: the grass keeps the place it was grown by.
+    std::vector<std::pair<glm::vec2, glm::vec2>> take_flora_changes() { return std::exchange(flora_changes_, {}); }
     // Counts the updates that changed what floor_below finds: a solid door or placed object came, went, got its model
     // or moved. Spawns measured against the floor (game::WorldState::reground) are measured again when it changes.
     std::uint32_t floor_generation() const { return floor_generation_; }
@@ -168,6 +177,7 @@ private:
     struct Model {
         int gpu = -1;              // ObjectRenderer handle
         game::ObjectShape shape;   // solid triangles in model space
+        bool plant = false;        // assets::is_plant: the grass grows under it (flora_cover)
         // Model emitters (EQG point records or WLD node clouds), bone 0 = the model's own space; null without.
         std::unique_ptr<assets::CharacterMesh> emitters;
     };
@@ -197,6 +207,8 @@ private:
     void load_zone_assets();
     std::shared_ptr<const assets::PfsArchive> archive(const std::string& file);
     void place(Placed& p, const glm::mat4& transform, float scale);
+    // Records `p`'s bounds in flora_changes_ when it is drawn with a model.
+    void note_flora(const Placed& p);
 
     render::VkContext& vk_;
     const GameDir& game_;
@@ -220,6 +232,7 @@ private:
     std::uint32_t update_serial_ = 0; // update()'s count, for Placed::seen
     std::uint32_t floor_generation_ = 0;
     std::uint32_t visual_generation_ = 0;
+    std::vector<std::pair<glm::vec2, glm::vec2>> flora_changes_;
     bool floor_changed_ = false; // within update(): floor_generation_ moves at its end
     const Model* placed_model(const std::string& tag);
     std::vector<render::ObjectRenderer::Instance> instances_;

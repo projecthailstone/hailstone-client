@@ -679,7 +679,7 @@ The reach is Hailstone's Flora Distance (`display.flora_distance`, the Options w
 Grass distance): 400 to 1,200 units, 400 by default. Past 400 units a share of the plants is kept by the square of
 the distance (`render::flora_keep`: a quarter at 800, a ninth at 1,200), the same ones from frame to frame, so the
 far ring costs about what the near circle does. How thick the lawn grows is Hailstone's Grass Density
-(`display.grass_density`, the Options window's slider, the gamepad pack's Grass density): 25 to 200 %, 100 by
+(`display.grass_density`, the Options window's slider, the gamepad pack's Grass density): 25 to 300 %, 100 by
 default. It scales the blades each of the lawn's three draws gives a patch (`render::lawn_lod_blades`: 49, 16 and 9
 at 100 %, at least one), the blades keeping their width, so less is sparser and cheaper and more thicker and dearer;
 the other plants are not thinned. The tiles are filled nearest first, so when a frame reaches
@@ -780,8 +780,25 @@ costs about 0.4 ms a frame at the default reach.
 **Where.** On level ground (45 degrees by default) of a drawn, opaque or cut-out surface: not the invisible collision
 surfaces, nor the translucent water. Not in water, lava or a zone line, nor on the water's surface (the region just
 under the foot). Not where the zone's own drawn terrain lies overhead: a dungeon's ceiling, a roof, a bridge, an
-overhang. The outdoor zones' invisible collision ceiling and cloud layers do not count, and neither do the placed
-objects, so grass grows under the trees. Each plant takes the colour of the ground texel it stands on (the classic
+overhang. Nor under a placed object (`assets::append_object_cover`): a small, low one (within 12 units of its middle
+and 16 from its bottom to its top: a campfire, a crate, a barrel, a rock) clears its whole footprint, a disc round it
+half a lawn square wider, since a campfire's ring of logs has nothing over its middle; a larger one (a tent, a wagon)
+clears the ground under its opaque surfaces more than a quarter of a unit and at most 16 units over it
+(`kObjectCoverClearance`, `kObjectCoverReach`). Higher surfaces (a tree's crown) and cut-out ones (leaves) do not
+count, and a plant (`assets::is_plant`, the sway's test: a bush, a sapling) never takes the disc, so grass grows under
+the trees. A lawn square asks about an object at its centre, not at the wandering spot it asks the terrain about,
+which would scatter a small object's bare ground. The outdoor zones' invisible collision ceiling and cloud layers do
+not count either.
+
+What the server places counts too (`FloraRenderer::set_cover`, `assets::FloraCover`): the drawn doors (many zones place
+their tables, crates and tents as doors), the ground objects (dropped items, tradeskill containers such as a forge or
+the `IT78` campfire) and the placed real-estate items, by the same rules but with their cut-out surfaces as well
+(`WorldObjects::flora_cover`, the objects each tile's square touches, binned by `assets::ObjectCoverTris`); and the
+campfire spawns (race 567), each a disc round its feet of its size, 3 to 10 units, and the same margin
+(`assets::campfire_cover`: the spawn's model is not measured). When one comes, goes or (a placed item) moves, the tiles round it grow again
+(`FloraRenderer::regrow`), each keeping its plants until the new ones have grown; a door swinging open does not, so the
+grass keeps the place it was grown by. The doors arrive a moment after the zone, so the first tiles may show grass
+under one for a frame or two. Each plant takes the colour of the ground texel it stands on (the classic
 outdoor vertices carry none).
 
 **When.** The zone keeps the ground triangles that may grow plants, split into pieces of at most a quarter tile, binned
@@ -2200,7 +2217,7 @@ viewer (`--zone`, `--model`) takes `--msaa`, `--tonemap`, `--exposure`, `--rende
 | `display.max_fps` | -1, 0, 10 .. 1000 | 0 | frame cap (0 none; on the login, server select, character select/creation and loading screens, including the last stretch of a zone-in, an unlimited cap, or Auto with no refresh rate, counts as 240; a set cap is followed exactly); `--max-fps` takes precedence (`--max-fps auto` for -1). -1 (Hailstone's own, the Options window's Auto) caps just under the refresh rate of the display the window is on now (`platform::Window::refresh_rate`, read each frame so it follows the window): refresh - refresh² / 3600, rounded down (`app::auto_frame_cap`: 59 at 60 Hz, 116 at 120, 138 at 144, 224 at 240), which keeps a variable-refresh display's frames inside its range so vsync's queue never fills; no cap when the system gives no refresh rate. Each frame starts one period after the last one's deadline, or at once when a long frame has passed it (`app::next_frame_deadline`; a late frame is not made up by running the next ones back to back, which made a later frame wait on the GPU), and the wait is `platform::precise_sleep_until`: the system's sleep (on Windows a high-resolution waitable timer) to 1 ms before the deadline (0.5 ms on POSIX; 16 ms on Windows without such timers, before 10 1803), then a spin that yields between looks at the clock |
 | `display.background_fps` | -1, 0, 1 .. 1000 | 0 | frame cap while another window has the focus (0: as `display.max_fps`; -1: nothing drawn, the Options window's "0"). Below 10 the loop runs on at 10 a second (the game clock catches up at most 250 ms a frame) and draws only that many frames, or none (`app/frame_pace.h`); a frame not drawn is run as a minimised window's is |
 | `display.flora_distance` | units, 400 .. 1200 | 400 | how far the flora is drawn (Radial flora) |
-| `display.grass_density` | percent, 25 .. 200 | 100 | how thick Hailstone's lawn grows (`render::lawn_lod_blades`) |
+| `display.grass_density` | percent, 25 .. 300 | 100 | how thick Hailstone's lawn grows (`render::lawn_lod_blades`) |
 | `display.zone_flora` | on, off | on | Hailstone's flora for zones with a rules file (Zone flora), read as each zone loads |
 | `display.extra_shields` | on, off | on | a deliberate difference: shields RoF2 does not list (`game::is_shield_model`, docs/formats/characters.md "Held items") go on the shield point, not in the hand; read at start-up |
 | `display.texture_folder` | pack name, absolute folder, off | `textures/default` | replacement textures (Texture overrides): the folder indexed at start, its files read as each zone loads; the Options window's Textures section and the login screen's More options (both packs; from the next start) and Hailstone Texture Studio set it |

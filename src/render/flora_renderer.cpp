@@ -291,9 +291,12 @@ void FloraRenderer::grow_tiles(const glm::vec3& camera) {
     // frames; walking grows a tile now and then).
     const auto start = std::chrono::steady_clock::now();
     for (const auto& [d2, t] : near_tiles_) {
-        if (grown_.contains(t)) continue;
+        if (auto it = grown_.find(t); it != grown_.end() && !it->second.stale) continue;
         Grown g;
-        flora.grower->grow(t, g.plants);
+        const glm::vec2 lo = flora.tiles[t].min, hi = lo + glm::vec2(flora.tile_size);
+        const CoverTest extra = cover_ ? cover_(lo - assets::kFloraCoverMargin, hi + assets::kFloraCoverMargin)
+                                       : CoverTest{};
+        flora.grower->grow(t, g.plants, nullptr, extra);
         // The lawn first, by the coarsest stride that keeps each patch; the order within each part kept.
         auto lawn_at = [](std::uint32_t at_least) {
             return [at_least](const assets::FloraInstance& p) {
@@ -306,8 +309,17 @@ void FloraRenderer::grow_tiles(const glm::vec3& camera) {
         auto lawn = std::stable_partition(two, g.plants.end(), lawn_at(1));
         g.lawn_end = {static_cast<std::uint32_t>(four - begin), static_cast<std::uint32_t>(two - begin),
                       static_cast<std::uint32_t>(lawn - begin)};
-        grown_.emplace(t, std::move(g));
+        grown_.insert_or_assign(t, std::move(g));
         if (std::chrono::steady_clock::now() - start > kGrowBudget) break;
+    }
+}
+
+void FloraRenderer::regrow(glm::vec2 lo, glm::vec2 hi) {
+    const auto& flora = zone_.flora;
+    for (auto& [t, g] : grown_) {
+        const glm::vec2 tile_lo = flora.tiles[t].min - assets::kFloraCoverMargin;
+        const glm::vec2 tile_hi = flora.tiles[t].min + glm::vec2(flora.tile_size) + assets::kFloraCoverMargin;
+        if (tile_lo.x <= hi.x && tile_lo.y <= hi.y && tile_hi.x >= lo.x && tile_hi.y >= lo.y) g.stale = true;
     }
 }
 

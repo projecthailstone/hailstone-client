@@ -1,11 +1,13 @@
 #include "assets/zone_flora.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <fstream>
 #include <limits>
 #include <map>
+#include <numbers>
 #include <sstream>
 #include <span>
 #include <unordered_map>
@@ -62,9 +64,9 @@ std::string_view texture_of(const Material& m) {
 float unit(MsvcRand& rand) { return static_cast<float>(rand()) / 32767.0f; }
 
 // The zone's terrain seen from below: whether any of its triangles lies over a point (a dungeon's ceiling, a roof, a
-// bridge, an overhang). The placed objects (trees, tents) are not in it, so grass still grows under a tree; nor are
-// the surfaces never drawn (BlendMode::Invisible: the outdoor zones' collision ceiling some 750 units up and their
-// invisible cloud layers) or that only glow (Additive).
+// bridge, an overhang), and the placed objects' opaque surfaces low over it (a crate, a tent; CoverGrid::kObjectReach),
+// so grass still grows under a tree's crown; not the surfaces never drawn (BlendMode::Invisible: the outdoor zones'
+// collision ceiling some 750 units up and their invisible cloud layers) or that only glow (Additive).
 bool casts_cover(const Material& m) { return m.blend != BlendMode::Invisible && m.blend != BlendMode::Additive; }
 
 // A vertex past this many units from the origin is a damaged mesh's, not ground: the classic and EQG zones lie
@@ -81,38 +83,74 @@ const std::vector<Mesh>& drawn_terrain(const Zone& zone) {
     return zone.draw_terrain.size() == zone.terrain.size() ? zone.draw_terrain : zone.terrain;
 }
 
+// A mesh's triangles that may cover (casts_cover; only the opaque ones when `opaque_only`), through `transform`,
+// appended to `out` (3 a triangle). A triangle with an index out of range is left out.
+void world_triangles(const Mesh& mesh, const glm::mat4* transform, bool opaque_only, std::vector<glm::vec3>& out) {
+    for (const auto& part : mesh.parts) {
+        if (part.material >= mesh.materials.size()) continue;
+        const Material& m = mesh.materials[part.material];
+        if (!casts_cover(m) || (opaque_only && m.blend != BlendMode::Opaque)) continue;
+        const std::size_t end = std::min<std::size_t>(std::size_t{part.first_index} + part.index_count, mesh.indices.size());
+        for (std::size_t i = part.first_index; i + 3 <= end; i += 3) {
+            const std::uint32_t a = mesh.indices[i], b = mesh.indices[i + 1], c = mesh.indices[i + 2];
+            if (a >= mesh.vertices.size() || b >= mesh.vertices.size() || c >= mesh.vertices.size()) continue;
+            for (const std::uint32_t v : {a, b, c}) {
+                const glm::vec3& at = mesh.vertices[v].position;
+                out.push_back(transform ? glm::vec3(*transform * glm::vec4(at, 1.0f)) : at);
+            }
+        }
+    }
+}
+
 class CoverGrid {
 public:
     explicit CoverGrid(const Zone& zone) {
         glm::vec2 lo(std::numeric_limits<float>::max()), hi(std::numeric_limits<float>::lowest());
-        // The drawn ground, which the plants stand on: the flat terrain lies up to the smoothing's offset over it.
-        for (const auto& mesh : drawn_terrain(zone))
-            for (const auto& part : mesh.parts) {
-                if (part.material >= mesh.materials.size() || !casts_cover(mesh.materials[part.material])) continue;
-                const std::size_t end =
-                    std::min<std::size_t>(std::size_t{part.first_index} + part.index_count, mesh.indices.size());
-                for (std::size_t i = part.first_index; i + 3 <= end; i += 3) {
-                    Tri t;
-                    bool ok = true;
-                    for (int k = 0; k < 3; ++k) {
-                        const std::uint32_t v = mesh.indices[i + static_cast<std::size_t>(k)];
-                        if (v >= mesh.vertices.size() || !sane_position(mesh.vertices[v].position)) { // NaN too
-                            ok = false;
-                            break;
-                        }
-                        t.p[k] = mesh.vertices[v].position;
-                    }
-                    if (!ok) continue;
-                    const float area2 = (t.p[1].x - t.p[0].x) * (t.p[2].y - t.p[0].y) -
-                                        (t.p[2].x - t.p[0].x) * (t.p[1].y - t.p[0].y);
-                    if (std::abs(area2) < 1e-4f) continue; // a wall seen from above covers nothing
-                    tris_.push_back(t);
-                    for (const auto& q : t.p) {
-                        lo = glm::min(lo, glm::vec2(q));
-                        hi = glm::max(hi, glm::vec2(q));
-                    }
-                }
+        // A triangle that covers up to `reach` units over a point; `object` a placed object's.
+        auto push = [&](const glm::vec3& a, const glm::vec3& b, const glm::vec3& c, float clearance, float reach,
+                        bool object) {
+            if (!sane_position(a) || !sane_position(b) || !sane_position(c)) return; // NaN too
+            const float area2 = (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
+            if (std::abs(area2) < 1e-4f) return; // a wall seen from above covers nothing
+            Tri t;
+            t.p[0] = a;
+            t.p[1] = b;
+            t.p[2] = c;
+            t.clearance = clearance;
+            t.reach = reach;
+            t.object = object;
+            tris_.push_back(t);
+            for (const auto& q : t.p) {
+                lo = glm::min(lo, glm::vec2(q));
+                hi = glm::max(hi, glm::vec2(q));
             }
+        };
+        // The drawn ground, which the plants stand on: the flat terrain lies up to the smoothing's offset over it.
+        std::vector<glm::vec3> drawn, surfaces, cover;
+        for (const auto& mesh : drawn_terrain(zone)) {
+            drawn.clear();
+            world_triangles(mesh, nullptr, false, drawn);
+            for (std::size_t i = 0; i + 3 <= drawn.size(); i += 3)
+                push(drawn[i], drawn[i + 1], drawn[i + 2], kClearance, std::numeric_limits<float>::infinity(), false);
+        }
+        // The placed objects as drawn (append_object_cover): a small, low one (a campfire, a crate, a barrel) its
+        // whole footprint, a larger one (a tent, a wagon) its opaque surfaces within kObjectReach over the ground, so
+        // a tree's canopy and its cut-out leaves leave the grass under it.
+        for (const auto& placement : zone.placements) {
+            auto found = zone.draw_objects.find(placement.actor);
+            const Mesh* mesh = nullptr;
+            if (found != zone.draw_objects.end()) mesh = &found->second;
+            else if (auto obj = zone.objects.find(placement.actor); obj != zone.objects.end()) mesh = &obj->second;
+            if (!mesh) continue;
+            drawn.clear();
+            surfaces.clear();
+            cover.clear();
+            world_triangles(*mesh, &placement.transform, false, drawn);
+            world_triangles(*mesh, &placement.transform, true, surfaces);
+            append_object_cover(drawn, surfaces, is_plant(placement.actor, *mesh), cover);
+            for (std::size_t i = 0; i + 3 <= cover.size(); i += 3)
+                push(cover[i], cover[i + 1], cover[i + 2], kObjectClearance, kObjectReach, true);
+        }
         if (tris_.empty()) return;
         origin_ = lo;
         nx_ = std::min<std::int32_t>(static_cast<std::int32_t>((hi.x - lo.x) / kCell) + 1, 4096);
@@ -167,35 +205,34 @@ public:
         }
     }
 
-    // Whether a triangle lies more than kClearance over `p` (straight up).
-    bool covered(const glm::vec3& p) const {
+    // Whether a triangle lies over `p` (straight up) by more than its clearance and within its reach: the terrain's
+    // when `terrain`, the placed objects' when `objects`.
+    bool covered(const glm::vec3& p, bool terrain = true, bool objects = true) const {
         if (tris_.empty()) return false;
+        const auto counts = [&](const Tri& t) { return (t.object ? objects : terrain) && over(t, p); };
         const std::size_t c = index_of(cell(p.x - origin_.x, nx_), cell(p.y - origin_.y, ny_));
         for (std::uint32_t k = start_[c]; k < start_[c + 1]; ++k)
-            if (over(tris_[index_[k]], p)) return true;
+            if (counts(tris_[index_[k]])) return true;
         for (std::uint32_t t : big_)
-            if (over(tris_[t], p)) return true;
+            if (counts(tris_[t])) return true;
         return false;
     }
 
 private:
     static constexpr float kCell = 64.0f;
     static constexpr float kClearance = 1.0f; // the ground's own triangle, and a decal over it, are not cover
+    static constexpr float kObjectReach = kObjectCoverReach, kObjectClearance = kObjectCoverClearance;
     static constexpr std::uint64_t kBigCells = 1024;      // 2,048 units a side
     static constexpr std::size_t kMaxBig = 256;
     static constexpr std::uint64_t kMaxRefs = 1u << 24;  // 64 MB of references
     struct Tri {
         glm::vec3 p[3];
+        float clearance = 0.0f; // how far over a point it must lie to cover it: kClearance, an object's less
+        float reach = 0.0f;     // how far over a point it covers it: the terrain any height, an object kObjectReach
+        bool object = false;    // a placed object's (or its footprint's)
     };
     static bool over(const Tri& t, const glm::vec3& p) {
-        // Barycentric in the plane; the height there.
-        const glm::vec2 a(t.p[0]), b(t.p[1]), q(t.p[2]), pt(p);
-        const float d = (b.x - a.x) * (q.y - a.y) - (q.x - a.x) * (b.y - a.y);
-        const float u = ((pt.x - a.x) * (q.y - a.y) - (q.x - a.x) * (pt.y - a.y)) / d;
-        const float v = ((b.x - a.x) * (pt.y - a.y) - (pt.x - a.x) * (b.y - a.y)) / d;
-        if (u < 0.0f || v < 0.0f || u + v > 1.0f) return false;
-        const float z = t.p[0].z + (t.p[1].z - t.p[0].z) * u + (t.p[2].z - t.p[0].z) * v;
-        return z > p.z + kClearance;
+        return covers_from_above(t.p[0], t.p[1], t.p[2], p, t.clearance, t.reach);
     }
     // The cell of offset `d` along an axis of `n` cells, clamped; a NaN is cell 0. Clamped as a float first: a float
     // out of int32's range cast to it is undefined.
@@ -401,6 +438,143 @@ void add_split(std::vector<ZoneFloraGrower::Piece>& out, const ZoneFloraGrower::
 
 } // namespace
 
+bool covers_from_above(const glm::vec3& a, const glm::vec3& b, const glm::vec3& c, const glm::vec3& at, float clearance,
+                       float reach) {
+    // Barycentric in the plane; the height there.
+    const float d = (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
+    if (!(std::abs(d) >= 1e-4f)) return false; // a wall seen from above covers nothing
+    const float u = ((at.x - a.x) * (c.y - a.y) - (c.x - a.x) * (at.y - a.y)) / d;
+    const float v = ((b.x - a.x) * (at.y - a.y) - (at.x - a.x) * (b.y - a.y)) / d;
+    if (u < 0.0f || v < 0.0f || u + v > 1.0f) return false;
+    const float z = a.z + (b.z - a.z) * u + (c.z - a.z) * v;
+    return z > at.z + clearance && z - at.z <= reach;
+}
+
+bool CoverDisc::covers(const glm::vec3& at) const {
+    const glm::vec2 d = glm::vec2(at) - glm::vec2(feet);
+    return glm::dot(d, d) <= radius * radius && std::abs(at.z - feet.z) <= kCoverDiscHeight;
+}
+
+CoverDisc campfire_cover(const glm::vec3& feet, float size) {
+    const float r = std::isfinite(size) ? std::clamp(size, kCoverDiscMin, kCoverDiscMax) : kCoverDiscMin;
+    return {feet, r + kFootprintMargin};
+}
+
+bool is_plant(std::string_view actor, const Mesh& mesh) {
+    static constexpr std::string_view kWords[] = {
+        "tree", "pine", "palm", "bush", "shrub", "plant", "fern", "grass", "leaf", "leav", "flower", "vine", "reed",
+        "willow", "oak", "branch", "weed", "cactus", "hedge", "frond", "ivy", "foliage", "sapling", "cattail",
+        "bamboo", "birch", "maple", "cedar", "spruce", "kelp", "seaweed", "bramble", "thorn"};
+    auto lower = [](std::string_view s) {
+        std::string out(s);
+        for (char& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return out;
+    };
+    auto named = [&](std::string_view s) {
+        std::string l = lower(s);
+        for (std::string_view w : kWords)
+            if (l.find(w) != std::string::npos) return true;
+        return false;
+    };
+    bool masked = false, match = named(actor);
+    for (const auto& m : mesh.materials) {
+        masked |= m.blend == BlendMode::Masked;
+        if (!match) match = named(m.name) || std::any_of(m.frames.begin(), m.frames.end(), named);
+    }
+    return masked && match;
+}
+
+void append_object_cover(std::span<const glm::vec3> drawn, std::span<const glm::vec3> surfaces, bool plant,
+                         std::vector<glm::vec3>& out) {
+    glm::vec3 lo(std::numeric_limits<float>::max()), hi(std::numeric_limits<float>::lowest());
+    bool any = false;
+    for (const auto& q : drawn) {
+        if (!sane_position(q)) continue;
+        lo = glm::min(lo, q);
+        hi = glm::max(hi, q);
+        any = true;
+    }
+    if (any && !plant && hi.z - lo.z <= kObjectCoverReach) {
+        const glm::vec2 c = (glm::vec2(lo) + glm::vec2(hi)) * 0.5f;
+        float r2 = 0.0f;
+        for (const auto& q : drawn)
+            if (sane_position(q)) r2 = std::max(r2, glm::dot(glm::vec2(q) - c, glm::vec2(q) - c));
+        const float r = std::sqrt(r2);
+        if (r <= kSmallObjectRadius) {
+            // Its footprint, a disc over its top (a flat one's a unit over its base, so it is over the ground): a
+            // polygon round the circle, its edges' middles on it.
+            const float step = 2.0f * std::numbers::pi_v<float> / static_cast<float>(kFootprintSides);
+            const float side = (r + kFootprintMargin) / std::cos(step * 0.5f), z = std::max(hi.z, lo.z + 1.0f);
+            const glm::vec3 centre(c, z);
+            for (int k = 0; k < kFootprintSides; ++k) {
+                const float a0 = step * static_cast<float>(k), a1 = step * static_cast<float>(k + 1);
+                out.push_back(centre);
+                out.emplace_back(c + side * glm::vec2(std::cos(a0), std::sin(a0)), z);
+                out.emplace_back(c + side * glm::vec2(std::cos(a1), std::sin(a1)), z);
+            }
+            return;
+        }
+    }
+    for (std::size_t i = 0; i + 3 <= surfaces.size(); i += 3) {
+        const glm::vec3 &a = surfaces[i], &b = surfaces[i + 1], &c = surfaces[i + 2];
+        if (std::abs((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)) < 1e-4f) continue; // a wall
+        out.insert(out.end(), {a, b, c});
+    }
+}
+
+ObjectCoverTris::ObjectCoverTris(const std::vector<glm::vec3>& tris, glm::vec2 lo, glm::vec2 hi) : lo_(lo) {
+    if (!(hi.x > lo.x && hi.y > lo.y)) return;
+    nx_ = std::clamp(static_cast<std::int32_t>(std::ceil((hi.x - lo.x) / kCell)), 1, kMaxSide);
+    ny_ = std::clamp(static_cast<std::int32_t>(std::ceil((hi.y - lo.y) / kCell)), 1, kMaxSide);
+    const auto cell = [](float d, std::int32_t n) -> std::int32_t {
+        const float c = std::floor(d / kCell);
+        if (!(c > 0.0f)) return 0;
+        return c >= static_cast<float>(n - 1) ? n - 1 : static_cast<std::int32_t>(c);
+    };
+    struct Span {
+        std::int32_t x0, x1, y0, y1;
+    };
+    std::vector<Span> spans;
+    for (std::size_t i = 0; i + 3 <= tris.size(); i += 3) {
+        const glm::vec3 &a = tris[i], &b = tris[i + 1], &c = tris[i + 2];
+        if (!sane_position(a) || !sane_position(b) || !sane_position(c)) continue;
+        const glm::vec2 tlo = glm::min(glm::min(glm::vec2(a), glm::vec2(b)), glm::vec2(c));
+        const glm::vec2 thi = glm::max(glm::max(glm::vec2(a), glm::vec2(b)), glm::vec2(c));
+        if (thi.x < lo.x || thi.y < lo.y || tlo.x > hi.x || tlo.y > hi.y) continue;
+        tris_.insert(tris_.end(), {a, b, c});
+        spans.push_back({cell(tlo.x - lo.x, nx_), cell(thi.x - lo.x, nx_), cell(tlo.y - lo.y, ny_), cell(thi.y - lo.y, ny_)});
+    }
+    std::vector<std::uint32_t> counts(static_cast<std::size_t>(nx_) * static_cast<std::size_t>(ny_) + 1, 0);
+    const auto at = [&](std::int32_t x, std::int32_t y) {
+        return static_cast<std::size_t>(y) * static_cast<std::size_t>(nx_) + static_cast<std::size_t>(x);
+    };
+    for (const Span& sp : spans)
+        for (std::int32_t y = sp.y0; y <= sp.y1; ++y)
+            for (std::int32_t x = sp.x0; x <= sp.x1; ++x) ++counts[at(x, y) + 1];
+    for (std::size_t c = 1; c < counts.size(); ++c) counts[c] += counts[c - 1];
+    start_ = counts;
+    index_.resize(counts.back());
+    for (std::uint32_t t = 0; t < spans.size(); ++t)
+        for (std::int32_t y = spans[t].y0; y <= spans[t].y1; ++y)
+            for (std::int32_t x = spans[t].x0; x <= spans[t].x1; ++x) index_[counts[at(x, y)]++] = t;
+}
+
+bool ObjectCoverTris::covered(const glm::vec3& at) const {
+    if (tris_.empty()) return false;
+    const glm::vec2 d = glm::vec2(at) - lo_;
+    if (!(d.x >= 0.0f && d.y >= 0.0f)) return false;
+    const float fx = std::floor(d.x / kCell), fy = std::floor(d.y / kCell);
+    if (!(fx < static_cast<float>(nx_) && fy < static_cast<float>(ny_))) return false;
+    const std::size_t c =
+        static_cast<std::size_t>(fy) * static_cast<std::size_t>(nx_) + static_cast<std::size_t>(fx);
+    for (std::uint32_t k = start_[c]; k < start_[c + 1]; ++k) {
+        const std::size_t t = std::size_t{index_[k]} * 3;
+        if (covers_from_above(tris_[t], tris_[t + 1], tris_[t + 2], at, kObjectCoverClearance, kObjectCoverReach))
+            return true;
+    }
+    return false;
+}
+
 ZoneFloraGrower::ZoneFloraGrower(const Zone& zone, const ZoneFloraRules& rules,
                                  std::vector<eqg::FloraDefinition> definitions, const GroundTextures& textures)
     : d_(std::make_unique<Data>()) {
@@ -569,7 +743,7 @@ bool green_enough(const ZoneFloraRules::Ground& ground, const std::optional<std:
 // `green` false: the caller has made +green's test (the lawn's, by a square's majority); `cover` false, the cover's
 // (the lawn's, off the square's centre).
 bool may_grow(const ZoneFloraGrower::Data& d, const ZoneFloraRules::Ground& ground, const std::optional<std::uint32_t>& under,
-              const glm::vec3& p, bool green = true, bool cover = true) {
+              const glm::vec3& p, const FloraCover& extra, bool green = true, bool cover = true) {
     if (green && ground.green_only && !green_enough(ground, under)) return false;
     if (!d.regions.empty()) {
         // In the water or lava, or standing on its surface (the region just under the foot), or in a zone line.
@@ -578,7 +752,7 @@ bool may_grow(const ZoneFloraGrower::Data& d, const ZoneFloraRules::Ground& grou
         const RegionInfo below = d.regions.lookup(p - glm::vec3(0.0f, 0.0f, 1.0f));
         if (below.is_water() || below.is_lava()) return false;
     }
-    return !(cover && d.cover && d.cover->covered(p));
+    return !(cover && ((d.cover && d.cover->covered(p)) || (extra && extra(p))));
 }
 
 // Whether `q` lies in the triangle a b c seen from above, a point on an edge going to exactly one of the two
@@ -600,7 +774,8 @@ bool inside_from_above(glm::vec2 a, glm::vec2 b, glm::vec2 c, glm::vec2 q) {
 // height there, so the squares of neighbouring pieces meet without gaps or overlaps. A patch takes the ground's colour
 // at its centre (a grey-green where the texture cannot be read). `by_texture` counts those within the tile.
 void grow_lawn(const ZoneFloraGrower::Data& d, const ZoneFloraGrower::Piece& t, glm::vec2 tile_lo, glm::vec2 tile_hi,
-               std::vector<FloraInstance>& out, std::unordered_map<std::string, std::size_t>* by_texture) {
+               std::vector<FloraInstance>& out, std::unordered_map<std::string, std::size_t>* by_texture,
+               const FloraCover& extra) {
     const glm::vec2 margin(kLawnCell * static_cast<float>(kLawnEdgeCells));
     const glm::vec2 lo = tile_lo - margin, hi = tile_hi + margin;
     const auto& ground = d.rules.ground[t.rule];
@@ -642,15 +817,19 @@ void grow_lawn(const ZoneFloraGrower::Data& d, const ZoneFloraGrower::Piece& t, 
                 }
                 if (green < 3) continue;
             }
-            if (!may_grow(d, ground, under, p, false, false)) continue;
+            if (!may_grow(d, ground, under, p, extra, false, false)) continue;
             if (d.cover) {
-                // Under cover by a spot off the centre (lawn_cover_offset), on the piece's plane there and a little
-                // over it (half the offset: the ground may rise beyond the piece), so the bare ground under a
+                // Under the terrain by a spot off the centre (lawn_cover_offset), on the piece's plane there and a
+                // little over it (half the offset: the ground may rise beyond the piece), so the bare ground under a
                 // platform does not trace its outline.
                 const glm::vec2 off = lawn_cover_offset(q);
                 const glm::vec3 at(glm::vec2(p) + off, p.z + glm::dot(off, slope) + 0.5f * glm::length(off));
-                if (d.cover->covered(at)) continue;
+                if (d.cover->covered(at, true, false)) continue;
+                // Under an object by the centre itself: an object is small beside the offset (a campfire is some
+                // ten units across), which would scatter its bare ground.
+                if (d.cover->covered(p, false, true)) continue;
             }
+            if (extra && extra(p)) continue;
             FloraInstance patch;
             patch.position = p;
             patch.width = kLawnCell;
@@ -721,7 +900,7 @@ float lawn_edge_cover(float squares, glm::vec2 p) {
 namespace {
 
 void grow_tile(const ZoneFloraGrower::Data& d, std::size_t tile, std::vector<FloraInstance>& out,
-               std::unordered_map<std::string, std::size_t>* by_texture) {
+               std::unordered_map<std::string, std::size_t>* by_texture, const FloraCover& extra) {
     if (tile >= d.tiles.size()) return;
     const glm::vec2 lo = d.tiles[tile], hi = lo + glm::vec2(kZoneFloraTile);
     const std::size_t first = out.size();
@@ -732,7 +911,7 @@ void grow_tile(const ZoneFloraGrower::Data& d, std::size_t tile, std::vector<Flo
         const std::string& tex = d.textures[t.texture];
         const ZoneFloraGrower::Data::Ground& texels = d.grounds[t.texture];
         if (ground.lawn) {
-            grow_lawn(d, t, lo, hi, out, by_texture);
+            grow_lawn(d, t, lo, hi, out, by_texture, extra);
             if (out.size() - first >= kMaxTileFlora) {
                 out.resize(first + kMaxTileFlora);
                 return;
@@ -760,7 +939,7 @@ void grow_tile(const ZoneFloraGrower::Data& d, std::size_t tile, std::vector<Flo
             // The ground's colour under the plant: the classic zones' outdoor vertices carry no colour (black), so the
             // plant takes its ground texel's for *INHERITVERTEXCOLOR, 0x80 a neutral grey.
             const std::optional<std::uint32_t> under = texels.at(t.uv[0] * w + t.uv[1] * u + t.uv[2] * v);
-            if (!may_grow(d, ground, under, p)) continue;
+            if (!may_grow(d, ground, under, p, extra)) continue;
             std::uint32_t def = pick.cumulative.back().second;
             for (const auto& [upto, index] : pick.cumulative)
                 if (choose <= upto) {
@@ -841,9 +1020,9 @@ void soften_lawn_edges(std::vector<FloraInstance>& out, std::size_t first, glm::
 } // namespace
 
 void ZoneFloraGrower::grow(std::size_t tile, std::vector<FloraInstance>& out,
-                           std::unordered_map<std::string, std::size_t>* by_texture) const {
+                           std::unordered_map<std::string, std::size_t>* by_texture, const FloraCover& extra) const {
     const std::size_t first = out.size();
-    grow_tile(*d_, tile, out, by_texture);
+    grow_tile(*d_, tile, out, by_texture, extra);
     if (tile < d_->tiles.size())
         soften_lawn_edges(out, first, d_->tiles[tile], d_->tiles[tile] + glm::vec2(kZoneFloraTile));
 }

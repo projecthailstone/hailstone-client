@@ -129,6 +129,7 @@ int ClientApp::run() {
                 conn_->reground();
             }
             update_missiles();
+            update_flora_cover();
         }
         update_lap.mark("world objects update");
         // Presentation hiding is local to play. Loading and pregame screens remain usable, and returning to

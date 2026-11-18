@@ -53,6 +53,7 @@
 #include "assets/sky.h"
 #include "assets/texture_overrides.h"
 #include "assets/zone.h"
+#include "assets/zone_flora.h"
 #include "core/character_files.h"
 #include "core/config.h"
 #include "core/game_dir.h"
@@ -1406,6 +1407,12 @@ private:
     std::vector<assets::ZoneFire> moving_fires_;             // the doors' and objects' this frame (capacity kept)
     std::vector<std::pair<float, glm::vec4>> flora_near_;    // the spawns standing in the grass (capacity kept)
     std::vector<glm::vec4> flora_pushers_;
+    // What covers the grass besides the zone's files (FloraRenderer::set_cover): the doors and objects
+    // (WorldObjects::flora_cover) and the campfire spawns standing now (assets::campfire_cover), kept by
+    // update_flora_cover, which grows again the grass where any came or went.
+    std::vector<assets::CoverDisc> flora_campfires_;
+    void update_flora_cover();
+    std::function<bool(const glm::vec3&)> flora_cover(glm::vec2 lo, glm::vec2 hi) const;
     render::SceneLighting frame_lighting_{}; // this frame's lighting, for the flames' haze and depth terms
     std::unique_ptr<SpellParticles> spell_particles_;       // spell stage particles (app/spell_particles.h)
     std::unique_ptr<SpellBolts> spell_bolts_;               // the modern lighting's bolts and comets (app/spell_bolts.h)

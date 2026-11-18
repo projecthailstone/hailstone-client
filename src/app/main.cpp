@@ -290,7 +290,7 @@ void usage() {
         "                     viewer draws flora with --lighting modern only\n"
         "  --no-smooth-ground viewer: draw the zone's ground as the file's flat triangles (display.smooth_ground off)\n"
         "  --flora-distance U viewer: draw the flora U units round the camera (400 .. 1200; default 400)\n"
-        "  --grass-density P  viewer: the lawn's thickness in percent (25 .. 200; default 100)\n"
+        "  --grass-density P  viewer: the lawn's thickness in percent (25 .. 300; default 100)\n"
         "  --flora-push X Y Z viewer: the flora bends away from a foot standing there, as from a spawn (testing)\n"
         "  --moon P           the moon's phase, 0 new .. 0.5 full .. 1 (--lighting modern; client: instead of the calendar)\n"
         "  --blood-moon B     the blood moon, 0 none .. 1 (--lighting modern; client: instead of the calendar)\n"

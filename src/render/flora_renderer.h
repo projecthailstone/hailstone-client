@@ -21,6 +21,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <span>
 #include <unordered_map>
@@ -61,9 +62,9 @@ inline constexpr float kLawnFull = 40.0f, kLawnNear = 90.0f, kLawnMid = 250.0f;
 inline constexpr float kLawnBladeWidth = 0.24f;
 // Hailstone's Grass Density (display.grass_density, a share): how many of kLawnLods' blades each draw has, the
 // blades keeping their width, so less is sparser (and cheaper) and more is thicker.
-inline constexpr float kMinGrassDensity = 0.25f, kMaxGrassDensity = 2.0f;
-// The option in percent (the Options window's slider), clamped to 25 .. 200.
-inline int grass_density_percent(int percent) { return percent < 25 ? 25 : percent > 200 ? 200 : percent; }
+inline constexpr float kMinGrassDensity = 0.25f, kMaxGrassDensity = 3.0f;
+// The option in percent (the Options window's slider), clamped to 25 .. 300.
+inline int grass_density_percent(int percent) { return percent < 25 ? 25 : percent > 300 ? 300 : percent; }
 // kLawnLods[k]'s blades at `density` (clamped to the bounds above): at least one.
 std::uint32_t lawn_lod_blades(std::size_t k, float density = 1.0f);
 // How many of a patch's blades stand at distance `d`, smoothly fewer: kLawnLods[0]'s count to kLawnFull, [1]'s at
@@ -109,6 +110,17 @@ public:
     void set_density(float density);
     float density() const { return density_; }
 
+    // Cover the zone's files do not hold (the server's doors and objects, a campfire; assets::FloraCover), asked
+    // for each tile as it grows with the tile's square and assets::kFloraCoverMargin round it: a test the tile's
+    // plants are grown with, or an empty one when nothing there covers. Kept until changed; the tiles already grown
+    // keep their plants until regrow.
+    using CoverTest = std::function<bool(const glm::vec3& at)>;
+    using CoverSource = std::function<CoverTest(glm::vec2 lo, glm::vec2 hi)>;
+    void set_cover(CoverSource source) { cover_ = std::move(source); }
+    // Grows again the grown tiles whose square, with assets::kFloraCoverMargin round it, touches [lo, hi] (cover
+    // there came or went). Each keeps its plants until its new ones have grown, nearest first within the grow budget.
+    void regrow(glm::vec2 lo, glm::vec2 hi);
+
     // Who the plants bend away from (Hailstone's own): xyz a foot, w how far round it (the player, the spawns walking
     // through the grass); at most kMaxPushers, nearest first. Kept until changed.
     void set_pushers(std::span<const glm::vec4> pushers);
@@ -139,6 +151,7 @@ private:
     struct Grown {
         std::vector<assets::FloraInstance> plants;
         std::array<std::uint32_t, 3> lawn_end{};
+        bool stale = false; // drawn until grown again (regrow)
     };
     std::unordered_map<std::uint32_t, Grown> grown_; // by index into ZoneFlora::tiles
     std::vector<std::pair<float, std::uint32_t>> near_tiles_; // per draw: tiles in reach by distance
@@ -153,6 +166,7 @@ private:
     std::unique_ptr<FrameBuffers> lighting_buffers_; // SceneLighting, per frame in flight
     std::unique_ptr<FrameBuffers> frame_buffers_;    // FloraFrame
     std::vector<glm::vec4> pushers_;
+    CoverSource cover_;
     std::array<Buffer, VkContext::kFramesInFlight> instances_{};
     std::array<void*, VkContext::kFramesInFlight> mapped_{};
     struct GpuPlant; // flora_renderer.cpp

@@ -299,7 +299,7 @@ local PAGES = {
       optionRow("Depth pre-pass", "depth_prepass", "bool"),
       optionRow("Grass", "grass", "bool"),
       optionRow("Grass distance", "flora_distance", { 400, 1200, 100, " units" }),
-      optionRow("Grass density", "grass_density", { 25, 200, 25, " %" }),
+      optionRow("Grass density", "grass_density", { 25, 300, 25, " %" }),
       optionRow("Tree detail distance", "tree_detail", { 50, 200, 10, " %" }),
       optionRow("Lighting", "lighting", { "Classic (Low)", "Smooth Classic (Medium)", "Modern (High)" }),
       optionRow("Max camera zoom", "max_camera_distance", { 10, 150, 10, " units" }),
