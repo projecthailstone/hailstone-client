@@ -213,8 +213,9 @@ void buff_button(UiHost& host, const game::BuffSlot& b, Child& out) {
     out.decal = host.textures ? image(host.textures->spell_icon(s->spell_icon)) : none();
 }
 
-// `own`: one of the player's buffs, which the player's buff-timer hold (SPA 436) also stops; the zone's buff
-// suspension stops anyone's suspendable buffs, as EQEmu's BuffProcess does for every mob.
+// `own`: one of the player's buffs (the target's too while the player is its own target), which the player's
+// buff-timer hold (SPA 436) also stops; the zone's buff suspension stops anyone's suspendable buffs, as EQEmu's
+// BuffProcess does for every mob.
 std::optional<BuffInfo> buff_info(UiHost& host, const game::BuffSlot& b, bool own) {
     const auto* s = b.empty() ? nullptr : host.conn->spell_table().get(b.spell);
     if (!s) return std::nullopt;
@@ -361,7 +362,7 @@ public:
         int i = index_after(id, "Buff");
         if (!host.conn || i < 0) return std::nullopt;
         const auto* b = target_buff(*host.conn, i);
-        return b ? buff_info(host, *b, false) : std::nullopt;
+        return b ? buff_info(host, *b, host.conn->target_buffs_are_own()) : std::nullopt;
     }
 
 private:

@@ -1538,6 +1538,66 @@ TEST_CASE("native plugins: get_target_buff_data_bulk, laid out as docs/plugins.m
     CHECK(h.printed_line("[Probe] target buffs count 0, total 0, 8 bytes, 0 records, 0 empty, 0 bytes left"));
     h.world.conn = std::move(conn);
 }
+TEST_CASE("native plugins: get_target_buff_data_bulk holds the countdowns the target window holds") {
+    Host h(false, nullptr, HAILSTONE_PROBE_PLUGIN);
+    h.approve(plugin::kCapAll);
+    REQUIRE(h.plugins->load("HostProbe"));
+    using A = net::GameConnectionTestAccess;
+    net::GameConnection& conn = *h.world.conn;
+    auto& sp = A::spells(conn);
+    auto& w = A::world(conn);
+    // 3010 suspendable, 3011 not, 3012 suspendable with SPA 0x1b4 (excused from the player's hold only).
+    auto table = std::make_shared<game::SpellTable>();
+    REQUIRE(table->parse(mq_test::spell_line({{0, "3010"}, {1, "Test Ward"}, {83, "1"}, {200, "1"}}) + "\n" +
+                         mq_test::spell_line({{0, "3011"}, {1, "Test Plain"}, {83, "1"}}) + "\n" +
+                         mq_test::spell_line({{0, "3012"}, {1, "Test Stasis"}, {83, "1"}, {86, "436"}, {200, "1"}})) ==
+            3);
+    conn.set_spell_table_for_test(table);
+    const std::int64_t now = net::GameConnection::now_ms();
+    auto target_buff = [now](std::uint32_t spell) {
+        game::BuffSlot b;
+        b.spell = spell;
+        b.tics = 10;
+        b.received_ms = now - 3 * game::kBuffTickMs; // three ticks ago
+        return b;
+    };
+    REQUIRE(w.target_id == 10);
+    sp.target_buffs_entity = 10;
+    sp.target_buffs = {{0, target_buff(3010)}, {1, target_buff(3011)}, {2, target_buff(3012)}};
+    auto read = [&h] {
+        h.printed.clear();
+        h.run("/probetargetbuffs");
+    };
+    // Stock: everything counts down.
+    read();
+    CHECK(h.printed_line("[Probe] target buff slot 0: spell 3010, tics 7, spell type 1, caster -"));
+    CHECK(h.printed_line("[Probe] target buff slot 1: spell 3011, tics 7, spell type 1, caster -"));
+    CHECK(h.printed_line("[Probe] target buff slot 2: spell 3012, tics 7, spell type 1, caster -"));
+    // The player's hold does not reach another spawn's buffs.
+    sp.buff_timers_on_hold = true;
+    read();
+    CHECK(h.printed_line("[Probe] target buff slot 0: spell 3010, tics 7, spell type 1, caster -"));
+    // A zone that suspends buffs holds anyone's suspendable ones, SPA 0x1b4 or not.
+    sp.buff_timers_on_hold = false;
+    sp.zone_suspends_buffs = true;
+    read();
+    CHECK(h.printed_line("[Probe] target buff slot 0: spell 3010, tics 10, spell type 1, caster -"));
+    CHECK(h.printed_line("[Probe] target buff slot 1: spell 3011, tics 7, spell type 1, caster -"));
+    CHECK(h.printed_line("[Probe] target buff slot 2: spell 3012, tics 10, spell type 1, caster -"));
+    // The player its own target: its hold holds the list, but not the spell with SPA 0x1b4 (@0x4dcf20).
+    sp.zone_suspends_buffs = false;
+    sp.buff_timers_on_hold = true;
+    w.target_id = w.player_id;
+    sp.target_buffs_entity = w.player_id;
+    CHECK(conn.target_buffs_are_own());
+    read();
+    CHECK(h.printed_line("[Probe] target buff slot 0: spell 3010, tics 10, spell type 1, caster -"));
+    CHECK(h.printed_line("[Probe] target buff slot 1: spell 3011, tics 7, spell type 1, caster -"));
+    CHECK(h.printed_line("[Probe] target buff slot 2: spell 3012, tics 7, spell type 1, caster -"));
+    sp.target_buffs_entity = 10;
+    CHECK_FALSE(conn.target_buffs_are_own());
+}
+
 TEST_CASE("native plugins: get_avail_aa_data_bulk and get_avail_disc_data_bulk, laid out as docs/plugins.md says") {
     Host h(false, nullptr, HAILSTONE_PROBE_PLUGIN);
     h.approve(plugin::kCapAll);

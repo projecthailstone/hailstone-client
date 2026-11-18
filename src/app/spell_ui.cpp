@@ -220,7 +220,8 @@ void SpellUi::draw(net::GameConnection& conn, const game::mechanics::Character* 
         if (auto it = world.spawns.find(world.target_id); it != world.spawns.end()) {
             buffs.target_name = game::display_name(it->second.name);
             for (const auto& [slot, b] : st.target_buffs)
-                buffs.target.push_back(buff_view(table, strings, player, static_cast<int>(slot), b, false,
+                buffs.target.push_back(buff_view(table, strings, player, static_cast<int>(slot), b,
+                                                 st.buff_timers_on_hold && conn.target_buffs_are_own(),
                                                  st.zone_suspends_buffs, now));
         }
     }

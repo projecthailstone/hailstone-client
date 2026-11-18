@@ -15,7 +15,9 @@
 
 namespace hailstone::net { class GameConnection; }
 namespace hailstone::game {
+struct BuffSlot;
 struct Spawn;
+struct SpellData;
 struct WorldState;
 } // namespace hailstone::game
 
@@ -45,6 +47,12 @@ private:
     std::uint32_t frame_ = 0;
     std::size_t scans_ = 0;
 };
+
+// The pet window's time left on one of the pet's buffs, as "1m05s" or "42s"; empty for a permanent buff or one run out.
+// A suspendable buff waits at its count as sent in a zone that suspends buffs (game::buff_countdown_held), as the
+// server's does; otherwise it counts down from when the packet arrived.
+std::string pet_buff_time_left(const game::BuffSlot& b, const game::SpellData* spell, bool zone_suspends_buffs,
+                               std::int64_t now_ms);
 
 // Whether a group member's name (clean) is the spawn's (which may carry EQEmu's trailing digits), ignoring case.
 bool group_member_is(std::string_view member, std::string_view spawn);

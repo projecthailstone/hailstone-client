@@ -10,6 +10,7 @@
 #include "app/actions_ui.h"
 #include "app/group_ui.h"
 #include "core/config.h"
+#include "game/spells.h"
 #include "game/world_state.h"
 #include "scratch_dir.h"
 
@@ -34,6 +35,24 @@ TEST_CASE("Group window: a member's spawn by its name, EQEmu's digits and case a
     CHECK_FALSE(app::group_member_is("Soandso", "Soandsoa"));
     CHECK_FALSE(app::group_member_is("Soand", "Soandso"));
     CHECK_FALSE(app::group_member_is("Soandso", "123"));
+}
+
+TEST_CASE("Pet window: a buff's time left, held for a suspendable buff in a zone that suspends buffs") {
+    game::SpellData suspendable;
+    suspendable.suspendable = true;
+    game::SpellData plain;
+    game::BuffSlot b;
+    b.tics = 11; // 66 s, sent 7.5 s ago
+    b.received_ms = 100000;
+    const std::int64_t now = 107500;
+    CHECK(app::pet_buff_time_left(b, &plain, false, now) == "58s");
+    CHECK(app::pet_buff_time_left(b, &suspendable, false, now) == "58s");
+    CHECK(app::pet_buff_time_left(b, &plain, true, now) == "58s");     // EQEmu ticks it on
+    CHECK(app::pet_buff_time_left(b, &suspendable, true, now) == "1m06s"); // the count as sent
+    CHECK(app::pet_buff_time_left(b, nullptr, true, now) == "58s");     // a spell not known is not held
+    CHECK(app::pet_buff_time_left(b, &plain, false, 200000).empty());  // run out
+    b.tics = -1;
+    CHECK(app::pet_buff_time_left(b, &suspendable, true, now).empty()); // permanent
 }
 
 TEST_CASE("Group window: each member's spawn is kept between frames and looked for again only when it may have come") {

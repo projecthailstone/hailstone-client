@@ -832,7 +832,7 @@ size nothing is written and 0 comes back; with nothing to list the header alone 
   | Offset | Type | Field |
   |---|---|---|
   | 0 | i32 | spell id (never 0: entries with no spell are left out) |
-  | 4 | i32 | tics left: the server's count less the 6 s ticks since it came; a permanent buff negative, as above |
+  | 4 | i32 | tics left: the server's count less the 6 s ticks since it came, or the count as sent while its countdown is held as the target window holds it (a suspendable spell in a zone that suspends buffs; with the player its own target, also the player's buff-timer hold, docs/mechanics.md); a permanent buff negative, as above |
   | 8 | i32 | the spell's type: 0 detrimental, 1 beneficial, 2 beneficial group-only (0 for a spell not in spells_us.txt) |
   | 12 | i32 | the target's buff slot, as the server sent it (EQEmu: the mob's own slot index, not mapped to RoF2's) |
   | 16 | i32 | `casterNameLength`: the bytes of the caster's name that follow; 0 when the server sent none |

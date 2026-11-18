@@ -6,23 +6,21 @@
 
 #include "core/ascii_case.h"
 #include "game/eq_names.h"
+#include "game/spells.h"
 #include "game/world_state.h"
 #include "net/game_connection.h"
 #include "net/pet_packets.h"
 
 namespace hailstone::app {
 
-namespace {
-
-std::string time_left(const game::BuffSlot& b) {
-    // Tics are 6 s; count down from when the packet arrived.
-    std::int64_t left_ms = static_cast<std::int64_t>(b.tics) * 6000 - (net::GameConnection::now_ms() - b.received_ms);
-    if (b.tics <= 0 || left_ms <= 0) return {}; // none for a permanent buff (a negative count)
-    std::int64_t s = left_ms / 1000;
+std::string pet_buff_time_left(const game::BuffSlot& b, const game::SpellData* spell, bool zone_suspends_buffs,
+                               std::int64_t now_ms) {
+    if (b.tics <= 0) return {}; // none for a permanent buff (a negative count)
+    const auto left_ms = game::buff_ms_left(b, spell, false, zone_suspends_buffs, now_ms);
+    if (left_ms == 0) return {};
+    const auto s = static_cast<std::int64_t>(left_ms / 1000);
     return s >= 60 ? std::format("{}m{:02}s", s / 60, s % 60) : std::format("{}s", s);
 }
-
-} // namespace
 
 bool group_member_is(std::string_view member, std::string_view spawn) {
     // Group lists carry clean names; spawn names may carry EQEmu's trailing digits.
@@ -171,7 +169,9 @@ void GroupUi::draw(net::GameConnection& conn) {
         };
         for (const auto& [slot, b] : conn.pet_buffs()) {
             const auto* sp = conn.spell_table().get(b.spell);
-            pet_.buffs.push_back({sp ? sp->name : std::format("spell {}", b.spell), time_left(b)});
+            pet_.buffs.push_back({sp ? sp->name : std::format("spell {}", b.spell),
+                                  pet_buff_time_left(b, sp, conn.spell_state().zone_suspends_buffs,
+                                                     net::GameConnection::now_ms())});
         }
     }
     for (const auto& e : pets.list) {

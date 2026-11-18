@@ -376,9 +376,8 @@ struct SpellState {
 };
 
 // Spell_IsBuffCountdownHeld @0x4dcf20: a suspendable spell (+0x279) in a zone that suspends buffs (0xddfc5c, OP_NewZone
-// +876: SpellState::zone_suspends_buffs), or while the buff timers are on hold unless it has SPA 0x1b4 itself. Which
-// of the two the SPA 0x1b4 exception covers is taken from the earlier reading of the function, not checked again
-// (docs/unknowns.md). False without a spell.
+// +876: SpellState::zone_suspends_buffs), or while the buff timers are on hold unless it has SPA 0x1b4 itself: the
+// function tests 0xddfc5c before the SPA, so the exception covers only the hold. False without a spell.
 bool buff_countdown_held(const SpellData* spell, bool timers_on_hold, bool zone_suspends_buffs);
 
 // The time left on a buff as a display shows it: its ticks as received while its countdown is held

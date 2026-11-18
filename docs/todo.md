@@ -81,8 +81,8 @@ Written 2026-10-28 from `docs/unknowns.md` and `docs/plan.md`.
 - [x] Item recast on cast items (already in 789134d).
 - [x] The distance modifier of effect values, and the extra long-buff slots from level 72 and 75.
 - [x] Buff tick timers held by SPA 0x1b4 and suspendable spells.
-- [x] Buff countdowns held in zones that suspend buffs (OP_NewZone +876, 0xddfc5c); unit and connection tests, not tried live.
-- [ ] Re-read Spell_IsBuffCountdownHeld @0x4dcf20 for the order of the zone flag and the SPA 0x1b4 exception, and check a suspendbuffs zone live (unknowns.md).
+- [x] Buff countdowns held in zones that suspend buffs (OP_NewZone +876, 0xddfc5c); the order of the zone flag and the SPA 0x1b4 exception read again at @0x4dcf20; unit and connection tests, and live on a stock PEQ server (the player's own buffs held in poknowledge, the server's count the same on leaving).
+- [ ] `get_pet_buff_data_bulk`: hold a suspendable pet buff in a zone that suspends buffs, as the pet windows do (unknowns.md; the method's author).
 - [x] DoPassageOfTime's 6 s tick runs whole in the client (ProcessAffects' buff HP, mana and endurance, local expiry at 0, the mesmerize break; HP, endurance and mana regen) and its 1 s endurance upkeep; unit and connection tests, not tried live.
 - [x] Passage-of-time owner status/bleeding, live running endurance penalty, flag-1 cast interruption, drunkenness decay/sway/camera and Eye summon control are implemented with regression coverage. Live acceptance remains open.
 - [x] Combat line filters 13 to 16.

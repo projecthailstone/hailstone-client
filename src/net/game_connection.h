@@ -1424,6 +1424,12 @@ public:
     // ---- spells (game/spells.h; net/game_connection_spells.cpp) ----
     const game::SpellTable& spell_table() const { return *spell_table_; }
     const game::SpellState& spell_state() const { return spells_; }
+    // Whether the target buff list (OP_TargetBuffs) is the player's own, the player targeting itself: the player's
+    // buff-timer hold (+0x22d) holds it then, as CTargetWnd::OnProcessFrame @0x76b1b4 hands Spell_IsBuffCountdownHeld
+    // the target's own +0x2cc (another spawn's hold flag is not known here, so it holds nothing).
+    bool target_buffs_are_own() const {
+        return world_.player_id != 0 && spells_.target_buffs_entity == world_.player_id;
+    }
     // eqstr_us.txt / dbstr_us.txt (spell descriptions are dbstr type 6).
     const game::EqStrings& strings() const { return strings_; }
     // The player's classes as a bit mask: server_class_mask(), else the profile's class.

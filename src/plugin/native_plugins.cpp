@@ -1894,6 +1894,9 @@ int32_t h_get_target_buff_data_bulk(void* h, unsigned char* data, int32_t datama
         const std::size_t fixedBytes = sizeof(HS_BulkTargetBuffFixedRecord);
         const game::SpellTable& spells = c->spell_table();
         const std::int64_t now = net::GameConnection::now_ms(); // for the ticks left
+        // A held countdown (game::buff_countdown_held) gives the count as sent, as the target window shows it: the
+        // zone's buff suspension holds anyone's suspendable buffs, the player's hold only its own list.
+        const bool own_hold = st.buff_timers_on_hold && c->target_buffs_are_own();
         bool full = false;
         for (const auto& [slot, b] : st.target_buffs) {
             // The decoder drops removed entries (0xffffffff) and EQEmu sends only valid spells, so an entry with no
@@ -1911,8 +1914,10 @@ int32_t h_get_target_buff_data_bulk(void* h, unsigned char* data, int32_t datama
             HS_BulkTargetBuffFixedRecord* rec = reinterpret_cast<HS_BulkTargetBuffFixedRecord*>(pBuffer);
             *rec = HS_BulkTargetBuffFixedRecord{};
             rec->spellID = static_cast<int32_t>(b.spell);
-            rec->duration = game::buff_tics_left(b.tics, b.received_ms, now);
-            if (const auto* sp = spells.get(b.spell)) rec->spellType = sp->spell_type;
+            const auto* sp = spells.get(b.spell);
+            const bool held = game::buff_countdown_held(sp, own_hold, st.zone_suspends_buffs);
+            rec->duration = game::buff_tics_left(b.tics, held ? now : b.received_ms, now);
+            if (sp) rec->spellType = sp->spell_type;
             rec->slot = static_cast<int32_t>(slot);
             rec->casterNameLength = static_cast<int32_t>(nameBytes);
             pBuffer += fixedBytes;
