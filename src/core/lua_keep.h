@@ -121,6 +121,28 @@ private:
     T* value_ = nullptr;
 };
 
+namespace detail {
+
+// The registry key of a function's T kept for the state (its address).
+template <class T> inline const char state_value_key = 0;
+
+} // namespace detail
+
+// One T for the state, made on the first call and kept until the state closes (unlike LuaScratch, never reset): what
+// a function remembers from one call to the next, such as its last answer. T is a type of the function's own, so no
+// other code shares it. Pushes nothing.
+template <class T> T& lua_state_value(lua_State* L) {
+    if (lua_rawgetp(L, LUA_REGISTRYINDEX, &detail::state_value_key<T>) == LUA_TUSERDATA) {
+        T* t = static_cast<T*>(lua_touserdata(L, -1));
+        lua_pop(L, 1);
+        return *t;
+    }
+    lua_pop(L, 1);
+    T& t = lua_keep<T>(L);
+    lua_rawsetp(L, LUA_REGISTRYINDEX, &detail::state_value_key<T>); // (the registry holds it from here)
+    return t;
+}
+
 // Sets field `field` of the table on top of the stack, which has no metatable (a record the caller hands back each
 // frame), to the text s, unless the field already holds that text. Lua makes a new object for every string longer
 // than 40 bytes it is given (shorter ones it finds again), so a tooltip pushed each frame is garbage each frame even

@@ -1942,14 +1942,29 @@ int GameTime(lua_State* L) {
     return 2;
 }
 
+namespace {
+
+// hs.MapPolicy's last answer: an unchanged policy is the same table again (its fields are read-only), as the map
+// windows ask for it several times a frame. The table itself is in the registry under kMapPolicyTable.
+struct MapPolicyLast {
+    bool valid = false;
+    game::MapPolicy policy;
+    std::uint64_t context = 0, source = 0;
+};
+const char kMapPolicyTable = 0;
+
+} // namespace
+
 // policy = hs.MapPolicy() -- {custom_spawns,stock_npcs,npc_find,name,revision,context,source}, named read-only fields.
 // Opaque equality-only strings: revision tracks provider/content, source only provider ownership/lifetime, and
 // context the connection/player. Names are display text. Missing providers retain stock availability/preferences.
+// While all of it stays the same, each call returns the same table.
 int MapPolicy(lua_State* L) {
     const auto& host = *host_of(L);
     struct Value { game::MapPolicy policy; std::uint64_t context = 0, source = 0; };
-    auto& value = plugin::lua_keep<Value>(L);
-    const int holder = lua_gettop(L);
+    plugin::LuaScratch<Value> box(L); // (one box for every call: plugin/lua_keep.h)
+    auto& value = *box;
+    const int holder = box.kept() ? 0 : lua_gettop(L);
     plugin::cxx_guard(L, [&] {
         const auto* connection = host.conn;
         const auto before = connection ? connection->interaction_context() : 0;
@@ -1969,6 +1984,19 @@ int MapPolicy(lua_State* L) {
         }
     });
     const auto& policy = value.policy;
+    auto& last = plugin::lua_state_value<MapPolicyLast>(L);
+    const bool same = last.valid && last.policy.flags == policy.flags && last.policy.name == policy.name &&
+                      last.policy.revision == policy.revision && last.context == value.context &&
+                      last.source == value.source;
+    if (same) {
+        if (lua_rawgetp(L, LUA_REGISTRYINDEX, &kMapPolicyTable) == LUA_TTABLE) {
+            if (holder) lua_remove(L, holder);
+            box.release();
+            return 1;
+        }
+        lua_pop(L, 1);
+    }
+    last.valid = false; // (until the new table is made and kept)
     lua_createtable(L, 0, 7);
     lua_pushboolean(L, (policy.flags & game::MapPolicyCustomSpawns) != 0); lua_setfield(L, -2, "custom_spawns");
     lua_pushboolean(L, !(policy.flags & game::MapPolicyHideStockNpcs)); lua_setfield(L, -2, "stock_npcs");
@@ -1982,7 +2010,16 @@ int MapPolicy(lua_State* L) {
     opaque(policy.revision, "revision");
     opaque(value.context, "context");
     opaque(value.source, "source");
-    lua_remove(L, holder);
+    lua_pushvalue(L, -1);
+    lua_rawsetp(L, LUA_REGISTRYINDEX, &kMapPolicyTable);
+    plugin::cxx_guard(L, [&] {
+        last.policy = policy;
+        last.context = value.context;
+        last.source = value.source;
+    });
+    last.valid = true;
+    if (holder) lua_remove(L, holder);
+    box.release();
     return 1;
 }
 

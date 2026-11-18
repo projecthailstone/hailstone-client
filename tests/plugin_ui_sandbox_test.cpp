@@ -704,7 +704,9 @@ TEST_CASE("Plugin UI: a runaway window is stopped, the state's memory is capped,
     for (const char* opt : {"'stop'", "'restart'", "'collect'", "'incremental', 10, 10", "'generational'"})
         CHECK(s.run("plugin:A", std::string("collectgarbage(") + opt + ")").find("only 'count' and 'step'") !=
               std::string::npos);
-    CHECK(s.run("", "return collectgarbage('isrunning')") == "false"); // the host's pacing, as it was
+    // The plugins' calls above changed nothing: the generational collector runs on its own (lua_host.cpp
+    // collect_garbage).
+    CHECK(s.run("", "return collectgarbage('isrunning')") == "true");
 }
 
 // The player's clipboard (ui.GetClipboardText / SetClipboardText ask the state's "hailstone.clipboard_allowed", as a

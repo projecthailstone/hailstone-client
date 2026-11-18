@@ -1311,3 +1311,36 @@ TEST_CASE("Item display: a click on the icon links the item into the active chat
     }
     ImGui::DestroyContext(ctx);
 }
+
+TEST_CASE("Chat windows: a kept list is refilled in place, with no garbage while nothing changes") {
+    ImGuiContext* ctx = ImGui::CreateContext();
+    hailstone::test::ScratchDir dir_scratch("chat_windows_into_test");
+    fs::path dir = dir_scratch.path();
+    fs::create_directories(dir / "game");
+    write_strings(dir / "game");
+    GameDir game(dir / "game");
+    {
+        net::GameConnection conn(game);
+        ui::ChatView view;
+        app::UiHost host;
+        host.in_game = host.ui_ready = true;
+        host.game = &game;
+        host.conn = &conn;
+        host.chat = &view;
+        app::UiApi api(host);
+        api.load_layout(dir / "defaults.ini", dir / "UI_Test_Server.ini", {});
+        Lua lua(api);
+        CHECK(lua.run("return hs.ChatNewWindow()") == "2");
+        CHECK(lua.run("into={}; local w=hs.ChatWindows(into); first, tabs=w[1], w[1].tabs; "
+                      "return tostring(rawequal(w, into)) .. #w .. w[2].title") == "true2Chat 1");
+        CHECK(lua.run("collectgarbage('stop') local b=collectgarbage('count') local w=hs.ChatWindows(into) "
+                      "local a=collectgarbage('count') collectgarbage('restart') "
+                      "return rawequal(w, into) and rawequal(w[1], first) and rawequal(w[1].tabs, tabs) and a==b") == "true");
+        // A window gone: the list is trimmed.
+        lua.run("hs.ChatCloseWindow(2)");
+        CHECK(lua.run("local w=hs.ChatWindows(into); return #w .. tostring(w[2]) .. w[1].title") == "1nilMain Chat");
+        // Without it, a new list with the same windows, as before.
+        CHECK(lua.run("local w=hs.ChatWindows(); return tostring(not rawequal(w, into)) .. #w") == "true1");
+    }
+    ImGui::DestroyContext(ctx);
+}

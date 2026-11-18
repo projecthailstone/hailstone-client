@@ -354,12 +354,15 @@ end
 
 -- The chat windows by slot, asked for once a frame: each of the 32 windows below used to build the whole list
 -- (a table per window and per tab) every frame, though only a few exist.
-local listedFrame, bySlot = -1, {}
+-- The list and the table by slot are refilled each frame rather than made anew (hs.ChatWindows' `into`: its records
+-- are not kept past the next call).
+local listedFrame, bySlot, listed = -1, {}, {}
 local function chatWindow(slot)
   local frame = ui.GetFrameCount()
   if frame ~= listedFrame then
-    listedFrame, bySlot = frame, {}
-    for _, w in ipairs(API.chat.Windows()) do bySlot[w.slot] = w end
+    listedFrame = frame
+    for k in pairs(bySlot) do bySlot[k] = nil end
+    for _, w in ipairs(API.chat.Windows(listed)) do bySlot[w.slot] = w end
   end
   return bySlot[slot]
 end

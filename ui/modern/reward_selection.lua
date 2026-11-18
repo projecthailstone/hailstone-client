@@ -27,9 +27,13 @@ local selections = {pending={},preview={}}
 local snapshots = {}
 local review, actionMessage
 
+local record = {} -- the state's record, refilled each frame rather than made anew (hs.RewardSelection's `into`)
 local function readState()
-  local state = API.rewards.Selection(snapshots.pending and snapshots.pending.revision, snapshots.preview and snapshots.preview.revision)
-  if not state or not state.shown then snapshots={};return state end
+  local state = API.rewards.Selection(snapshots.pending and snapshots.pending.revision, snapshots.preview and snapshots.preview.revision, record)
+  if not state or not state.shown then
+    if next(snapshots) then snapshots={} end -- (a new table only when there was something to drop)
+    return state
+  end
   for _,name in ipairs({"pending","preview"})do
     local lane=state[name] or {}
     if lane.unchanged then

@@ -22,6 +22,7 @@
 #include <lua.hpp>
 
 #include "app/lua_ui.h"
+#include "app/lua_ui_record.h"
 #include "core/character_files.h"
 #include "core/game_dir.h"
 #include "core/ini_file.h"
@@ -1303,25 +1304,29 @@ std::vector<Row> chat_menu(int w) {
 
 // ---------------------------------------------------------------- the hs functions
 
-// windows = hs.ChatWindows()   -- per chat window shown (not the tabs of another) { slot, title (the tab's that is
-// up), main, tells, tab (the one up, 1-based), select (bring that tab up), tellsIn (Hailstone: how many tells from
-// others its tabs have had; it grows with each), tabs = { { title, unread, tell } } }
+// windows = hs.ChatWindows([into])   -- per chat window shown (not the tabs of another) { slot, title (the tab's
+// that is up), main, tells, tab (the one up, 1-based), select (bring that tab up), tellsIn (Hailstone: how many tells
+// from others its tabs have had; it grows with each), tabs = { { title, unread, tell } } }. `into`, a list the caller
+// keeps from frame to frame, is refilled in place instead of a new list, and so are the window records in it and
+// their tabs (app/lua_ui_record.h): a caller passing it keeps none of them past its next call.
 int ChatWindows(lua_State* L) {
     UiHost& h = host(L);
-    lua_newtable(L);
-    if (!h.chat || !h.in_game) return 1;
-    sync_lines(*h.chat);
+    record::push(L, 1, 0);
     lua_Integer n = 0;
+    if (!h.chat || !h.in_game) {
+        record::trim(L, 1);
+        return 1;
+    }
+    sync_lines(*h.chat);
     for (int w = 0; w < kMaxChatWindows; ++w) {
         if (!used(w) || host_of(w) != w) continue;
         auto tabs = tabs_of(w);
         int up = up_of(w);
         ChatWnd& c = wnd(w);
-        lua_createtable(L, 0, 7);
+        record::element(L, n + 1, 8);
         lua_pushinteger(L, w + 1);
         lua_setfield(L, -2, "slot");
-        lua_pushstring(L, wnd(up).name.c_str());
-        lua_setfield(L, -2, "title");
+        record::text(L, "title", wnd(up).name.c_str());
         lua_pushboolean(L, w == 0);
         lua_setfield(L, -2, "main");
         lua_pushboolean(L, c.tell);
@@ -1336,21 +1341,22 @@ int ChatWindows(lua_State* L) {
         for (int tw : tabs) tells_in += wnd(tw).tells_in;
         lua_pushinteger(L, static_cast<lua_Integer>(tells_in));
         lua_setfield(L, -2, "tellsIn");
-        lua_createtable(L, static_cast<int>(tabs.size()), 0);
+        record::subrecord(L, "tabs", 0);
         for (std::size_t t = 0; t < tabs.size(); ++t) {
             int tw = tabs[t];
-            lua_createtable(L, 0, 3);
-            lua_pushstring(L, wnd(tw).name.c_str());
-            lua_setfield(L, -2, "title");
+            record::element(L, static_cast<lua_Integer>(t + 1), 3);
+            record::text(L, "title", wnd(tw).name.c_str());
             lua_pushboolean(L, tw != up && unread(*h.chat, tw));
             lua_setfield(L, -2, "unread");
             lua_pushboolean(L, wnd(tw).tell);
             lua_setfield(L, -2, "tell");
             lua_rawseti(L, -2, static_cast<lua_Integer>(t + 1));
         }
-        lua_setfield(L, -2, "tabs");
+        record::trim(L, static_cast<lua_Integer>(tabs.size()) + 1);
+        lua_pop(L, 1); // (the tabs, in their field)
         lua_rawseti(L, -2, ++n);
     }
+    record::trim(L, n + 1);
     return 1;
 }
 
