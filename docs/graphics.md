@@ -794,11 +794,12 @@ it is ready the zone's flora is set up again with it (`assets::add_zone_flora_gr
 thread once a zone) and the grass renderer lets go of the tiles it has grown (`FloraRenderer::restart`); only a zone
 whose flora Hailstone's rules grow, not an EQG zone's own.
 
-**When.** The zone keeps the ground triangles that may grow plants, split into pieces of at most a quarter tile, binned
-by 128-unit tile (`assets::ZoneFloraGrower`); the renderer grows the tiles within reach as they come into it, nearest
-first and for at most 3 ms a frame, and lets go of those well past it. Each piece's plants come from its own seeded
-sequence, so a tile grows the same plants every time and a zone costs memory by the reach, not by its size (South
-Karana would hold some 6.5 million plants at once). Setting a zone up takes some 10 to 30 ms at load. A damaged
+**When.** The zone keeps the ground triangles that may grow plants, split into pieces of at most a quarter tile,
+binned by 128-unit tile (`assets::ZoneFloraGrower`); the renderer grows the tiles within reach as they come into it,
+nearest first, on a background thread of its own (a few tiles queued at a time, so the queue follows the camera; a
+tile keeps its old plants while it grows again), and lets go of those well past it. Each piece's plants come from its
+own seeded sequence, so a tile grows the same plants every time and a zone costs memory by the reach, not by its size
+(South Karana would hold some 6.5 million plants at once). Setting a zone up takes some 10 to 30 ms at load. A damaged
 mesh is bounded: a triangle with a non-finite vertex or one over 100,000 units out (the zones lie within some 20,000)
 neither grows plants nor covers any, the ground is cut into at most 2 million pieces, and the cover test holds at most
 16 million cell references, a triangle over more than 1,024 of its 64-unit cells (at most 256 such) being tested at

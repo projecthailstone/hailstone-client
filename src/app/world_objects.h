@@ -197,6 +197,12 @@ private:
         std::uint32_t seen = 0;       // the update that last found it in the connection's lists
         bool inverted = false;        // `inverse` is transform's (computed again only when the transform changes)
         std::uint32_t emitter_actor = 0; // allocated once for this placement; independent of server object IDs
+        // Its grass cover (assets::append_object_cover, in the world), made by flora_cover when first asked for and
+        // again when the transform it was made at changes: each tile that grows near it would otherwise transform
+        // the whole mesh again. Written only by flora_cover, which the grass's recording job alone calls.
+        mutable std::vector<glm::vec3> flora_tris;
+        mutable glm::mat4 flora_at{0.0f};
+        mutable const Model* flora_model = nullptr; // the model flora_tris was made from; null before any
     };
 
     const Model* model_for(const std::string& name);

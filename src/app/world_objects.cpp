@@ -494,11 +494,18 @@ std::function<bool(const glm::vec3&)> WorldObjects::flora_cover(glm::vec2 lo, gl
                 p.center.x - p.bound > hi.x || p.center.y - p.bound > hi.y)
                 continue;
             if (p.model->plant) continue; // the grass grows under a bush
-            drawn.clear();
-            for (const auto& tri : p.model->shape.visual)
-                for (const glm::vec3& v : {tri.v0, tri.v1, tri.v2}) drawn.emplace_back(p.transform * glm::vec4(v, 1.0f));
-            // A small, low fire (a campfire) covers its footprint; anything else its surfaces.
-            assets::append_object_cover(drawn, drawn, p.model->fire, tris);
+            if (p.flora_model != p.model || p.flora_at != p.transform) {
+                drawn.clear();
+                for (const auto& tri : p.model->shape.visual)
+                    for (const glm::vec3& v : {tri.v0, tri.v1, tri.v2})
+                        drawn.emplace_back(p.transform * glm::vec4(v, 1.0f));
+                // A small, low fire (a campfire) covers its footprint; anything else its surfaces.
+                p.flora_tris.clear();
+                assets::append_object_cover(drawn, drawn, p.model->fire, p.flora_tris);
+                p.flora_model = p.model;
+                p.flora_at = p.transform;
+            }
+            tris.insert(tris.end(), p.flora_tris.begin(), p.flora_tris.end());
         }
     };
     gather(doors_);

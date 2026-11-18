@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Grass: running through grassy zones no longer stutters each time new ground comes into view; the grass there now grows on a background thread instead of during the frame
 - Grass: Hailstone's grass on the classic zones no longer grows through crates, tents, wagons, rocks, campfires and other objects on the ground, whether the zone's own or placed by the server (doors, dropped items and tradeskill containers, housing items, campfire spawns). It still grows under trees
 - Grass: no longer shows through paths and floors laid just over the grass, such as the brick tiles in the Plane of Knowledge
 - Grass: in outdoor zones, grass now grows under cliff overhangs and arches high overhead; roofs and low bridges still keep the ground under them bare

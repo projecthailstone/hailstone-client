@@ -281,37 +281,61 @@ void FloraRenderer::grow_tiles(const glm::vec3& camera) {
     // Let go of the tiles well out of reach (a tile's width past it), so the memory follows the reach.
     const float keep = reach_ + flora.tile_size * 2.0f;
     const glm::vec2 c(camera);
+    const auto in_keep = [&](std::uint32_t t) {
+        const auto& tile = flora.tiles[t];
+        const glm::vec2 nearest = glm::clamp(c, tile.min, tile.min + glm::vec2(flora.tile_size));
+        return glm::dot(nearest - c, nearest - c) <= keep * keep;
+    };
     for (auto it = grown_.begin(); it != grown_.end();) {
-        const auto& tile = flora.tiles[it->first];
-        glm::vec2 nearest = glm::clamp(c, tile.min, tile.min + glm::vec2(flora.tile_size));
-        if (glm::dot(nearest - c, nearest - c) > keep * keep) it = grown_.erase(it);
+        if (!in_keep(it->first)) it = grown_.erase(it);
         else ++it;
     }
-    // Grow the missing ones nearest first, for at most kGrowBudget a frame (a zone-in grows its first ring over a few
-    // frames; walking grows a tile now and then).
-    const auto start = std::chrono::steady_clock::now();
-    for (const auto& [d2, t] : near_tiles_) {
-        if (auto it = grown_.find(t); it != grown_.end() && !it->second.stale) continue;
-        Grown g;
-        const glm::vec2 lo = flora.tiles[t].min, hi = lo + glm::vec2(flora.tile_size);
-        const CoverTest extra = cover_ ? cover_(lo - assets::kFloraCoverMargin, hi + assets::kFloraCoverMargin)
-                                       : CoverTest{};
-        flora.grower->grow(t, g.plants, nullptr, extra);
-        // The lawn first, by the coarsest stride that keeps each patch; the order within each part kept.
-        auto lawn_at = [](std::uint32_t at_least) {
-            return [at_least](const assets::FloraInstance& p) {
-                return p.definition == assets::kLawnDefinition && lawn_patch_stride(glm::vec2(p.position)) >= at_least;
-            };
-        };
-        auto begin = g.plants.begin();
-        auto four = std::stable_partition(begin, g.plants.end(), lawn_at(4));
-        auto two = std::stable_partition(four, g.plants.end(), lawn_at(2));
-        auto lawn = std::stable_partition(two, g.plants.end(), lawn_at(1));
-        g.lawn_end = {static_cast<std::uint32_t>(four - begin), static_cast<std::uint32_t>(two - begin),
-                      static_cast<std::uint32_t>(lawn - begin)};
-        grown_.insert_or_assign(t, std::move(g));
-        if (std::chrono::steady_clock::now() - start > kGrowBudget) break;
+    // The tiles grown on the background thread since the last frame, kept while still in reach; a job that ended
+    // without a result (it threw) no longer counts as growing.
+    for (auto& [t, g] : jobs_.take())
+        if (growing_.erase(t) > 0 && in_keep(t)) grown_.insert_or_assign(t, std::move(g));
+    for (auto it = growing_.begin(); it != growing_.end();) {
+        if (!in_keep(*it)) jobs_.cancel(*it);
+        if (!in_keep(*it) || !jobs_.pending(*it)) it = growing_.erase(it);
+        else ++it;
     }
+    // Queue the missing and stale ones nearest first, a few at a time, so the queue follows the camera. Growing a
+    // tile takes milliseconds (its lawn's squares, their cover, the edge softening): on the frame it stalled the
+    // scene's recording each time a new tile came into reach. The cover test is made here, on the frame's side,
+    // since it reads the world objects; it holds no reference to them.
+    for (const auto& [d2, t] : near_tiles_) {
+        if (growing_.size() >= kGrowInFlight) break;
+        if (growing_.contains(t)) continue;
+        if (auto it = grown_.find(t); it != grown_.end() && !it->second.stale) continue;
+        const glm::vec2 lo = flora.tiles[t].min, hi = lo + glm::vec2(flora.tile_size);
+        CoverTest extra = cover_ ? cover_(lo - assets::kFloraCoverMargin, hi + assets::kFloraCoverMargin)
+                                 : CoverTest{};
+        // A copy of the tile's number: Apple Clang rejects a lambda capturing a structured binding.
+        const std::uint32_t tile = t;
+        jobs_.submit(tile, [grower = flora.grower, tile, extra = std::move(extra)] {
+            return grow_tile(*grower, tile, extra);
+        });
+        growing_.insert(t);
+    }
+}
+
+FloraRenderer::Grown FloraRenderer::grow_tile(const assets::ZoneFloraGrower& grower, std::uint32_t t,
+                                              const CoverTest& extra) {
+    Grown g;
+    grower.grow(t, g.plants, nullptr, extra);
+    // The lawn first, by the coarsest stride that keeps each patch; the order within each part kept.
+    auto lawn_at = [](std::uint32_t at_least) {
+        return [at_least](const assets::FloraInstance& p) {
+            return p.definition == assets::kLawnDefinition && lawn_patch_stride(glm::vec2(p.position)) >= at_least;
+        };
+    };
+    auto begin = g.plants.begin();
+    auto four = std::stable_partition(begin, g.plants.end(), lawn_at(4));
+    auto two = std::stable_partition(four, g.plants.end(), lawn_at(2));
+    auto lawn = std::stable_partition(two, g.plants.end(), lawn_at(1));
+    g.lawn_end = {static_cast<std::uint32_t>(four - begin), static_cast<std::uint32_t>(two - begin),
+                  static_cast<std::uint32_t>(lawn - begin)};
+    return g;
 }
 
 void FloraRenderer::regrow(glm::vec2 lo, glm::vec2 hi) {
@@ -320,6 +344,17 @@ void FloraRenderer::regrow(glm::vec2 lo, glm::vec2 hi) {
         const glm::vec2 tile_lo = flora.tiles[t].min - assets::kFloraCoverMargin;
         const glm::vec2 tile_hi = flora.tiles[t].min + glm::vec2(flora.tile_size) + assets::kFloraCoverMargin;
         if (tile_lo.x <= hi.x && tile_lo.y <= hi.y && tile_hi.x >= lo.x && tile_hi.y >= lo.y) g.stale = true;
+    }
+    // A tile growing with the cover as it was grows again, once its job is dropped.
+    for (auto it = growing_.begin(); it != growing_.end();) {
+        const glm::vec2 tile_lo = flora.tiles[*it].min - assets::kFloraCoverMargin;
+        const glm::vec2 tile_hi = flora.tiles[*it].min + glm::vec2(flora.tile_size) + assets::kFloraCoverMargin;
+        if (tile_lo.x <= hi.x && tile_lo.y <= hi.y && tile_hi.x >= lo.x && tile_hi.y >= lo.y) {
+            jobs_.cancel(*it);
+            it = growing_.erase(it);
+        } else {
+            ++it;
+        }
     }
 }
 

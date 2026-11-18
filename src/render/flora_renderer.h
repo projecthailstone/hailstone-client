@@ -25,11 +25,13 @@
 #include <memory>
 #include <span>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <glm/glm.hpp>
 
 #include "assets/flora.h"
+#include "core/latest_jobs.h"
 #include "render/gpu.h"
 #include "render/scene_lighting.h"
 #include "render/vk_context.h"
@@ -111,6 +113,8 @@ public:
     void restart() {
         grown_.clear();
         near_tiles_.clear();
+        for (std::uint32_t t : growing_) jobs_.cancel(t); // grown from the flora as it was
+        growing_.clear();
     }
     // How thick the lawn is: kMinGrassDensity .. kMaxGrassDensity (display.grass_density).
     void set_density(float density);
@@ -141,9 +145,11 @@ private:
     void create_pipelines(const std::filesystem::path& shader_dir);
     VkPipeline create_pipeline(const std::filesystem::path& vert, const std::filesystem::path& frag);
 
-    // Hailstone's zone flora (assets::ZoneFloraGrower): drops the tiles out of reach, grows the missing ones within it.
+    // Hailstone's zone flora (assets::ZoneFloraGrower): drops the tiles out of reach, takes the tiles grown since the
+    // last frame and queues the missing and stale ones within reach on jobs_, nearest first.
     void grow_tiles(const glm::vec3& camera);
-    static constexpr std::chrono::microseconds kGrowBudget{3000};
+    // How many tiles are queued or growing at once: few, so the next ones queued are the nearest as the camera moves.
+    static constexpr std::size_t kGrowInFlight = 3;
 
     VkContext& vk_;
     // The clock a frame ago (the plants' motion under the temporal upscaler): `seconds_` is this frame's, for the
@@ -159,7 +165,10 @@ private:
         std::array<std::uint32_t, 3> lawn_end{};
         bool stale = false; // drawn until grown again (regrow)
     };
+    // A tile's plants, on jobs_'s thread: touches only the grower (read-only, shared) and the cover test (its own).
+    static Grown grow_tile(const assets::ZoneFloraGrower& grower, std::uint32_t t, const CoverTest& extra);
     std::unordered_map<std::uint32_t, Grown> grown_; // by index into ZoneFlora::tiles
+    std::unordered_set<std::uint32_t> growing_;      // the tiles with a job on jobs_
     std::vector<std::pair<float, std::uint32_t>> near_tiles_; // per draw: tiles in reach by distance
     std::uint32_t max_textures_ = 0; // kMaxTextures, within DeviceCaps::max_sampled_images
     const assets::Zone& zone_;
@@ -180,6 +189,8 @@ private:
     VkPipelineLayout layout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
     VkPipeline lawn_pipeline_ = VK_NULL_HANDLE;
+    // The tiles growing off the frame (grow_tile), one thread. Last: stopped and joined first as this goes.
+    core::LatestJobs<std::uint32_t, Grown> jobs_;
 };
 
 } // namespace hailstone::render
