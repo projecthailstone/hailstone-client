@@ -49,8 +49,11 @@ local function cancelReview()review=nil end
 local function changeLane(name)
   if laneName~=name then laneName=name;cancelReview();actionMessage=nil end
 end
+-- Called every frame while the window is hidden: new tables only when there is something to drop.
 local function closed()
-  cancelReview();selections={pending={},preview={}};snapshots={}
+  cancelReview()
+  if next(selections.pending) or next(selections.preview) then selections={pending={},preview={}} end
+  if next(snapshots) then snapshots={} end
 end
 local function result(ok,message)
   actionMessage=not ok and (message or "The reward changed. Select it again.") or nil
