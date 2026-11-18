@@ -332,6 +332,7 @@ LUA_API void (lua_warning)  (lua_State *L, const char *msg, int tocont);
 #define LUA_GCCOLLECT		2
 #define LUA_GCCOUNT		3
 #define LUA_GCCOUNTB		4
+// 10 = 1 KB per step, 12 = 4 KB per step, 13 = 8 KB per step
 #define LUA_GCSTEP		5
 #define LUA_GCSETPAUSE		6
 #define LUA_GCSETSTEPMUL	7

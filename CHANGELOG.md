@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A short stutter about once a second, on the login screen as well as in game, is gone: the interface's check for edited script files now costs a fraction of a millisecond instead of up to 10 ms
+- The spell gem bar and the hot button bars no longer make new garbage for the interface's script collector every frame, so its occasional long pauses come less often
+- The interface's script garbage collector now works in small steps as the windows run, instead of catching up all at once, which could pause the game for up to 40 ms
 - NPCs, pets and other players that have stopped no longer walk in place with their footsteps sounding: a spawn that has not moved for a second plays its standing and idle animations
 - Permission requests for required plugins appear above the loading screen, where players can allow or refuse them.
 - Achievements: objective counts and live state updates now arrive as the original client reads them. A progress record whose type is a requirement kind (3 or 4, as some servers send) was refused, so the window kept saying "Objective counts have not arrived yet"; and a state update whose leading number was not newer than the last was dropped, which the original never checks. A progress record for an unknown achievement or a descriptive-only objective is now skipped instead of throwing away the whole packet
