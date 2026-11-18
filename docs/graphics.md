@@ -780,11 +780,15 @@ costs about 0.4 ms a frame at the default reach.
 **Where.** On level ground (45 degrees by default) of a drawn, opaque or cut-out surface: not the invisible collision
 surfaces, nor the translucent water. Not in water, lava or a zone line, nor on the water's surface (the region just
 under the foot). Not where the zone's own drawn terrain lies overhead: a dungeon's ceiling, a roof, a bridge, an
-overhang. Nor under a placed object (`assets::append_object_cover`): a small, low one (within 12 units of its middle
-and 16 from its bottom to its top: a campfire, a crate, a barrel, a rock) clears its whole footprint, a disc round it
-half a lawn square wider, since a campfire's ring of logs has nothing over its middle; a larger one (a tent, a wagon)
+overhang; in a zone the server calls outdoor (time type 1, 2 or 5) only within 20 units over the ground
+(`assets::kOutdoorTerrainCover`), so a hut's roof or a low bridge keeps the ground under it bare while a cliff's
+overhang or an arch high overhead does not. Nor under a placed object (`assets::append_object_cover`): a small, low fire (`assets::is_fire_object`: a
+flame material, or "fire", "camp" or "coal" in its name or its materials'; within 12 units of its middle and 16 from
+its bottom to its top) clears its whole footprint, a disc round it half a lawn square wider, since a campfire's ring
+of logs has nothing over its middle and its flame never counts; any other object (a crate, a rock, a tent, a wagon)
 clears the ground under its opaque surfaces more than a quarter of a unit and at most 16 units over it
-(`kObjectCoverClearance`, `kObjectCoverReach`). Higher surfaces (a tree's crown) and cut-out ones (leaves) do not
+(`kObjectCoverClearance`, `kObjectCoverReach`), so the grass grows up to a boulder's foot; what grows inside a solid
+one is hidden. Higher surfaces (a tree's crown) and cut-out ones (leaves) do not
 count, and a plant (`assets::is_plant`, the sway's test: a bush, a sapling) never takes the disc, so grass grows under
 the trees. A lawn square asks about an object at its centre, not at the wandering spot it asks the terrain about,
 which would scatter a small object's bare ground. The outdoor zones' invisible collision ceiling and cloud layers do

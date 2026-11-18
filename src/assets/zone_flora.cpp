@@ -1,7 +1,6 @@
 #include "assets/zone_flora.h"
 
 #include <algorithm>
-#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <fstream>
@@ -17,6 +16,7 @@
 #include "assets/pfs.h"
 #include "assets/texture.h"
 #include "assets/zone.h"
+#include "assets/zone_fires.h"
 #include "core/ascii_case.h"
 #include "core/float_chars.h"
 #include "core/game_dir.h"
@@ -104,7 +104,7 @@ void world_triangles(const Mesh& mesh, const glm::mat4* transform, bool opaque_o
 
 class CoverGrid {
 public:
-    explicit CoverGrid(const Zone& zone) {
+    CoverGrid(const Zone& zone, float terrain_reach) {
         glm::vec2 lo(std::numeric_limits<float>::max()), hi(std::numeric_limits<float>::lowest());
         // A triangle that covers up to `reach` units over a point; `object` a placed object's.
         auto push = [&](const glm::vec3& a, const glm::vec3& b, const glm::vec3& c, float clearance, float reach,
@@ -126,16 +126,17 @@ public:
             }
         };
         // The drawn ground, which the plants stand on: the flat terrain lies up to the smoothing's offset over it.
+        // Within `terrain_reach` over a spot (ZoneFloraRules::terrain_cover).
         std::vector<glm::vec3> drawn, surfaces, cover;
         for (const auto& mesh : drawn_terrain(zone)) {
             drawn.clear();
             world_triangles(mesh, nullptr, false, drawn);
             for (std::size_t i = 0; i + 3 <= drawn.size(); i += 3)
-                push(drawn[i], drawn[i + 1], drawn[i + 2], kClearance, std::numeric_limits<float>::infinity(), false);
+                push(drawn[i], drawn[i + 1], drawn[i + 2], kClearance, terrain_reach, false);
         }
-        // The placed objects as drawn (append_object_cover): a small, low one (a campfire, a crate, a barrel) its
-        // whole footprint, a larger one (a tent, a wagon) its opaque surfaces within kObjectReach over the ground, so
-        // a tree's canopy and its cut-out leaves leave the grass under it.
+        // The placed objects as drawn (append_object_cover): a small, low fire its whole footprint, anything else its
+        // opaque surfaces within kObjectReach over the ground, so a tree's canopy and its cut-out leaves leave the
+        // grass under it; a plant none.
         for (const auto& placement : zone.placements) {
             auto found = zone.draw_objects.find(placement.actor);
             const Mesh* mesh = nullptr;
@@ -147,7 +148,8 @@ public:
             cover.clear();
             world_triangles(*mesh, &placement.transform, false, drawn);
             world_triangles(*mesh, &placement.transform, true, surfaces);
-            append_object_cover(drawn, surfaces, is_plant(placement.actor, *mesh), cover);
+            if (is_plant(placement.actor, *mesh)) continue; // the grass grows under a bush, a sapling
+            append_object_cover(drawn, surfaces, is_fire_object(placement.actor, *mesh), cover);
             for (std::size_t i = 0; i + 3 <= cover.size(); i += 3)
                 push(cover[i], cover[i + 1], cover[i + 2], kObjectClearance, kObjectReach, true);
         }
@@ -228,7 +230,7 @@ private:
     struct Tri {
         glm::vec3 p[3];
         float clearance = 0.0f; // how far over a point it must lie to cover it: kClearance, an object's less
-        float reach = 0.0f;     // how far over a point it covers it: the terrain any height, an object kObjectReach
+        float reach = 0.0f;     // how far over a point it covers it: the terrain terrain_reach, an object kObjectReach
         bool object = false;    // a placed object's (or its footprint's)
     };
     static bool over(const Tri& t, const glm::vec3& p) {
@@ -465,13 +467,8 @@ bool is_plant(std::string_view actor, const Mesh& mesh) {
         "tree", "pine", "palm", "bush", "shrub", "plant", "fern", "grass", "leaf", "leav", "flower", "vine", "reed",
         "willow", "oak", "branch", "weed", "cactus", "hedge", "frond", "ivy", "foliage", "sapling", "cattail",
         "bamboo", "birch", "maple", "cedar", "spruce", "kelp", "seaweed", "bramble", "thorn"};
-    auto lower = [](std::string_view s) {
-        std::string out(s);
-        for (char& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        return out;
-    };
-    auto named = [&](std::string_view s) {
-        std::string l = lower(s);
+    auto named = [](std::string_view s) {
+        const std::string l = lower(s);
         for (std::string_view w : kWords)
             if (l.find(w) != std::string::npos) return true;
         return false;
@@ -484,7 +481,21 @@ bool is_plant(std::string_view actor, const Mesh& mesh) {
     return masked && match;
 }
 
-void append_object_cover(std::span<const glm::vec3> drawn, std::span<const glm::vec3> surfaces, bool plant,
+bool is_fire_object(std::string_view actor, const Mesh& mesh) {
+    auto named = [](std::string_view s) {
+        const std::string l = lower(s);
+        return l.find("fire") != std::string::npos || l.find("camp") != std::string::npos ||
+               l.find("coal") != std::string::npos;
+    };
+    if (named(actor)) return true;
+    for (const auto& m : mesh.materials)
+        if (flame_material_hue(m) != FlameHue::None || named(m.name) ||
+            std::any_of(m.frames.begin(), m.frames.end(), named))
+            return true;
+    return false;
+}
+
+void append_object_cover(std::span<const glm::vec3> drawn, std::span<const glm::vec3> surfaces, bool fire,
                          std::vector<glm::vec3>& out) {
     glm::vec3 lo(std::numeric_limits<float>::max()), hi(std::numeric_limits<float>::lowest());
     bool any = false;
@@ -494,7 +505,7 @@ void append_object_cover(std::span<const glm::vec3> drawn, std::span<const glm::
         hi = glm::max(hi, q);
         any = true;
     }
-    if (any && !plant && hi.z - lo.z <= kObjectCoverReach) {
+    if (any && fire && hi.z - lo.z <= kObjectCoverReach) {
         const glm::vec2 c = (glm::vec2(lo) + glm::vec2(hi)) * 0.5f;
         float r2 = 0.0f;
         for (const auto& q : drawn)
@@ -720,7 +731,7 @@ ZoneFloraGrower::ZoneFloraGrower(const Zone& zone, const ZoneFloraRules& rules,
         d.tile_start.push_back(static_cast<std::uint32_t>(d.tile_tris.size()));
     }
     d.regions = zone.regions;
-    d.cover.emplace(zone);
+    d.cover.emplace(zone, rules.terrain_cover);
 }
 
 ZoneFloraGrower::~ZoneFloraGrower() = default;
@@ -1144,6 +1155,7 @@ std::size_t add_zone_flora(const GameDir& game, Zone& zone, const std::filesyste
     std::string source;
     auto rules = load_zone_flora_rules(rules_dir, zone.name, outdoor, &source);
     if (!rules) return 0;
+    if (outdoor) rules->terrain_cover = kOutdoorTerrainCover; // grass under a cliff's overhang, not under a roof
     // The lawn needs no donor; the other kinds do, and are left out (logged) when theirs is missing.
     FloraDonors donor;
     if (!rules->donors.empty()) {

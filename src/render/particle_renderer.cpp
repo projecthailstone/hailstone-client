@@ -417,8 +417,8 @@ void ParticleRenderer::draw(const FrameInfo& frame, const glm::mat4& view_proj, 
                 l.grid = texture_frame_info.grid;
                 // Lowered once into the scratch buffer for both lookups, no string made.
                 const std::string& name = lowered(texture_frame_info.texture);
-                const auto slot = particle_texture_slot(name, slots_, loading_);
-                l.frames.push_back({slot.value_or(0u), !slot});
+                const auto texture = particle_texture_slot(name, slots_, loading_);
+                l.frames.push_back({texture.value_or(0u), !texture});
             }
         }
         return l;

@@ -35,12 +35,13 @@
 // A zone without a file of its own takes flora/default.txt when the server calls it outdoor (time type 1, 2 or 5).
 // Plants grow only on opaque or cut-out surfaces (not the translucent water) and keep off water, lava and zone-line
 // regions and the water's surface, and off ground with the zone's terrain over it (a dungeon's ceiling, a roof, a
-// bridge) or a placed object's opaque surface low over it (a crate, a tent; not a tree's crown or its leaves), and
+// bridge; outdoors only within kOutdoorTerrainCover, so not under a cliff's overhang) or a placed object's opaque surface low over it (a crate, a tent; not a tree's crown or its leaves), and
 // off what the server places when the caller says so (FloraCover: its doors and objects, a campfire spawn).
 
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -80,7 +81,13 @@ struct ZoneFloraRules {
     float min_scale = 1.0f, max_scale = 1.0f;
     float lawn_min = 1.8f, lawn_max = 3.0f; // the lawn's blade height, units
     std::vector<Ground> ground;
+    // How far over a spot the zone's terrain still covers it (no plants under it): any height, or in an outdoor zone
+    // kOutdoorTerrainCover (add_zone_flora). Not a rules-file directive.
+    float terrain_cover = std::numeric_limits<float>::infinity();
 };
+// In an outdoor zone the terrain covers the ground only this far over it (Hailstone's own choice): a hut's roof or a
+// low bridge's deck, not a cliff's overhang or an arch high overhead.
+inline constexpr float kOutdoorTerrainCover = 20.0f;
 
 // The text of the rules file `name` (an include), or nullopt.
 using ZoneFloraInclude = std::function<std::optional<std::string>(std::string_view name)>;
@@ -152,17 +159,22 @@ bool covers_from_above(const glm::vec3& a, const glm::vec3& b, const glm::vec3& 
 // masked material) and a name, of its own or of one of its materials or textures, that says so.
 bool is_plant(std::string_view actor, const Mesh& mesh);
 
-// A small, low placed object (within kSmallObjectRadius of its centre in the plane and kObjectCoverReach from its
-// bottom to its top: a campfire, a crate, a barrel, a rock) covers its whole footprint, a kFootprintSides-sided disc
-// round it kFootprintMargin wider (half a lawn square: a square's blades spread that far from its centre), not only
-// the ground under its surfaces: a campfire's ring of logs has nothing over its middle. Hailstone's own choices.
+// Whether a placed object is a fire on the ground's kind (a campfire, its logs and coals): a flame material
+// (flame_material_hue), or a name, of its own or of one of its materials or textures, with "fire", "camp" or "coal".
+bool is_fire_object(std::string_view actor, const Mesh& mesh);
+
+// A small, low fire (is_fire_object, within kSmallObjectRadius of its centre in the plane and kObjectCoverReach from
+// its bottom to its top) covers its whole footprint, a kFootprintSides-sided disc round it kFootprintMargin wider
+// (half a lawn square: a square's blades spread that far from its centre), not only the ground under its surfaces: a
+// campfire's ring of logs has nothing over its middle, and its flame never covers. Any other object covers by its
+// surfaces, so the grass grows up to a rock's foot (what grows inside a solid one is hidden). Hailstone's own choices.
 inline constexpr float kSmallObjectRadius = 12.0f, kFootprintMargin = kLawnCell * 0.5f;
 inline constexpr int kFootprintSides = 16;
 // A placed object's cover from its triangles in the world (3 a triangle): `drawn` all it draws, for its size;
-// `surfaces` those that cover from above when it is not small (a zone object's opaque ones), walls left out. Appended
-// to `out`: its footprint disc, or its surfaces. A plant (is_plant: a bush, a sapling) never takes the disc, so the
-// grass grows under it. Test them with kObjectCoverClearance and kObjectCoverReach.
-void append_object_cover(std::span<const glm::vec3> drawn, std::span<const glm::vec3> surfaces, bool plant,
+// `surfaces` those that cover from above (a zone object's opaque ones; none for a plant), walls left out. Appended to
+// `out`: its footprint disc when `fire` and it is small and low, else its surfaces. Test them with
+// kObjectCoverClearance and kObjectCoverReach.
+void append_object_cover(std::span<const glm::vec3> drawn, std::span<const glm::vec3> surfaces, bool fire,
                          std::vector<glm::vec3>& out);
 
 // A spawn that stands for an object on the ground (a campfire, race 567): its footprint round its feet covers the

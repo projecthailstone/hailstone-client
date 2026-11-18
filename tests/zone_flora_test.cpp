@@ -283,7 +283,7 @@ TEST_CASE("zone flora: no plants under a placed object low over the ground, but 
     CHECK(crown.instances.size() > 900);
 }
 
-TEST_CASE("zone flora: a small, low object clears its whole footprint, a small plant does not") {
+TEST_CASE("zone flora: a campfire clears its whole footprint, a rock or a bush of its shape does not") {
     // A campfire's ring of logs: eight upright quads 5 units round (60, 60), a unit tall, nothing over the middle.
     Mesh ring;
     constexpr int kLogs = 8;
@@ -322,12 +322,34 @@ TEST_CASE("zone flora: a small, low object clears its whole footprint, a small p
     place_zone_flora(zone, rules, defs, flora);
     CHECK(near_fire(flora, 5.0f + kFootprintMargin) == 0); // the middle too, whatever the lawn's offset
     CHECK(near_fire(flora, 14.0f) > 0);
-    // A bush of the same shape (see-through leaves, named so) keeps the grass under it.
+    // A rock of the same shape (no fire in its name or materials) covers only under its surfaces, so the grass grows
+    // up to it and, a ring with nothing over it, inside it.
+    zone.placements[0].actor = "ROCK";
+    zone.objects["ROCK"] = ring;
+    zone.objects["ROCK"].materials[0].frames = {"stone.bmp"};
+    ZoneFlora rock;
+    place_zone_flora(zone, rules, defs, rock);
+    CHECK(near_fire(rock, 4.0f) > 0);
+    CHECK(near_fire(rock, 6.0f) > near_fire(rock, 4.0f));
+    // A bush of the same shape (see-through leaves, named so) keeps the grass under it, its name notwithstanding.
+    zone.placements[0].actor = "CAMPFIRE";
     zone.objects["CAMPFIRE"].materials[0].frames = {"bush.bmp"};
     zone.objects["CAMPFIRE"].materials[0].blend = BlendMode::Masked;
     ZoneFlora bush;
     place_zone_flora(zone, rules, defs, bush);
     CHECK(near_fire(bush, 4.0f) > 0);
+}
+
+TEST_CASE("zone flora: which objects are fires") {
+    Mesh m;
+    Material stone;
+    stone.frames = {"stone.bmp"};
+    m.materials.push_back(stone);
+    CHECK_FALSE(is_fire_object("ROCK01", m));
+    CHECK(is_fire_object("CAMPFIRE", m));
+    CHECK(is_fire_object("FIREWOOD_ACTORDEF", m));
+    m.materials[0].frames = {"coals.bmp"};
+    CHECK(is_fire_object("PIT", m));
 }
 
 TEST_CASE("zone flora: cover from outside the zone's files (the server's objects, a campfire)") {
@@ -389,6 +411,29 @@ TEST_CASE("zone flora: a campfire spawn covers a disc round its feet") {
     CHECK(campfire_cover({}, 50.0f).radius == doctest::Approx(kCoverDiscMax + kFootprintMargin));
     CHECK(campfire_cover({}, std::numeric_limits<float>::quiet_NaN()).radius ==
           doctest::Approx(kCoverDiscMin + kFootprintMargin));
+}
+
+TEST_CASE("zone flora: outdoors the terrain covers only within kOutdoorTerrainCover") {
+    std::vector<eqg::FloraDefinition> defs = {definition("grass", 2.0f)};
+    auto rules = parse_zone_flora_rules("ground grass* 10 grass\nground roof* 0\n");
+    rules.terrain_cover = kOutdoorTerrainCover;
+    Zone zone;
+    zone.terrain.push_back(square("grass.bmp", 100.0f));
+    // An overhang over the square's left half (x 0 .. 50), first high (a cliff's), then low (a hut's roof).
+    Mesh roof = square("roof.bmp", 50.0f);
+    for (auto& v : roof.vertices) {
+        v.position.y *= 2.0f;
+        v.position.z = kOutdoorTerrainCover + 20.0f;
+    }
+    zone.terrain.push_back(roof);
+    ZoneFlora high;
+    place_zone_flora(zone, rules, defs, high);
+    CHECK(high.instances.size() > 900);
+    for (auto& v : zone.terrain[1].vertices) v.position.z = 10.0f;
+    ZoneFlora low;
+    place_zone_flora(zone, rules, defs, low);
+    CHECK(low.instances.size() < 600);
+    for (const auto& p : low.instances) CHECK(p.position.x >= 50.0f);
 }
 
 TEST_CASE("zone flora: roofs across the whole zone still cover, and their cell references stay bounded") {

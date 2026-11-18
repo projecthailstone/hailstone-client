@@ -178,6 +178,7 @@ private:
         int gpu = -1;              // ObjectRenderer handle
         game::ObjectShape shape;   // solid triangles in model space
         bool plant = false;        // assets::is_plant: the grass grows under it (flora_cover)
+        bool fire = false;         // assets::is_fire_object: a campfire covers its footprint (flora_cover)
         // Model emitters (EQG point records or WLD node clouds), bone 0 = the model's own space; null without.
         std::unique_ptr<assets::CharacterMesh> emitters;
     };

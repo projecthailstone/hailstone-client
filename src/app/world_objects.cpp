@@ -236,6 +236,7 @@ const WorldObjects::Model* WorldObjects::model_for(const std::string& raw) {
     model->gpu = renderer_->add_model(*mesh, read);
     model->shape = game::ObjectShape::from_mesh(*mesh);
     model->plant = assets::is_plant(base, *mesh);
+    model->fire = assets::is_fire_object(base, *mesh);
     if (!node_emitters.empty()) {
         model->emitters = std::make_unique<assets::CharacterMesh>();
         model->emitters->emitters = std::move(node_emitters);
@@ -492,11 +493,12 @@ std::function<bool(const glm::vec3&)> WorldObjects::flora_cover(glm::vec2 lo, gl
             if (!p.model || !p.visible || p.center.x + p.bound < lo.x || p.center.y + p.bound < lo.y ||
                 p.center.x - p.bound > hi.x || p.center.y - p.bound > hi.y)
                 continue;
+            if (p.model->plant) continue; // the grass grows under a bush
             drawn.clear();
             for (const auto& tri : p.model->shape.visual)
                 for (const glm::vec3& v : {tri.v0, tri.v1, tri.v2}) drawn.emplace_back(p.transform * glm::vec4(v, 1.0f));
-            // A small, low one (a campfire, a crate) covers its footprint; a larger one its surfaces.
-            assets::append_object_cover(drawn, drawn, p.model->plant, tris);
+            // A small, low fire (a campfire) covers its footprint; anything else its surfaces.
+            assets::append_object_cover(drawn, drawn, p.model->fire, tris);
         }
     };
     gather(doors_);
