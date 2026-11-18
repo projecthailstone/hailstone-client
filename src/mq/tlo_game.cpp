@@ -1001,6 +1001,13 @@ void register_item() {
     m("Charges", [](const Context&, const Value&, const net::Item& it, std::string_view) {
         return V::integer(it.charges == 0xffffffffu ? -1 : static_cast<std::int64_t>(it.charges));
     });
+    m("TimerReady", [](const Context& c, const Value&, const net::Item& it, std::string_view) -> V {
+        if (!c.conn) return V::nil();
+        // Use the same later-of-item-and-group recast as the inventory UI.
+        const auto ready_at = static_cast<std::int64_t>(c.conn->item_recast_timer(&it));
+        const auto now = static_cast<std::int64_t>(std::time(nullptr));
+        return V::integer(ready_at > now ? ready_at - now : 0);
+    });
     m("Icon", [](const Context&, const Value&, const net::Item& it, std::string_view) { return V::integer(it.icon); });
     m("Weight", [](const Context&, const Value&, const net::Item& it, std::string_view) { return V::number(it.weight / 10.0); });
     m("NoDrop", [](const Context&, const Value&, const net::Item& it, std::string_view) { return V::boolean(it.no_drop == 0); });

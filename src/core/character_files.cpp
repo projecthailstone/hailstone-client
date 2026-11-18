@@ -38,7 +38,7 @@ bool is_kept_character_file(std::string_view name) {
     static constexpr std::string_view kKept[] = {
         "UI.ini", "hotbuttons.ini", "BZR.ini", "BART.ini", "btrlog.txt", "AddressBook.txt", "IgnoreList.txt",
         "GuildNotes.txt", "chat.ini", "options.ini", "chat_history.txt", "scripts.ini", "kept_items.txt",
-        "bank.dat", "hailstone.ini", "plugin-config",
+        "bank.dat", "blocked_buffs.ini", "hailstone.ini", "plugin-config",
     };
     for (std::string_view kept : kKept)
         if (iequals(name, kept)) return true;

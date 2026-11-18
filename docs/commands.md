@@ -103,7 +103,7 @@ follow the RoF2 client; the ones Hailstone adds are marked as Hailstone's. For t
 | `/aggrometer`, `/aggrolock` | The aggro meter and its lock. |
 | `/marknpc <1..3>`, `/gmarknpc`, `/rmarknpc`, `/clearmarks` | Group and raid NPC marks. |
 | `/indicator [on\|off]` | The target indicator, for this session. |
-| `/blockspell <display\|add\|remove\|clear> <me\|pet> [spell ids]` | Blocked buffs. |
+| `/blockspell <display\|add\|remove\|clear> <me\|pet> [spell ids]` | Manages blocked buffs. The player and pet lists persist per character. Adding an active player buff requests its removal as soon as the server accepts the block. |
 | `/sheathe` | Sheathe or draw your weapons. |
 | `/duel`, `/decline` | Challenge your target to a duel; decline one. |
 

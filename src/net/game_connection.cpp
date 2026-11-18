@@ -851,6 +851,7 @@ void GameConnection::enter_world(const std::string& name, bool return_home) {
     load_chat_filters(); // the character's chat.ini over eqclient.ini's
     load_client_options(); // and options.ini
     load_kept_items();     // Hailstone: the Keep marks (kept_items.txt)
+    load_blocked_buffs();
     load_bank_snapshot();  // Hailstone: the bank as last seen (bank.dat)
     EnterWorld e;
     e.name = name;

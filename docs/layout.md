@@ -63,6 +63,7 @@ hailstone/
                              hailstone.ini, the client's settings for this character ("A character's settings" below);
                              kept_items.txt (the items marked Keep in the Advanced Inventory window, one
                              "<item id> <name>" a line; game/kept_items.h);
+                             blocked_buffs.ini (the player and pet blocked spell lists, restored on zone-in);
                              bank.dat (the bank and shared bank as last seen, which the Advanced Inventory lists
                              while the server has not sent the bank; game/bank_snapshot.h);
                              ui-<pack>.txt, the UI's window layout for this character (places, sizes, scales,

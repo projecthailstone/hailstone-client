@@ -3642,6 +3642,8 @@ private:
     std::map<std::uint32_t, AltCurrency> alt_currencies_;
     PointMerchant point_merchant_;
     std::array<std::vector<std::int32_t>, 2> blocked_buffs_; // player, pet
+    void load_blocked_buffs();
+    void save_blocked_buffs() const;
     void resend_blocked_buffs();
     Tribute tribute_;
     GuildTribute guild_tribute_;
