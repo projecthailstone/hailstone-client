@@ -207,11 +207,15 @@ public:
         }
     }
 
-    // Whether a triangle lies over `p` (straight up) by more than its clearance and within its reach: the terrain's
-    // when `terrain`, the placed objects' when `objects`.
-    bool covered(const glm::vec3& p, bool terrain = true, bool objects = true) const {
+    // Whether a triangle lies over `p` (straight up) by more than its clearance and within its reach (and within
+    // `below`): the terrain's when `terrain`, the placed objects' when `objects`.
+    bool covered(const glm::vec3& p, bool terrain = true, bool objects = true,
+                 float below = std::numeric_limits<float>::infinity()) const {
         if (tris_.empty()) return false;
-        const auto counts = [&](const Tri& t) { return (t.object ? objects : terrain) && over(t, p); };
+        const auto counts = [&](const Tri& t) {
+            return (t.object ? objects : terrain) &&
+                   covers_from_above(t.p[0], t.p[1], t.p[2], p, t.clearance, std::min(t.reach, below));
+        };
         const std::size_t c = index_of(cell(p.x - origin_.x, nx_), cell(p.y - origin_.y, ny_));
         for (std::uint32_t k = start_[c]; k < start_[c + 1]; ++k)
             if (counts(tris_[index_[k]])) return true;
@@ -222,7 +226,9 @@ public:
 
 private:
     static constexpr float kCell = 64.0f;
-    static constexpr float kClearance = 1.0f; // the ground's own triangle, and a decal over it, are not cover
+    // The ground's own triangle, and a decal on it, are not cover; a floor laid a unit over the grass (Plane of
+    // Knowledge's brick tiles over its KATTAGRASSBLUR) is.
+    static constexpr float kClearance = 0.25f;
     static constexpr float kObjectReach = kObjectCoverReach, kObjectClearance = kObjectCoverClearance;
     static constexpr std::uint64_t kBigCells = 1024;      // 2,048 units a side
     static constexpr std::size_t kMaxBig = 256;
@@ -233,9 +239,6 @@ private:
         float reach = 0.0f;     // how far over a point it covers it: the terrain terrain_reach, an object kObjectReach
         bool object = false;    // a placed object's (or its footprint's)
     };
-    static bool over(const Tri& t, const glm::vec3& p) {
-        return covers_from_above(t.p[0], t.p[1], t.p[2], p, t.clearance, t.reach);
-    }
     // The cell of offset `d` along an axis of `n` cells, clamped; a NaN is cell 0. Clamped as a float first: a float
     // out of int32's range cast to it is undefined.
     static std::int32_t cell(float d, std::int32_t n) {
@@ -836,6 +839,9 @@ void grow_lawn(const ZoneFloraGrower::Data& d, const ZoneFloraGrower::Piece& t, 
                 const glm::vec2 off = lawn_cover_offset(q);
                 const glm::vec3 at(glm::vec2(p) + off, p.z + glm::dot(off, slope) + 0.5f * glm::length(off));
                 if (d.cover->covered(at, true, false)) continue;
+                // A floor laid over the ground lower than the blades are tall (a path's tiles over the grass): they
+                // would show through it, so the square's centre asks, without the offset.
+                if (d.cover->covered(p, true, false, d.rules.lawn_max)) continue;
                 // Under an object by the centre itself: an object is small beside the offset (a campfire is some
                 // ten units across), which would scatter its bare ground.
                 if (d.cover->covered(p, false, true)) continue;

@@ -413,6 +413,24 @@ TEST_CASE("zone flora: a campfire spawn covers a disc round its feet") {
           doctest::Approx(kCoverDiscMin + kFootprintMargin));
 }
 
+TEST_CASE("zone flora: no lawn under a floor laid a unit over the grass") {
+    // Plane of Knowledge's brick tiles lie one unit over its grass texture: the blades (1.8 .. 3 units) showed through.
+    std::vector<eqg::FloraDefinition> defs = {definition("grass", 2.0f)};
+    auto rules = parse_zone_flora_rules("ground grass* 10 grass lawn\nground brick* 0\n");
+    Zone zone;
+    zone.terrain.push_back(square("grass.bmp", 100.0f));
+    Mesh floor = square("brick.bmp", 50.0f);
+    for (auto& v : floor.vertices) {
+        v.position.y *= 2.0f;
+        v.position.z = 1.0f;
+    }
+    zone.terrain.push_back(floor);
+    ZoneFlora flora;
+    place_zone_flora(zone, rules, defs, flora);
+    CHECK(flora.instances.size() > 500);
+    for (const auto& p : flora.instances) CHECK(p.position.x >= 50.0f);
+}
+
 TEST_CASE("zone flora: outdoors the terrain covers only within kOutdoorTerrainCover") {
     std::vector<eqg::FloraDefinition> defs = {definition("grass", 2.0f)};
     auto rules = parse_zone_flora_rules("ground grass* 10 grass\nground roof* 0\n");

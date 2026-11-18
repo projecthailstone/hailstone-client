@@ -2,6 +2,7 @@
 
 ## Unreleased
 - Grass: Hailstone's grass on the classic zones no longer grows through crates, tents, wagons, rocks, campfires and other objects on the ground, whether the zone's own or placed by the server (doors, dropped items and tradeskill containers, housing items, campfire spawns). It still grows under trees
+- Grass: no longer shows through paths and floors laid just over the grass, such as the brick tiles in the Plane of Knowledge
 - Grass: in outdoor zones, grass now grows under cliff overhangs and arches high overhead; roofs and low bridges still keep the ground under them bare
 - Options: Grass Density goes up to 300 % (it stopped at 200 %); 100 % is unchanged
 - Spell effects: a particle whose texture is missing from the game folder is no longer drawn as a white square. Spear of Decay and other spells using effect 226 left a large white square on the caster

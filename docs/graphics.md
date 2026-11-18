@@ -779,8 +779,10 @@ costs about 0.4 ms a frame at the default reach.
 
 **Where.** On level ground (45 degrees by default) of a drawn, opaque or cut-out surface: not the invisible collision
 surfaces, nor the translucent water. Not in water, lava or a zone line, nor on the water's surface (the region just
-under the foot). Not where the zone's own drawn terrain lies overhead: a dungeon's ceiling, a roof, a bridge, an
-overhang; in a zone the server calls outdoor (time type 1, 2 or 5) only within 20 units over the ground
+under the foot). Not where the zone's own drawn terrain lies overhead, more than a quarter of a unit over the
+ground: a dungeon's ceiling, a roof, a bridge, an overhang, or a floor laid over the grass (Plane of Knowledge's
+brick tiles lie a unit over its grass texture; a lawn square asks about such a floor, one lower than its blades are
+tall, at its centre rather than at its wandering spot); in a zone the server calls outdoor (time type 1, 2 or 5) only within 20 units over the ground
 (`assets::kOutdoorTerrainCover`), so a hut's roof or a low bridge keeps the ground under it bare while a cliff's
 overhang or an arch high overhead does not. Nor under a placed object (`assets::append_object_cover`): a small, low fire (`assets::is_fire_object`: a
 flame material, or "fire", "camp" or "coal" in its name or its materials'; within 12 units of its middle and 16 from
