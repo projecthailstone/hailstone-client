@@ -305,17 +305,15 @@ void ParticleRenderer::prepare(const game::ParticleSystem& particles) {
     UploadBatch upload(vk_);
     for (auto& [name, t] : done) {
         loading_.erase(name);
-        // A missing texture's particles are not drawn (particle_texture_slot); one past the limit is drawn white.
-        std::uint32_t slot = kMissingParticleTexture;
-        if (!t.image) {
-            log::debug("particle texture {} not found", name);
-        } else if (textures_.size() < max_textures_) {
+        // A missing texture's particles are not drawn (particle_texture_slot), nor are those of one past the limit.
+        const std::uint32_t slot = particle_upload_slot(t.image.has_value(), textures_.size(), max_textures_);
+        if (slot != kMissingParticleTexture) {
             colors_[name] = t.color;
-            slot = static_cast<std::uint32_t>(textures_.size());
             textures_.push_back(upload.texture(*t.image, TextureUse::Color));
+        } else if (!t.image) {
+            log::debug("particle texture {} not found", name);
         } else {
             log::debug("particle texture {} past the limit of {}", name, max_textures_);
-            slot = 0;
         }
         slots_.emplace(name, slot);
     }
@@ -417,8 +415,8 @@ void ParticleRenderer::draw(const FrameInfo& frame, const glm::mat4& view_proj, 
                 l.grid = texture_frame_info.grid;
                 // Lowered once into the scratch buffer for both lookups, no string made.
                 const std::string& name = lowered(texture_frame_info.texture);
-                const auto texture = particle_texture_slot(name, slots_, loading_);
-                l.frames.push_back({texture.value_or(0u), !texture});
+                const auto texture_slot = particle_texture_slot(name, slots_, loading_);
+                l.frames.push_back({texture_slot.value_or(0u), !texture_slot});
             }
         }
         return l;

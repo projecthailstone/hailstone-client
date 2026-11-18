@@ -1169,14 +1169,16 @@ int GemInfo(lua_State* L) {
     // (as m.child, the arguments first; the child's looks in a box across the pushes: plugin/lua_keep.h)
     StockWindow* w = m.window(luaL_checkstring(L, 1));
     const char* id = w ? luaL_checkstring(L, 2) : nullptr;
-    Child& c = plugin::lua_keep<Child>(L);
+    // One box for every call (plugin::LuaScratch): a window draws a gem a frame each, and a new box a call was most
+    // of the garbage the gems made. Given back before the return.
+    plugin::LuaScratch<Child> box(L);
+    Child& c = *box;
     if (w) w->child(m.host, id, c);
     push_record(L, 3, 16);
     if (c.shown) lua_pushboolean(L, *c.shown);
     else lua_pushnil(L);
     lua_setfield(L, -2, "shown");
-    lua_pushstring(L, c.tooltip ? c.tooltip->c_str() : "");
-    lua_setfield(L, -2, "tooltip");
+    plugin::set_string_field(L, "tooltip", c.tooltip ? c.tooltip->c_str() : ""); // (no new string while unchanged)
     set_art_fields(L, push_art(m, L, c.spellicon));
     const std::array<float, 4> t = c.gem_tint.value_or(std::array<float, 4>{1, 1, 1, 1});
     set_number(L, "tintR", t[0]);
@@ -1199,6 +1201,7 @@ int GemInfo(lua_State* L) {
     } else {
         set_nil(L, "top");
     }
+    box.release();
     return 1;
 }
 
@@ -1466,15 +1469,17 @@ int HotButtonInfoFn(lua_State* L) {
     const char* child = w ? luaL_checkstring(L, 2) : nullptr;
     const bool span = lua_isnumber(L, 4) && lua_isnumber(L, 5);
     const std::int32_t y0 = span ? number_to_int(lua_tonumber(L, 4)) : 0, y1 = span ? number_to_int(lua_tonumber(L, 5)) : 0;
-    auto& hb = plugin::lua_keep<std::optional<HotButtonInfo>>(L); // across the pushes (plugin/lua_keep.h)
+    // Across the pushes, in one box for every call (plugin::LuaScratch): a bar asks for each button each frame.
+    // Given back before the return.
+    plugin::LuaScratch<std::optional<HotButtonInfo>> box(L);
+    auto& hb = *box;
     if (w) hb = w->hot_button(m.host, child);
     const HotButtonInfo empty;
     const HotButtonInfo& info = hb ? *hb : empty;
     push_record(L, 3, 24);
-    lua_pushstring(L, info.kind.c_str());
-    lua_setfield(L, -2, "kind");
-    lua_pushstring(L, info.label.c_str());
-    lua_setfield(L, -2, "label");
+    // (the strings only when changed: no new ones each frame for a record the caller keeps)
+    plugin::set_string_field(L, "kind", info.kind.c_str());
+    plugin::set_string_field(L, "label", info.label.c_str());
     if (info.icon) {
         push_cell(L, *info.icon);
         set_art_fields(L, 5);
@@ -1508,10 +1513,8 @@ int HotButtonInfoFn(lua_State* L) {
         lua_pushboolean(L, hb->enabled);
         lua_setfield(L, -2, "enabled");
         set_number(L, "faceCooldown", hb->cooldown);
-        lua_pushstring(L, hb->overlay.c_str());
-        lua_setfield(L, -2, "overlay");
-        lua_pushstring(L, hb->tooltip.c_str());
-        lua_setfield(L, -2, "tooltip");
+        plugin::set_string_field(L, "overlay", hb->overlay.c_str());
+        plugin::set_string_field(L, "tooltip", hb->tooltip.c_str());
     } else {
         for (const char* f : {"color", "lua", "running", "enabled", "faceCooldown", "overlay", "tooltip"}) set_nil(L, f);
     }
@@ -1542,6 +1545,7 @@ int HotButtonInfoFn(lua_State* L) {
         set_nil(L, "tint");
         set_nil(L, "iconAlpha");
     }
+    box.release();
     return 1;
 }
 

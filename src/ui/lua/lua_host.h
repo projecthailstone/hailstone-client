@@ -134,9 +134,6 @@ public:
     };
     // Actual selected-pack loading/drawing errors, excluding independently owned plugin folders.
     LoadStatus load_status() const;
-    // Tests: each frame's collector slice is `steps` LUA_GCSTEPs instead of its time (0: the time), so a cycle spreads
-    // over frames the same way on every machine.
-    void set_gc_steps_for_test(int steps);
     // Tests: let the next frame scan changed/removed overlays without waiting for the one-second scan interval.
     void rescan_for_test();
     // Tests: the state's memory limit and how long the pack's and a plugin's code may run at a time (lua_host.cpp

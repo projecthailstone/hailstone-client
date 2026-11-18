@@ -18,6 +18,7 @@
 // A single string made for one push goes through push_made, which moves it out of the caller's frame first.
 
 #include <cstdio>
+#include <cstring>
 #include <exception>
 #include <new>
 #include <string>
@@ -58,6 +59,104 @@ template <class T, class... A> T& lua_keep(lua_State* L, A&&... args) {
     lua_rotate(L, -2, 1); // the box, then its metatable (nothing from here raises)
     lua_setmetatable(L, -2);
     return *t;
+}
+
+namespace detail {
+
+template <class T> struct ScratchBox {
+    T value{};
+    bool busy = false;
+};
+
+// The registry key of T's scratch box (its address).
+template <class T> inline const char scratch_key = 0;
+
+} // namespace detail
+
+// lua_keep for a function called every frame (a window's per-gem or per-button query): one box of T the state keeps
+// (made on the first call, destroyed when the state closes) and reset to T{} for each call, where lua_keep makes a
+// new userdata with a finalizer each time, which the collector must find in its unsplittable final step, finalize,
+// and free a cycle later. T must be default-constructible and move-assignable.
+//
+// This handle has no destructor (a raise would skip it: see above), so the function calls release() before it
+// returns. While the box is held, another use (a call nested in this one) gets a lua_keep box instead, pushed on the
+// stack as lua_keep pushes it; otherwise nothing is pushed. A raise that skips release() leaves the box held for
+// good, and the function's later calls take lua_keep boxes, as they did before this existed.
+template <class T> class LuaScratch {
+public:
+    explicit LuaScratch(lua_State* L) {
+        detail::ScratchBox<T>* box = nullptr;
+        if (lua_rawgetp(L, LUA_REGISTRYINDEX, &detail::scratch_key<T>) == LUA_TUSERDATA) {
+            box = static_cast<detail::ScratchBox<T>*>(lua_touserdata(L, -1));
+            lua_pop(L, 1);
+        } else {
+            lua_pop(L, 1);
+            box = &lua_keep<detail::ScratchBox<T>>(L);
+            lua_rawsetp(L, LUA_REGISTRYINDEX, &detail::scratch_key<T>); // (the registry holds it from here)
+        }
+        if (box->busy) {
+            value_ = &lua_keep<T>(L);
+            return;
+        }
+        box->value = T{};
+        box->busy = true;
+        box_ = box;
+        value_ = &box->value;
+    }
+    LuaScratch(const LuaScratch&) = delete;
+    LuaScratch& operator=(const LuaScratch&) = delete;
+
+    T& operator*() const { return *value_; }
+    T* operator->() const { return value_; }
+    // Whether this use has the state's box (false: a lua_keep box on the stack).
+    bool kept() const { return box_ != nullptr; }
+    // Gives the box back for the next call (what it holds stays until then).
+    void release() {
+        if (box_) box_->busy = false;
+        box_ = nullptr;
+    }
+
+private:
+    detail::ScratchBox<T>* box_ = nullptr;
+    T* value_ = nullptr;
+};
+
+namespace detail {
+
+// The registry key of a function's T kept for the state (its address).
+template <class T> inline const char state_value_key = 0;
+
+} // namespace detail
+
+// One T for the state, made on the first call and kept until the state closes (unlike LuaScratch, never reset): what
+// a function remembers from one call to the next, such as its last answer. T is a type of the function's own, so no
+// other code shares it. Pushes nothing.
+template <class T> T& lua_state_value(lua_State* L) {
+    if (lua_rawgetp(L, LUA_REGISTRYINDEX, &detail::state_value_key<T>) == LUA_TUSERDATA) {
+        T* t = static_cast<T*>(lua_touserdata(L, -1));
+        lua_pop(L, 1);
+        return *t;
+    }
+    lua_pop(L, 1);
+    T& t = lua_keep<T>(L);
+    lua_rawsetp(L, LUA_REGISTRYINDEX, &detail::state_value_key<T>); // (the registry holds it from here)
+    return t;
+}
+
+// Sets field `field` of the table on top of the stack, which has no metatable (a record the caller hands back each
+// frame), to the text s, unless the field already holds that text. Lua makes a new object for every string longer
+// than 40 bytes it is given (shorter ones it finds again), so a tooltip pushed each frame is garbage each frame even
+// when it has not changed. As lua_pushstring, s ends at its first NUL.
+inline void set_string_field(lua_State* L, const char* field, const char* s) {
+    const std::size_t len = std::strlen(s);
+    lua_getfield(L, -1, field);
+    std::size_t n = 0;
+    const char* old = lua_type(L, -1) == LUA_TSTRING ? lua_tolstring(L, -1, &n) : nullptr;
+    const bool same = old && n == len && std::memcmp(old, s, len) == 0;
+    lua_pop(L, 1);
+    if (same) return;
+    lua_pushlstring(L, s, len);
+    lua_setfield(L, -2, field);
 }
 
 // Pushes s, a string made for this push (push_made(L, name_of(id))): moved first into a thread-local string, which

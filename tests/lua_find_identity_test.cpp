@@ -156,3 +156,17 @@ TEST_CASE("Find identity: provider exceptions become Lua errors without breaking
     CHECK(ui.run("return hs.UI.find.Open(true)") == "true");
     CHECK(ui.run("return #hs.UI.find.Npcs()") == "1");
 }
+
+TEST_CASE("Map policy: an unchanged policy is the same table, made again when any of it changes") {
+    FindUi ui;
+    REQUIRE(ui.run("first=hs.MapPolicy(); return rawequal(first, hs.MapPolicy()) and first.name") == "Shared provider");
+    // No garbage while it stays the same (the windows ask several times a frame).
+    CHECK(ui.run("collectgarbage('stop') local b=collectgarbage('count') local p=hs.MapPolicy() "
+                 "local a=collectgarbage('count') collectgarbage('restart') return rawequal(p, first) and a==b") == "true");
+    ui.provider->policy.name = "Renamed";
+    CHECK(ui.run("second=hs.MapPolicy(); return (not rawequal(second, first)) and first.name=='Shared provider' and second.name") == "Renamed");
+    ui.provider->policy.flags = game::MapPolicyHideStockNpcs;
+    CHECK(ui.run("local p=hs.MapPolicy(); return (not rawequal(p, second)) and p.stock_npcs") == "false");
+    ui.host.conn = nullptr; // another context
+    CHECK(ui.run("local p=hs.MapPolicy(); return (not rawequal(p, second)) and p.context") == "0");
+}
