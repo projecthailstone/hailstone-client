@@ -887,6 +887,14 @@ or the windows, and the zone-in clocks (the input script's, the test drivers') s
 the network steps to the zone loaded (half), then over the settle. Each zone-in logs `zone-in: loading screen up N ms
 (...)`.
 
+While the server plugins' consent question waits, the foreground list would hide it too, so the loading screen
+(the zone-in's and the settling's alike) is drawn instead as a window of its own over the viewport, after every other
+window of the frame, and the question's windows (the client's prompt, or the built-in pack's that asked
+`hs.PluginConsent`) are raised above it: the world, its names and the other windows stay hidden beneath it, and it
+takes their mouse presses. During zone settling the windows get the mouse again for that question, unless `/safelock`
+is on; the world gets none either way. Whether the question waits is read once as the frame's UI begins, so the
+answer does not leave a frame without the loading screen; from the next frame the foreground overlay is back.
+
 Measured on a dev server, zone connect to the first frame shown, before and after: poknowledge 2.2
 → 3.0-3.3 s, qeynos2 1.6 → 2.0 s, commonlands (EQG) 4.6 → 4.9 s. Before, the first frames showed spawns undressed
 for up to 3 s in poknowledge, a large EQG object missing for a frame in commonlands and the HUD without the

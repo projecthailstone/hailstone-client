@@ -1969,11 +1969,10 @@ void loading_screen(const LoadingView& view) {
     ImGui::End();
 }
 
-void loading_overlay(const LoadingView& view) {
-    // Drawn into the foreground list, over every window of the frame (the UI pack's windows draw beneath it), on
-    // the loading screen's background, with loading_screen's panel: title, detail, bar.
+namespace {
+// The loading screen's backdrop and panel (title, detail, bar), drawn into `dl` (loading_overlay).
+void draw_loading_presentation(ImDrawList* dl, const LoadingView& view) {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImDrawList* dl = ImGui::GetForegroundDrawList();
     if (view.picture.id) draw_screen_picture(dl, view.picture);
     else dl->AddRectFilled(vp->Pos, ImVec2(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y), IM_COL32(0, 0, 0, 255));
     const ImGuiStyle& style = ImGui::GetStyle();
@@ -2021,6 +2020,42 @@ void loading_overlay(const LoadingView& view) {
         dl->PathArcTo(sc, r * 0.8f, t, t + kPi * 1.5f, 24);
         dl->PathStroke(ImGui::GetColorU32(ImGuiCol_ButtonActive), 0, r * 0.3f);
     }
+}
+} // namespace
+
+void loading_overlay(const LoadingView& view) {
+    // Drawn into the foreground list, over every window of the frame (the UI pack's windows draw beneath it), on
+    // the loading screen's background, with loading_screen's panel: title, detail, bar.
+    draw_loading_presentation(ImGui::GetForegroundDrawList(), view);
+}
+
+void loading_overlay(const LoadingView& view, bool cover_ui) {
+    if (cover_ui) {
+        loading_overlay(view);
+        return;
+    }
+    // The foreground list would hide the plugin question too. The same presentation in a window of its own over the
+    // viewport, raised over every window begun so far: the world's names (background list) and the other windows
+    // stay beneath it and it takes their mouse presses, and the question's windows go above it when they are raised
+    // after it (lua::raise_guarded_windows).
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->Pos);
+    ImGui::SetNextWindowSize(vp->Size);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::Begin(kLoadingCoverWindow, nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                     ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing |
+                     ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoBackground |
+                     ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleVar(3);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->PushClipRect(vp->Pos, ImVec2(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y));
+    draw_loading_presentation(dl, view);
+    dl->PopClipRect();
+    ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
+    ImGui::End();
 }
 
 // ---- In game --------------------------------------------------------------

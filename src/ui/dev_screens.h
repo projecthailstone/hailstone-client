@@ -450,6 +450,12 @@ void loading_screen(const LoadingView& view);
 // The same screen over everything else drawn this frame (an opaque black backdrop and the panel, in the foreground
 // draw list): the world and its windows run beneath it while the zone settles (app/zone_settle.h).
 void loading_overlay(const LoadingView& view);
+// cover_ui true: the overlay above. False, while the server plugins' consent question waits (the foreground list would
+// hide it too): the same screen in a window of its own (kLoadingCoverWindow) over the viewport, raised over every
+// window begun so far this frame. Draw it after the frame's other windows and raise the question's windows after it
+// (lua::raise_guarded_windows): only they show above it, and it takes the mouse from everything beneath.
+void loading_overlay(const LoadingView& view, bool cover_ui);
+inline constexpr const char* kLoadingCoverWindow = "##hailstone_loading_cover";
 
 // ---- In game --------------------------------------------------------------
 

@@ -1598,6 +1598,9 @@ private:
     std::optional<Clock::time_point> loading_since_;
     std::int64_t zone_loaded_ms_ = -1, zone_in_ms_ = -1;
     bool zone_settling() const { return zone_settle_.active(); }
+    // The server plugins' consent question waited when this frame's UI began: the loading screen is drawn beneath
+    // it, after the other windows (ClientApp::run), in draw_ui and the settling alike, even if it is answered meanwhile.
+    bool loading_under_question_ = false;
     void begin_zone_settle();
     void update_zone_settle();
     // When the character select screen last appeared (the input script's "c<seconds>" clock); unset off it.

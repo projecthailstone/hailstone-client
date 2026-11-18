@@ -258,8 +258,13 @@ void ClientApp::draw_ui(float fps) {
     case Screen::Loading:
         // The same screen as the zone settling behind it (ui::loading_overlay), so it goes on unchanged after the
         // zone-in; the disconnected screen (no waiting) stays a window.
-        if (loading_view_.waiting) ui::loading_overlay(loading_view_);
-        else ui::loading_screen(loading_view_);
+        // While the server plugins' question waits, the frame draws it beneath the question, after the other windows
+        // (ClientApp::run).
+        if (loading_view_.waiting) {
+            if (!loading_under_question_) ui::loading_overlay(loading_view_);
+        } else {
+            ui::loading_screen(loading_view_);
+        }
         break;
     case Screen::InGame: {
         const auto& world = conn_->world();

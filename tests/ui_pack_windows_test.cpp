@@ -78,7 +78,7 @@ struct Session {
         });
         api.load_layout(dir / "defaults.ini", dir / "UI_Test_Server.ini", {});
     }
-    void frames(int n, ui::InGameView* fallback = nullptr) {
+    void frames(int n, ui::InGameView* fallback = nullptr, const ui::LoadingView* loading = nullptr) {
         for (int i = 0; i < n; ++i) {
             ImGuiIO& io = ImGui::GetIO();
             io.DisplaySize = ImVec2(1600, 900);
@@ -87,8 +87,18 @@ struct Session {
             api.begin_frame();
             ImGui::NewFrame();
             if (fallback) (void)ui::in_game_overlay(*fallback);
+            // As the app draws the loading screen (ClientApp::run): over everything, or, while the plugins' question
+            // waits (Automation::frame's guard), a window after the others with the question raised above it.
+            const bool question = loading && host.plugin_consent && host.plugin_consent().has_value();
+            ui::lua::set_consent_guard(question);
+            if (loading && !question) ui::loading_overlay(*loading);
             lua.frame();
+            if (question) {
+                ui::loading_overlay(*loading, false);
+                ui::lua::raise_guarded_windows();
+            }
             ImGui::Render();
+            ui::lua::set_consent_guard(false);
         }
     }
 };
@@ -3169,7 +3179,7 @@ TEST_CASE("UI packs: each claims the achievement and reward windows while they a
     }
 }
 
-TEST_CASE("UI packs: the server plugins' question draws in each pack in the client's place") {
+TEST_CASE("UI packs: the server plugins' question draws above the loading cover in each pack") {
     // In the world, and on the loading screen, where a required plugin's question holds the zone-in (no game or
     // character UI is ready there).
     for (const bool in_game : {true, false})
@@ -3191,28 +3201,67 @@ TEST_CASE("UI packs: the server plugins' question draws in each pack in the clie
             std::optional<plugin::ConsentPrompt> prompt;
             s.host.plugin_consent = [&] { return prompt; };
             s.host.answer_plugin_consent = [&](std::optional<bool>) { prompt.reset(); };
-            auto drawn = [&] {
+            ui::LoadingView loading;
+            loading.title = "Checking required add-ons";
+            loading.detail = "Review the required plugin's permission request to continue.";
+            auto consent_window = [&]() -> ImGuiWindow* {
                 for (ImGuiWindow* win : ImGui::GetCurrentContext()->Windows)
                     if (win->WasActive && (std::string(win->Name).find("###modern.PluginConsent") != std::string::npos ||
                                            std::string(win->Name) == "Server Plugins"))
-                        return true;
-                return false;
+                        return win;
+                return nullptr;
             };
-            s.frames(2);
+            auto draw_index = [](const ImDrawList* list) {
+                const ImDrawData* data = ImGui::GetDrawData();
+                for (int i = 0; i < data->CmdListsCount; ++i)
+                    if (data->CmdLists[i] == list) return i;
+                return -1;
+            };
+            auto foreground_cover = [&] {
+                const ImDrawList* foreground = ImGui::GetForegroundDrawList();
+                CHECK_FALSE(foreground->VtxBuffer.empty());
+                CHECK(draw_index(foreground) == ImGui::GetDrawData()->CmdListsCount - 1);
+                CHECK(ImGui::GetBackgroundDrawList()->VtxBuffer.empty());
+            };
+            s.frames(2, nullptr, &loading);
             CHECK(s.api.replaces("PluginConsent")); // the client's own prompt stays off
-            CHECK_FALSE(drawn());
+            CHECK(consent_window() == nullptr);
+            foreground_cover();
             plugin::ConsentPrompt p;
             p.server = "Alpha";
             p.serial = 1;
             p.files.push_back({"MQ2Thing", "MQ2Thing.so", 2u * 1024 * 1024, {}});
             p.files.push_back({"MQ2Other", "MQ2Other.so", 4096, {}});
             prompt = p;
-            s.frames(3);
-            CHECK(drawn());
+            s.frames(3, nullptr, &loading);
+            ImGuiWindow* consent = consent_window();
+            REQUIRE(consent);
+            // The loading screen is a window over every other one (in the world: the pack's windows, drawn before it),
+            // beneath the question alone; nothing goes in the foreground list over the question.
+            ImGuiWindow* cover = ImGui::FindWindowByName(ui::kLoadingCoverWindow);
+            REQUIRE(cover);
+            CHECK_FALSE(cover->DrawList->VtxBuffer.empty());
+            CHECK(draw_index(consent->DrawList) > draw_index(cover->DrawList));
+            int beneath = 0;
+            for (ImGuiWindow* win : ImGui::GetCurrentContext()->Windows) {
+                if (win == cover || win->RootWindow == consent || !win->WasActive || win->DrawList->VtxBuffer.empty() ||
+                    draw_index(win->DrawList) < 0)
+                    continue;
+                CAPTURE(win->Name);
+                CHECK(draw_index(win->DrawList) < draw_index(cover->DrawList));
+                ++beneath;
+            }
+            if (in_game) CHECK(beneath > 0); // (the pack draws its game windows; the check above has something to do)
+            CHECK(ImGui::GetForegroundDrawList()->VtxBuffer.empty());
+            // The mouse anywhere but the question is over the cover, not the windows beneath it.
+            ImGui::GetIO().AddMousePosEvent(consent->Pos.x > 40.0f ? 5.0f : 1595.0f, 895.0f);
+            s.frames(1, nullptr, &loading);
+            CHECK(ImGui::GetCurrentContext()->HoveredWindow == cover);
             CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
             prompt.reset();
-            s.frames(2);
-            CHECK_FALSE(drawn());
+            s.frames(2, nullptr, &loading);
+            CHECK(consent_window() == nullptr);
+            foreground_cover();
             CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
         }
         ImGui::DestroyContext(ctx);
@@ -3316,13 +3365,18 @@ end
     }
 }
 
-// A click meant for something else the instant the question pops up must not answer it: each pack's Allow waits a
-// second after the question shows (or a new one takes its place), and answers with the question's serial.
-TEST_CASE("UI packs: the server plugins' question takes no answer in its first second") {
+// A click meant for something else the instant the question pops up must not answer it: both buttons wait a
+// second after the question shows. The real loading cover must leave both answers reachable afterward.
+TEST_CASE("UI packs: both plugin answers arm and remain reachable above the loading cover") {
+    for (const bool in_game : {true, false})
+    for (const bool allow : {true, false})
     for (const char* pack : {"modern", "gamepad"}) {
         CAPTURE(pack);
+        CAPTURE(in_game);
+        CAPTURE(allow);
         fs::path src = fs::path(__FILE__).parent_path().parent_path() / "ui" / pack;
-        hailstone::test::ScratchDir dir_scratch(std::string("ui_pack_consent_arm_") + pack);
+        hailstone::test::ScratchDir dir_scratch(std::string("ui_pack_consent_arm_") + pack +
+                                               (in_game ? "_game" : "_load") + (allow ? "_allow" : "_deny"));
         fs::path dir = dir_scratch.path();
         fs::create_directories(dir / "game");
         fs::copy(src, dir / pack, fs::copy_options::recursive);
@@ -3332,7 +3386,10 @@ TEST_CASE("UI packs: the server plugins' question takes no answer in its first s
         int w = 0, h = 0;
         ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&px, &w, &h);
         {
-            Session s(dir, pack);
+            Session s(dir, pack, {}, in_game);
+            ui::LoadingView loading;
+            loading.title = "Checking required add-ons";
+            loading.detail = "Review the required plugin's permission request to continue.";
             std::optional<plugin::ConsentPrompt> prompt;
             std::vector<std::optional<bool>> answers;
             s.host.plugin_consent = [&] { return prompt; };
@@ -3346,16 +3403,18 @@ local button, invisible = ui.Button, ui.InvisibleButton
 ui.Button = function(label, ...)
   local hit = button(label, ...)
   if label == "Allow##consent" then allowRect = { ui.GetItemRect() } end
+  if label == "Don't allow##consent" then denyRect = { ui.GetItemRect() } end
   return hit
 end
 ui.InvisibleButton = function(id, ...)
   local hit = invisible(id, ...)
   if id == "##consentallow" then allowRect = { ui.GetItemRect() } end
+  if id == "##consentdeny" then denyRect = { ui.GetItemRect() } end
   return hit
 end
 )lua") == LUA_OK);
-            auto click_allow = [&] {
-                lua_getglobal(L, "allowRect");
+            auto click_answer = [&] {
+                lua_getglobal(L, allow ? "allowRect" : "denyRect");
                 REQUIRE(lua_istable(L, -1));
                 float rect[4]{};
                 for (int i = 0; i < 4; ++i) {
@@ -3366,25 +3425,25 @@ end
                 lua_settop(L, 0);
                 auto& io = ImGui::GetIO();
                 io.AddMousePosEvent((rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2);
-                s.frames(1);
+                s.frames(1, nullptr, &loading);
                 io.AddMouseButtonEvent(0, true);
-                s.frames(1);
+                s.frames(1, nullptr, &loading);
                 io.AddMouseButtonEvent(0, false);
-                s.frames(1);
+                s.frames(1, nullptr, &loading);
             };
             plugin::ConsentPrompt p;
             p.server = "Alpha";
             p.serial = 4;
             p.files.push_back({"MQ2Thing", "MQ2Thing.so", 4096, {}});
             prompt = p;
-            s.frames(3);
-            click_allow(); // within its first second: nothing
+            s.frames(3, nullptr, &loading);
+            click_answer(); // within its first second: nothing
             CHECK(answers.empty());
             CHECK(prompt.has_value());
-            s.frames(65);
-            click_allow();
+            s.frames(65, nullptr, &loading);
+            click_answer();
             REQUIRE(answers.size() == 1);
-            CHECK(answers[0] == std::optional<bool>(true));
+            CHECK(answers[0] == std::optional<bool>(allow));
             CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
         }
         ImGui::DestroyContext(ctx);

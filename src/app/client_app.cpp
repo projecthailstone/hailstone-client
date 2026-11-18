@@ -139,8 +139,10 @@ int ClientApp::run() {
         // The gamepad before the UI frame: its mode decides what ImGui gets from it (docs/gamepad.md).
         update_gamepad(dt);
         // /safelock: the windows get no mouse while the interface is locked (__ProcessMouseEvents).
-        // Behind the loading screen (zone_settle_) neither do they.
-        ui_.set_mouse_locked(conn_ && screen_ == Screen::InGame && (conn_->interface_locked() || zone_settling()));
+        // Behind the loading screen (zone_settle_) neither do they, except to answer a native plugin question: the
+        // loading screen is then a window over the others (ui::loading_overlay), which takes their presses.
+        ui_.set_mouse_locked(ui_mouse_locked(conn_ && screen_ == Screen::InGame, conn_ && conn_->interface_locked(),
+                                             zone_settling(), automation_ && automation_->plugin_consent().has_value()));
         ui_.new_frame();
         update_lap.mark("gamepad, UI new frame");
         // The boats move first: the player is carried by, and collides with, a boat where it is drawn this frame.
@@ -220,6 +222,7 @@ int ClientApp::run() {
         core::frame_sections::Lap lap;
         sync_item_preview();
         lap.mark("item preview sync");
+        loading_under_question_ = automation_ && automation_->plugin_consent().has_value();
         if (ui_.visible()) draw_ui(fps);
         lap.mark("draw_ui");
         if (lua_ui_) {
@@ -237,9 +240,16 @@ int ClientApp::run() {
         }
         window_.set_text_input(std::exchange(web_text_input_, false) && ui_.visible()); // a page that has the keys (app/lua_ui_web.cpp)
         settle_frame_.ui = true; // UI maintenance ran; loading/settling presentations are always visible
-        if (screen_ == Screen::InGame && zone_settling()) ui::loading_overlay(loading_view_);
+        if (screen_ == Screen::InGame && zone_settling() && !loading_under_question_) ui::loading_overlay(loading_view_);
         if (automation_ && ui_.visible()) automation_->imgui(game_view_.dev_windows);
         if (ui_.visible()) addon_policy_window();
+        // The server plugins' question waits: the loading screen (draw_ui's, or the settling's) is a window beneath
+        // it, drawn after every other window and with the question raised again above it (ui::loading_overlay).
+        if (loading_under_question_ && ((screen_ == Screen::InGame && zone_settling()) ||
+                                        (screen_ == Screen::Loading && loading_view_.waiting))) {
+            ui::loading_overlay(loading_view_, false);
+            ui::lua::raise_guarded_windows();
+        }
         // The select clock runs on through character creation (input scripts drive both screens).
         if (screen_ != Screen::Characters && screen_ != Screen::Create) select_shown_.reset();
         else if (!select_shown_) select_shown_ = Clock::now();

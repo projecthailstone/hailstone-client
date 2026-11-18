@@ -11,6 +11,7 @@ Written 2026-10-28 from `docs/unknowns.md` and `docs/plan.md`.
 - [ ] Letting a required add-on run above `player_caps` (PR #93 asked for it) needs a load-time check that its files are the ones a signed manifest named; the client keeps neither the signed manifest nor per-file signed hashes, so naming a repository grants no capabilities for now.
 - [x] Minimum versions on required add-ons (`required = owner/repo:1.0.0-preview.4`, SemVer order, highest minimum wins, malformed = invalid policy). From fryguy503's PR #93.
 - [x] Decided at the zone-in by its own rules (the cached copy only informs the login screen); before the world shows a problem refuses entry, once in it a failure warns once in chat and never disconnects; readiness and approvals cached by the rules, approvals and running set; package hashes remembered by size and time.
+- [x] Keep native plugin permission requests above the loading screen, with tests for drawing, mouse input and both answers in Modern and Gamepad.
 - [ ] Live acceptance of a first visit and a return visit, a policy fixed by the server, missing/refused/failed requirements at the zone-in and mid-session, both UI packs and controller input, and an upscaler allowed/blocked/updated followed by restart.
 
 ## Launcher login
