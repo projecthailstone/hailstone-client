@@ -266,3 +266,33 @@ TEST_CASE("smooth: spawns stepped on the worker threads come out as they do step
     }
     CHECK(pooled_world.spawns.at(20).display_position == pooled_world.spawns.at(21).display_position);
 }
+
+TEST_CASE("smooth: a spawn that stays in one place for a second is stalled, whatever its speeds say") {
+    WorldState w;
+    w.player_id = 1;
+    Spawn& local = add(w, 1, {0, 0, 0});
+    Spawn& s = add(w, 5, {0, 0, 0});
+    s.update_time = 0.0;
+    s.speed_run = 0.5f; // a walk: stepped (and moving) for 12 s after the update
+    s.velocity = {0.3f, 0.0f, 0.0f};
+    auto at = [](int frame) { return frame * 0.05; };
+    int frame = 0;
+    for (; at(frame) <= 12.0; ++frame) {
+        w.smooth(0.05f, at(frame));
+        REQUIRE_FALSE(s.stalled);
+    }
+    CHECK(glm::length(s.position) > 10.0f);
+    // No longer stepped: it stays put with its speeds as they were, and stands once a second has gone by.
+    for (; at(frame) < 12.9; ++frame) w.smooth(0.05f, at(frame));
+    CHECK_FALSE(s.stalled);
+    for (; at(frame) < 13.2; ++frame) w.smooth(0.05f, at(frame));
+    CHECK(s.stalled);
+    CHECK(s.speed_run == 0.5f);
+    CHECK(s.velocity != glm::vec3(0.0f));
+    CHECK_FALSE(local.stalled); // the local player never is
+    // An update that moves it walks it again at once.
+    s.position += glm::vec3(5.0f, 0.0f, 0.0f);
+    s.update_time = at(frame);
+    w.smooth(0.05f, at(frame));
+    CHECK_FALSE(s.stalled);
+}

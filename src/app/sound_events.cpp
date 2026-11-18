@@ -212,7 +212,9 @@ void SoundEvents::update(net::GameConnection& conn, const LocalMotion& me, std::
             // in reach. The original plays the muted steps, each holding one of pool 0's voices while it lasts
             // (docs/mechanics.md "Listener, music, spell sounds and spell gems"). OP_Animation's sounds above play
             // wherever the spawn is.
-            float speed = std::sqrt(s.velocity.x * s.velocity.x + s.velocity.y * s.velocity.y) * 20.0f; // per second
+            // Hailstone (game::Spawn::stalled): no steps from a spawn that has stayed in one place for a second.
+            float speed = s.stalled ? 0.0f
+                                    : std::sqrt(s.velocity.x * s.velocity.x + s.velocity.y * s.velocity.y) * 20.0f; // per second
             float scale = height_of(s) / 6.0f;
             std::int32_t a = speed < kIdleBelow ? kAnimStand : speed < kRunAbove * scale / 1.2f ? kAnimWalk : kAnimRun;
             if (a != st.anim.animation || a != kAnimStand) animation(s, a, false, nullptr, now_ms, st);

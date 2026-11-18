@@ -1228,6 +1228,12 @@ it had instead of running on. The local player's body loses them the same way, a
 (CharacterZoneClient::StunMe @0x4432c0, the mount's too; `GameConnection::speed_stops`): ProcessControls only stops
 asking for speed while the player cannot move.
 
+Stalled spawns (a deliberate difference, Hailstone): a spawn other than the local player and its mount that has
+stayed within 0.25 of one place for a second (`Spawn::stalled`, worked out in `WorldState::smooth`) plays its standing
+and idle clips and makes no footsteps, whatever its last update's velocity and SpeedRun say. Those are kept as they
+were, for the physics. Without it a walking NPC or pet whose updates stop (it is no longer stepped 12 s after the last
+one, so its speeds never settle) or that a wall holds walks in place with its steps sounding.
+
 Stuns (OP_Stun, the case @0x4c7093: StunMe(duration, 0, 0, the byte at +4)). StunMe does nothing under stun immunity
 (TotalEffect(40) > 0) or while a stun's timer runs; a duration below 1000 ms is 1000 ms for a player, so EQEmu's
 UnStun, an OP_Stun of 0 (a fear fading with Combat:EnableFearPathing off, a quest's UnStun), stuns for a second when

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- NPCs, pets and other players that have stopped no longer walk in place with their footsteps sounding: a spawn that has not moved for a second plays its standing and idle animations
 - Buffs: in a zone where the server suspends buffs (EQEmu's `suspendbuffs`, such as the Plane of Knowledge), a suspendable buff's time no longer counts down in the buff, pet and target windows and MacroQuest TLOs, and the client no longer drops a short buff when its local count runs out while the server still has it. The flag comes from OP_NewZone, which the client read but never used
 - Modern lighting: shadows from the sun and from torches and other lights cost less GPU time and look the same. A light's shadow is now only read where the light reaches, and the soft shadow edge takes four texture reads instead of nine
 - Performance window: a new "GPU passes" table shows how long the GPU spends on each part of the frame (shadows, the zone, characters, ambient occlusion, bloom, the UI and so on). While the scene is recorded on the worker threads (`display.parallel_record`, the default) the scene shows as a whole (two rows in the modern lighting: its opaque part and the rest); `display.parallel_record = 0` splits them again

@@ -269,6 +269,19 @@ void WorldState::smooth(float dt, double now, const FloorFn& floor, const Region
         s.display_heading = m->second.display_heading;
         s.display_valid = m->second.display_valid;
     }
+    // Hailstone (Spawn::stalled): after the riders take their mounts' places, so a rider stalls with its mount.
+    for (auto& [id, s] : spawns) {
+        if (id == player_id || id == controlled_id) {
+            s.stalled = false;
+            continue;
+        }
+        // The test is written so a position that is not a number moves the anchor (and never stalls).
+        if (!(glm::distance(s.position, s.stall_anchor) <= kStallReach)) {
+            s.stall_anchor = s.position;
+            s.stall_since = now;
+        }
+        s.stalled = now - s.stall_since >= kStallSeconds;
+    }
     local_drawn = false;
 }
 

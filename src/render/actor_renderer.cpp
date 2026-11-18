@@ -1627,7 +1627,11 @@ void ActorRenderer::prepare_spawns(const FrameInfo& frame, const glm::vec3& came
         if (auto m = s.mount_id ? world.spawns.find(s.mount_id) : world.spawns.end(); m != world.spawns.end())
             mount = &m->second;
         const bool is_player = id == world.player_id;
-        const float speed_run = is_player && player_motion_.valid ? player_motion_.speed_run : s.speed_run;
+        // Hailstone (game::Spawn::stalled): a spawn that has stayed in one place for a second stands, whatever its
+        // last update's speeds still say.
+        const float speed_run = is_player && player_motion_.valid ? player_motion_.speed_run
+                                : s.stalled                       ? 0.0f
+                                                                  : s.speed_run;
         // PlayerBase::HasProperty(1): the humanoid body type.
         const bool humanoid = s.properties.empty()
                                   ? s.body_type == 1
@@ -1637,12 +1641,14 @@ void ActorRenderer::prepare_spawns(const FrameInfo& frame, const glm::vec3& came
 
         // The movement / posture clip as the original chooses it (game/spawn_animation.h).
         game::SpawnAnimInput in;
-        in.velocity = is_player && player_motion_.valid ? player_motion_.velocity : s.velocity;
+        in.velocity = is_player && player_motion_.valid ? player_motion_.velocity
+                      : s.stalled                       ? glm::vec3(0.0f)
+                                                        : s.velocity;
         in.speed_run = speed_run;
         in.mounted = mount != nullptr;
         if (mount && new_style) {
-            in.velocity = mount->velocity;
-            in.speed_run = mount->speed_run;
+            in.velocity = mount->stalled ? glm::vec3(0.0f) : mount->velocity;
+            in.speed_run = mount->stalled ? 0.0f : mount->speed_run;
         }
         in.feet_wet = is_player && player_motion_.valid ? player_motion_.feet_wet : s.feet_wet;
         in.body_wet = is_player && player_motion_.valid ? player_motion_.body_wet : s.body_wet;
@@ -1698,7 +1704,7 @@ void ActorRenderer::prepare_spawns(const FrameInfo& frame, const glm::vec3& came
             // (racedata.txt's last field, empty in the shipped file: 0x4a, P09), or 0x4e (L10) while the mount runs
             // at its run speed or faster; a model without the clip falls back as 0x4b1210 does (0x4e to 0x4a,
             // 0x4a to standing). The rider animation is queued on the legs: an action plays on the upper body.
-            const bool full_run = mount->run_speed <= mount->speed_run;
+            const bool full_run = !mount->stalled && mount->run_speed <= mount->speed_run;
             req.base = full_run ? &model->first_clip({"L10", "P09", "P01"}, holding)
                                 : &model->first_clip({"P09", "P01"}, holding);
             req.base_anim = full_run ? 0x4e : 0x4a;
