@@ -79,3 +79,16 @@ TEST_CASE("Particle textures: the zone's copy, else the effect folders in order;
     CHECK_FALSE(none.image);
     CHECK(none.color == glm::vec3(1.0f));
 }
+
+TEST_CASE("Particle textures: a missing one is not drawn, not drawn white") {
+    // Spell effect 226's impact emitter 1351 names spear2.dds, which no install has: RoF2 puts nothing on the caster.
+    const std::unordered_map<std::string, std::uint32_t> slots{
+        {"bloba.dds", 3}, {"spear2.dds", render::kMissingParticleTexture}, {"pastlimit.dds", 0}};
+    const std::unordered_set<std::string> loading{"zapmuza.dds"};
+    CHECK(render::particle_texture_slot("bloba.dds", slots, loading) == std::optional<std::uint32_t>(3u));
+    CHECK_FALSE(render::particle_texture_slot("spear2.dds", slots, loading));
+    CHECK_FALSE(render::particle_texture_slot("zapmuza.dds", slots, loading)); // not up yet
+    // An empty name, and one put up past the texture limit, keep the white texture.
+    CHECK(render::particle_texture_slot("", slots, loading) == std::optional<std::uint32_t>(0u));
+    CHECK(render::particle_texture_slot("pastlimit.dds", slots, loading) == std::optional<std::uint32_t>(0u));
+}

@@ -39,4 +39,14 @@ LoadedParticleTexture load_particle_texture(const std::string& name, std::option
     return out;
 }
 
+std::optional<std::uint32_t> particle_texture_slot(const std::string& name,
+                                                   const std::unordered_map<std::string, std::uint32_t>& slots,
+                                                   const std::unordered_set<std::string>& loading) {
+    if (loading.contains(name)) return std::nullopt;
+    auto found = slots.find(name);
+    if (found == slots.end()) return 0u;
+    if (found->second == kMissingParticleTexture) return std::nullopt;
+    return found->second;
+}
+
 } // namespace hailstone::render

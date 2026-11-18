@@ -9,6 +9,8 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -40,5 +42,17 @@ struct LoadedParticleTexture {
 // black or none).
 LoadedParticleTexture load_particle_texture(const std::string& name, std::optional<std::vector<std::byte>> zone_bytes,
                                             const GameDir& game);
+
+// ParticleRenderer's slot for a texture that no source has or that does not decode.
+inline constexpr std::uint32_t kMissingParticleTexture = 0xffffffffu;
+
+// The slot a particle frame's texture `name` (lower case) draws with, from the slots put up (0 the white texture,
+// kMissingParticleTexture for a missing one) and the names still loading; nullopt when its particles are not drawn.
+// One still loading is not drawn yet. A missing one is never drawn: the RoF2 client shows nothing for it (spell effect
+// 226's impact emitter 1351 names spear2.dds, which no install has, and puts no square on the caster). An empty name,
+// or one put up past the texture limit, draws white.
+std::optional<std::uint32_t> particle_texture_slot(const std::string& name,
+                                                   const std::unordered_map<std::string, std::uint32_t>& slots,
+                                                   const std::unordered_set<std::string>& loading);
 
 } // namespace hailstone::render
