@@ -124,21 +124,26 @@ yet). With `display.upscaler = taa` the temporal upscaler takes FSR 1's place (T
 The frame hands some of its own loops to a small pool of worker threads (`core/worker_pool.h`): one fewer than the
 machine's hardware threads, at most 6 (`core::default_worker_count`), or `display.worker_threads` (0: none, every loop
 on the main thread). `core::parallel_for` splits a loop into chunks that the workers and the main thread take in turn;
-without a pool (the tests, the tools) or from inside a worker it runs the loop inline. What runs there:
+without a pool (the tests, the tools) or from inside a worker it runs the loop inline. `core::parallel_for_nested` is
+split from inside a worker too (a background task, or a chunk of another loop): the particle loops use it, as they are
+mostly reached from the actor effects' step or a recording lane. What runs there:
 
 - The characters' posing and skinning (`render::ActorRenderer::prepare`): each drawn instance's slice of the frame's
   bones is given out on the main thread (the culling and the bone budget, in order), the instances are posed and
   skinned on the workers, each into its own slice (`ActorRenderer::pose_instances`), and the motion history is kept on
   the main thread after. An actor's bones as drawn (`drawn_bone`: its effects, its name plate, spells on it) are posed
   once a frame and kept until the spawn is drawn again (`ActorRenderer::cached_bone_world`).
-- The particle quads (`render::ParticleRenderer::draw`). Modern: after the sort, each particle has its own six
-  vertices in the buffer. Classic: the particles each emitter shows are counted on the workers, the emitters' places
+- The particle quads (`render::ParticleRenderer::draw`). Modern: the particles in view are gathered on the workers
+  (counted per emitter, given their places in the emitters' order, then written), sorted on the calling thread, and
+  each particle has its own six vertices in the buffer. Classic: the particles each emitter shows are counted on the workers, the emitters' places
   are given out in order up to the buffer's size, then their quads are built on the workers. A particle that turns
   out to show nothing after its place was given out (a quad past its depth offset) is written as six vertices at one
   point, which draw no pixel.
 - The actor effects' step (`app::ActorEmitters::simulate_async`): once the frame is recorded, each attached emitter's
   place is read from the poses as drawn (on the main thread), then both particle systems step on a worker while the
-  frame is submitted and the next one begins; every other call on them waits for the step. The next frame draws the
+  frame is submitted and the next one begins (`game::ParticleSystem::update`: the particles' ends and their motion
+  spread over the other workers, emitters a few at a time; the attachments and the emission stay on the stepping
+  thread in the emitters' order, so a seed draws the same particles however the work is split); every other call on them waits for the step. The next frame draws the
   result, from the same poses the step used before (those drawn the frame before), the particles' own time one frame
   behind. The item previews' emitters still step inline; the tests take both ways (the constructor's `async`).
 - The scene's command recording (`render::SceneRecorder`, `display.parallel_record`). Each draw between `begin_scene`

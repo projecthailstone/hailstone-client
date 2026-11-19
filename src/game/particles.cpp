@@ -4,6 +4,7 @@
 #include <cmath>
 #include <numbers>
 
+#include "core/worker_pool.h"
 #include "game/light_list.h"
 #include "game/sine_table.h"
 
@@ -464,7 +465,22 @@ void ParticleSystem::spawn(Emitter& e, std::int32_t count, float offset_scale) {
 }
 
 void ParticleSystem::update(float dt, const AttachmentFn& attachment) {
-    for (auto& e : emitters_) {
+    // Three passes over the emitters, each emitter's work in the order the DLL's update does it. The particles' ends
+    // and their motion touch only their own emitter, so they are split over the worker threads
+    // (core::parallel_for_nested: the actor effects step on a worker); the attachments (the callers' own, which need
+    // not be thread-safe) and the emission (one random sequence for the whole system) stay on the calling thread, in
+    // the emitters' order, so a seed draws the same particles however the work is split.
+    // Particles whose time is up leave the ring's head first (0x10072a71): one drawn last frame at its end.
+    core::parallel_for_nested(emitters_.size(), kStepGrain, [&](std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) {
+            Emitter& e = emitters_[i];
+            if (e.still) continue;
+            std::erase_if(e.particles, [](const Particle& p) { return p.lifetime - p.age <= 0.0f; });
+        }
+    });
+    steps_.resize(emitters_.size());
+    for (std::size_t i = 0; i < emitters_.size(); ++i) {
+        Emitter& e = emitters_[i];
         if (e.still) continue;
         const auto& d = definitions_[e.definition];
         // The scales (0x10072478): the size and motion scale with +0x6c, the offsets and spawn shape with +0x19c,
@@ -494,8 +510,6 @@ void ParticleSystem::update(float dt, const AttachmentFn& attachment) {
                 if (!e.point_only && at->actor_axes) e.axes = emitter_axes(*at->actor_axes, 0.0f, 0.0f);
                 else if (e.point_only && d.bone_orientation == 1 && at->axes) e.axes = emitter_axes(*at->axes, 0.0f, 0.0f);
             }
-        // Particles whose time is up leave the ring's head first (0x10072a71): one drawn last frame at its end.
-        std::erase_if(e.particles, [](const Particle& p) { return p.lifetime - p.age <= 0.0f; });
         // Emission (0x10072aa7..0x10072c47): while time is left, the initial burst once its delay has passed, then
         // the ticks since, each batch scaled by the distance factor (at least the batch floors). The counts are the
         // definition's own: the density set the rate and the ring's size.
@@ -521,68 +535,82 @@ void ParticleSystem::update(float dt, const AttachmentFn& attachment) {
                 }
             }
         }
-        const glm::vec3 follow_origin = e.origin + offset_scale * (d.offset.x * e.axes[2] + d.offset.y * e.axes[0] +
-                                                                   d.offset.z * e.axes[1]);
-        const glm::mat3 follow_axes = turn_axes(e.axes, d.angle1, d.angle2);
-        const bool same_color = d.color_start == d.color_end;
-        for (auto& p : e.particles) {
-            // Motion (0x10074740..): each velocity takes its acceleration, then moves the particle; the axial,
-            // transverse and radial steps and gravity's and the wind's are scaled by the size scale, the orbit not.
-            // Transverse motion and gravity drift in the world; the radius is not held at the axis.
-            const glm::mat3& axes = d.follow_attachment ? follow_axes : p.axes;
-            const float step = dt * size_scale;
-            p.v_axial += d.motion[0].z * dt;
-            p.axial += p.v_axial * step;
-            p.v_t1 += d.motion[1].z * dt;
-            p.drift += axes[0] * (p.v_t1 * step);
-            p.v_t2 += d.motion[2].z * dt;
-            p.drift += axes[1] * (p.v_t2 * step);
-            p.v_radial += d.motion[3].z * dt;
-            p.radius += p.radial_dir.x * p.v_radial * step;
-            p.axial += p.radial_dir.y * p.v_radial * step;
-            p.v_orbit += d.motion[4].z * dt;
-            p.azimuth += p.v_orbit * dt;
-            p.v_gravity += d.gravity * dt;
-            p.drift.z -= p.v_gravity * step;
-            p.drift.x += d.wind_x * step; // a steady wind, not an acceleration
-            p.age += dt;
-            const glm::vec3& base = d.follow_attachment ? follow_origin : p.origin;
-            p.position = base + p.drift + axes[2] * p.axial +
-                         axes[0] * (p.radius * cmath_cos(p.azimuth)) + axes[1] * (p.radius * cmath_sin(p.azimuth));
-            p.hidden = d.negative_radial != 1 && p.radius < 0.0f;
-            p.axis = axes[2];
-            p.length = p.height * size_scale;
-            // Ramps (0x10074aff..): opacity min(fade in x fade out, max) x the emitter's; size grow x shrink; the
-            // height and width ramps +0x190 / +0x194 near the end.
-            const float rem = p.lifetime - p.age;
-            auto ramp_in = [&](float t) { return t > 0.0f && p.age < t ? p.age / t : 1.0f; };
-            auto ramp_out = [&](float t) { return t > 0.0f && rem < t ? std::max(rem, 0.0f) / t : 1.0f; };
-            const float alpha = std::min(ramp_in(d.fade_in) * ramp_out(d.fade_out), d.max_opacity) * e.opacity * actor_alpha;
-            p.size_factor = d.scale1 * size_scale * ramp_in(d.grow) * ramp_out(d.shrink);
-            p.ramp_height = ramp_out(d.shrink_x);
-            p.ramp_width = ramp_out(d.shrink_y);
-            // The colour: each channel start + round((end - start) x age / life).
-            glm::vec3 rgb = glm::vec3(d.color_start);
-            if (!same_color && p.lifetime > 0.0f) {
-                const float t = std::clamp(p.age / p.lifetime, 0.0f, 1.0f);
-                for (int c = 0; c < 3; ++c)
-                    rgb[c] = static_cast<float>(d.color_start[c]) +
-                             std::round((static_cast<float>(d.color_end[c]) - static_cast<float>(d.color_start[c])) * t);
-            }
-            p.color = glm::vec4(rgb / 255.0f, std::clamp(alpha, 0.0f, 1.0f));
-            // Spinning: age x spin + the start angle; one that does not spin is not turned (+0x178's orientation is
-            // not traced).
-            p.rotation = p.spin != 0.0f ? p.age * p.spin + p.rotation0 : 0.0f;
-            if (d.frames > 1) {
-                // round(+0x134 x age) mod +0x130 (FUN_10005ed0 rounds to nearest).
-                auto grid = flipbook_grid(d.frames);
-                const std::int64_t n = std::min<std::int64_t>(d.frames, grid.x * grid.y);
-                const auto f = static_cast<std::int64_t>(std::nearbyint(p.age * d.frames_per_second));
-                p.frame = static_cast<std::uint32_t>(((f % n) + n) % n);
-            }
-        }
-        e.age += dt;
+        EmitterStep& frame = steps_[i];
+        frame.size_scale = size_scale;
+        frame.actor_alpha = actor_alpha;
+        frame.follow_origin = e.origin + offset_scale * (d.offset.x * e.axes[2] + d.offset.y * e.axes[0] +
+                                                         d.offset.z * e.axes[1]);
+        frame.follow_axes = turn_axes(e.axes, d.angle1, d.angle2);
     }
+    core::parallel_for_nested(emitters_.size(), kStepGrain, [&](std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) {
+            Emitter& e = emitters_[i];
+            if (e.still) continue;
+            const auto& d = definitions_[e.definition];
+            const EmitterStep& frame = steps_[i];
+            const float size_scale = frame.size_scale, actor_alpha = frame.actor_alpha;
+            const glm::vec3& follow_origin = frame.follow_origin;
+            const glm::mat3& follow_axes = frame.follow_axes;
+            const bool same_color = d.color_start == d.color_end;
+            for (auto& p : e.particles) {
+                // Motion (0x10074740..): each velocity takes its acceleration, then moves the particle; the axial,
+                // transverse and radial steps and gravity's and the wind's are scaled by the size scale, the orbit not.
+                // Transverse motion and gravity drift in the world; the radius is not held at the axis.
+                const glm::mat3& axes = d.follow_attachment ? follow_axes : p.axes;
+                const float step = dt * size_scale;
+                p.v_axial += d.motion[0].z * dt;
+                p.axial += p.v_axial * step;
+                p.v_t1 += d.motion[1].z * dt;
+                p.drift += axes[0] * (p.v_t1 * step);
+                p.v_t2 += d.motion[2].z * dt;
+                p.drift += axes[1] * (p.v_t2 * step);
+                p.v_radial += d.motion[3].z * dt;
+                p.radius += p.radial_dir.x * p.v_radial * step;
+                p.axial += p.radial_dir.y * p.v_radial * step;
+                p.v_orbit += d.motion[4].z * dt;
+                p.azimuth += p.v_orbit * dt;
+                p.v_gravity += d.gravity * dt;
+                p.drift.z -= p.v_gravity * step;
+                p.drift.x += d.wind_x * step; // a steady wind, not an acceleration
+                p.age += dt;
+                const glm::vec3& base = d.follow_attachment ? follow_origin : p.origin;
+                p.position = base + p.drift + axes[2] * p.axial +
+                             axes[0] * (p.radius * cmath_cos(p.azimuth)) + axes[1] * (p.radius * cmath_sin(p.azimuth));
+                p.hidden = d.negative_radial != 1 && p.radius < 0.0f;
+                p.axis = axes[2];
+                p.length = p.height * size_scale;
+                // Ramps (0x10074aff..): opacity min(fade in x fade out, max) x the emitter's; size grow x shrink; the
+                // height and width ramps +0x190 / +0x194 near the end.
+                const float rem = p.lifetime - p.age;
+                auto ramp_in = [&](float t) { return t > 0.0f && p.age < t ? p.age / t : 1.0f; };
+                auto ramp_out = [&](float t) { return t > 0.0f && rem < t ? std::max(rem, 0.0f) / t : 1.0f; };
+                const float alpha = std::min(ramp_in(d.fade_in) * ramp_out(d.fade_out), d.max_opacity) * e.opacity * actor_alpha;
+                p.size_factor = d.scale1 * size_scale * ramp_in(d.grow) * ramp_out(d.shrink);
+                p.ramp_height = ramp_out(d.shrink_x);
+                p.ramp_width = ramp_out(d.shrink_y);
+                // The colour: each channel start + round((end - start) x age / life).
+                glm::vec3 rgb = glm::vec3(d.color_start);
+                if (!same_color && p.lifetime > 0.0f) {
+                    const float t = std::clamp(p.age / p.lifetime, 0.0f, 1.0f);
+                    for (int c = 0; c < 3; ++c)
+                        rgb[c] = static_cast<float>(d.color_start[c]) +
+                                 std::round((static_cast<float>(d.color_end[c]) - static_cast<float>(d.color_start[c])) * t);
+                }
+                p.color = glm::vec4(rgb / 255.0f, std::clamp(alpha, 0.0f, 1.0f));
+                // Spinning: age x spin + the start angle; one that does not spin is not turned (+0x178's orientation is
+                // not traced).
+                p.rotation = p.spin != 0.0f ? p.age * p.spin + p.rotation0 : 0.0f;
+                if (d.frames > 1) {
+                    // round(+0x134 x age) mod +0x130 (FUN_10005ed0 rounds to nearest).
+                    auto grid = flipbook_grid(d.frames);
+                    const std::int64_t n = std::min<std::int64_t>(d.frames, grid.x * grid.y);
+                    const auto f = static_cast<std::int64_t>(std::nearbyint(p.age * d.frames_per_second));
+                    p.frame = static_cast<std::uint32_t>(((f % n) + n) % n);
+                }
+            }
+            e.age += dt;
+        }
+    });
     // An emitter whose time is up goes when its ring is empty.
     std::erase_if(emitters_, [&](const Emitter& e) {
         return !e.persistent && !e.still && e.age >= e.duration && e.particles.empty();

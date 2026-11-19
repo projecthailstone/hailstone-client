@@ -273,9 +273,19 @@ private:
     void spawn(Emitter& e, std::int32_t count, float offset_scale);
     float random(float a, float b);
 
+    // What update's serial pass works out for an emitter's particles to move by (its scales, owner alpha and the
+    // place and basis followers take), read by the parallel pass. Kept so its memory is reused frame to frame.
+    struct EmitterStep {
+        float size_scale = 1.0f, actor_alpha = 1.0f;
+        glm::vec3 follow_origin{0.0f};
+        glm::mat3 follow_axes{1.0f};
+    };
+    static constexpr std::size_t kStepGrain = 4; // emitters a worker takes at a time in update's parallel passes
+
     std::vector<assets::EmitterDefinition> definitions_;
     std::vector<bool> glows_; // per definition (glows)
     std::vector<Emitter> emitters_;
+    std::vector<EmitterStep> steps_;
     std::mt19937 rng_{1};
     std::optional<glm::vec3> viewer_;
 };
