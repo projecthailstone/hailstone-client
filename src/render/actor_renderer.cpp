@@ -27,6 +27,7 @@
 #include "game/sine_table.h"
 #include "game/view_distance.h"
 #include "game/world_state.h"
+#include "render/corpse_pose.h"
 #include "render/culling.h"
 #include "render/look_eviction.h"
 #include "render/material_state.h"
@@ -1576,9 +1577,17 @@ void ActorRenderer::prepare_spawns(const FrameInfo& frame, const glm::vec3& came
         float scale = s.heights.model_scale; // the actor's scale: SetHeights' +0x31c (game/spawn_heights.h)
 
         auto& st = spawns_[id];
+        // Drawn alive last frame: a visible living -> dead transition plays the fall, even when the model changes in
+        // the same frame (a fresh state would otherwise show the end pose).
+        const bool was_alive = drawn_alive_last_frame(st.drawn_alive, st.hidden);
         st.seen = true;
-        if (spawn_state_fresh(st, model)) st = SpawnState{model};
+        // A state that starts here has no memory of the spawn's death: a corpse already dead is posed at the end of
+        // its death clip (below) instead of falling again.
+        const bool fresh = spawn_state_fresh(st, model);
+        if (fresh) st = SpawnState{model};
         st.seen = true;
+        const bool dead = spawn_dead(s.is_corpse, s.stand_state);
+        st.drawn_alive = !dead;
         // Appearance: rebuilt when it changes (WearChange, Illusion), on the worker; until it is ready (and applied
         // within the frame's budget) the previous one stays. One applied before for the same model and look is
         // taken at once.
@@ -1738,11 +1747,9 @@ void ActorRenderer::prepare_spawns(const FrameInfo& frame, const glm::vec3& came
         req.speed_run = speed_run;
         req.follow_up_after = choice.follow_up;
         req.base_column = choice.column;
-        if (s.is_corpse || s.stand_state == 115) {
-            req.base = &model->first_clip({"D05", "D04", "P01"}, holding);
-            req.base_anim = 0x10; // D05
-            req.loop = false;
-            req.corpse = true;
+        if (dead) {
+            corpse_request(req, model->first_clip({"D05", "D04", "P01"}, holding),
+                           corpse_starts_at_end(fresh, was_alive, dead));
         } else if (mount && !new_style) {
             // 0x4b15b0 on a rider: its movement and idle animations become the mount race's rider animation
             // (racedata.txt's last field, empty in the shipped file: 0x4a, P09), or 0x4e (L10) while the mount runs
@@ -1774,12 +1781,13 @@ void ActorRenderer::prepare_spawns(const FrameInfo& frame, const glm::vec3& came
             st.action_seq_known = true;
         } else if (s.action_seq != st.action_seq) {
             st.action_seq = s.action_seq;
+            game::ActionGate gate{s.class_id, in.stand_state, game::holds_instrument(s)};
             game::NewStyleTrackInput track_in{s.player_state, st.anim.anim, -1, mount != nullptr};
             std::uint8_t playing = s.action;
             std::uint8_t normalized = s.action;
             bool stand_request = false;
             std::string code = game::action_clip(s.action, has_clip, new_style, track_in, rand_int, &playing,
-                                                 &stand_request, &normalized);
+                                                 &stand_request, &normalized, &gate);
             req.action_column = game::new_style_clip_column(code);
             const assets::AnimationClip* c = code.empty() ? nullptr : model->clip(code, holding);
             // 0x4b15b0 runs the action's rate through 0x4afc90 too (the packet's speed / 10 is its input), so a

@@ -418,6 +418,9 @@ void GameConnection::update() {
         for (auto& entry : world_.spawns) refresh_new_armor_bits(entry.second);
     raise_hook_events();
     marketplace_frame(now_ms());
+    // A fade only suppresses the local cure prediction for the network update it arrived in. All of the update's
+    // packets have been handled above, so a fade can no longer affect a cure in a later update.
+    faded_counter_spas_ = 0;
 }
 
 void GameConnection::refresh_new_armor_bits(game::Spawn& s) const {
@@ -657,6 +660,7 @@ void GameConnection::handle_world(const AppPacket& p) {
         world_.target_id = 0;
         target_of_target_ = 0;
         own_spawn_seen_ = weather_seen_ = client_spawn_requested_ = zone_ready_ = false;
+        instrument_published_ = false;
         // The new local EQPlayer (its constructor @0x596ac0): Send_OP_FloatListThing(1) for it, then the samples
         // are forgotten. MoveToZone sent the last zone's already; here they are only forgotten.
         position_tracker_.flush();
@@ -1421,6 +1425,12 @@ void GameConnection::handle_zone(const AppPacket& p) {
             } else {
                 maybe_request_client_spawn();
             }
+            // The spawn record overwrote PlayerState: set the instrument bit again now that the own spawn and the
+            // inventory (which may have arrived first) are both here.
+            refresh_instrument_state();
+        } else if (s->npc == 0 && s->spawn_id == world_.player_id && s->name == character_) {
+            // A later record for the same own spawn overwrites PlayerState too.
+            refresh_instrument_state();
         }
         break;
     }
@@ -1476,6 +1486,8 @@ void GameConnection::handle_zone(const AppPacket& p) {
         send_zone(make_empty(Op::WorldObjectsSent));
         send_zone(make_empty(Op::ClientReady));
         zone_ready_ = true;
+        // The instrument bit may have been set during the zone-in, before the server accepted PlayerState packets.
+        refresh_instrument_state();
         position_tracker_.enable(); // DoMainLoop's start (@0x53d461)
         finish_zone_in();
         send_server_filter(); // the Options' chat filters, for the zone to apply

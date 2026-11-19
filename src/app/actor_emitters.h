@@ -28,6 +28,7 @@
 #include <span>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -64,6 +65,10 @@ public:
         const assets::CharacterMesh* mesh = nullptr;
         bool standing = false; // in its stand or idle animation (render::ActorRenderer::standing)
         float alpha = 1.0f;
+        // Hailstone (not in the original): false when no particle of its could show (outside the camera's view, or
+        // past the classic lighting's 500 units). Its emitters then emit nothing and are not placed (no pose is
+        // asked for), its animation-started entries start none, and what it emitted already lives on.
+        bool in_view = true;
     };
     // A bone's world matrix on an actor as drawn (false: not drawn).
     using BoneWorld = std::function<bool(std::uint32_t id, int bone, glm::mat4& world)>;
@@ -88,8 +93,9 @@ public:
         finish();
         return particles_.emitters().size() + clouds_.emitters().size();
     }
-    // ActorParticleDensity (the Options window's combo; the effect manager's +0xac): the actors' emitters are made
-    // again with it. eqclient_density() is the ini's, read at the start.
+    // ActorParticleDensity (the Options window's combo; the effect manager's +0xac): the actors' running emitters
+    // emit at it from now on, keeping their particles; at 0 the EDD entries are stopped and none is tried, and from 0
+    // they are made again. eqclient_density() is the ini's, read at the start.
     void set_density(float density);
     float density() const { return settings_.density; }
     float eqclient_density() const { return eqclient_density_; }
@@ -116,8 +122,9 @@ private:
             std::vector<glm::mat4> motion;
         };
         std::unordered_map<const assets::ObjectAnimation*, CloudPose> cloud_poses;
-        bool restart_edd = false; // ActorParticleDensity changes leave the separate WLD list running
+        bool restart_edd = false; // ActorParticleDensity off or on: the separate WLD list keeps running
         float alpha = 1.0f;
+        bool held = false; // Actor::in_view false this frame
         std::vector<std::uint32_t> standing_keys; // the STND / IDLE entries', while it stands
         // The other animation-started entries, by entry: the time into their animation last frame (negative: not
         // playing), a start waiting for the entry's delay (seconds left, negative none) and the emitter running.
@@ -145,6 +152,12 @@ private:
     std::filesystem::path shader_dir_;
     bool scene_ = true;
     std::unordered_map<std::uint32_t, Live> live_;
+    // update's scratch, kept so its memory is reused frame to frame: the emitters to stop in one pass each (by key,
+    // by actor in each system), the actors whose entries start afresh (their index, whether the mesh changed) and
+    // each actor's Live (nullptr: no emitters).
+    std::vector<std::uint32_t> stop_keys_, stop_actors_, stop_cloud_actors_;
+    std::vector<std::pair<std::size_t, bool>> restarts_;
+    std::vector<Live*> lives_;
     std::uint32_t next_key_ = 1;
     bool async_ = false; // the scene's: simulate_async steps the systems
     // simulate_async's table of the attached emitters' places, by attachment_key; the step reads it alone.

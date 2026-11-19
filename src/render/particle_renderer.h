@@ -178,11 +178,11 @@ private:
     };
     struct Batch { std::uint32_t first, count; int pipeline; };
     std::vector<OrderItem> order_;
-    // The classic path's quads per emitter and each one's first vertex (draw gives the places out before the workers
-    // build the quads).
+    // Per emitter, the particles it shows and the first one's place: the classic path's quads and first vertex, the
+    // modern path's items in order_ (draw gives the places out before the workers fill them).
     std::vector<std::uint32_t> emitter_quads_, emitter_firsts_;
     static constexpr std::size_t kQuadGrain = 256;  // modern particles a worker builds at a time
-    static constexpr std::size_t kEmitterGrain = 8; // classic emitters a worker takes at a time
+    static constexpr std::size_t kEmitterGrain = 8; // emitters a worker takes at a time
     std::vector<DefinitionLook> looks_;
     std::vector<std::int8_t> lit_by_definition_;
     std::vector<Batch> batches_;

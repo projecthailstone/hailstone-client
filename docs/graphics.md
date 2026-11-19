@@ -124,21 +124,26 @@ yet). With `display.upscaler = taa` the temporal upscaler takes FSR 1's place (T
 The frame hands some of its own loops to a small pool of worker threads (`core/worker_pool.h`): one fewer than the
 machine's hardware threads, at most 6 (`core::default_worker_count`), or `display.worker_threads` (0: none, every loop
 on the main thread). `core::parallel_for` splits a loop into chunks that the workers and the main thread take in turn;
-without a pool (the tests, the tools) or from inside a worker it runs the loop inline. What runs there:
+without a pool (the tests, the tools) or from inside a worker it runs the loop inline. `core::parallel_for_nested` is
+split from inside a worker too (a background task, or a chunk of another loop): the particle loops use it, as they are
+mostly reached from the actor effects' step or a recording lane. What runs there:
 
 - The characters' posing and skinning (`render::ActorRenderer::prepare`): each drawn instance's slice of the frame's
   bones is given out on the main thread (the culling and the bone budget, in order), the instances are posed and
   skinned on the workers, each into its own slice (`ActorRenderer::pose_instances`), and the motion history is kept on
   the main thread after. An actor's bones as drawn (`drawn_bone`: its effects, its name plate, spells on it) are posed
   once a frame and kept until the spawn is drawn again (`ActorRenderer::cached_bone_world`).
-- The particle quads (`render::ParticleRenderer::draw`). Modern: after the sort, each particle has its own six
-  vertices in the buffer. Classic: the particles each emitter shows are counted on the workers, the emitters' places
+- The particle quads (`render::ParticleRenderer::draw`). Modern: the particles in view are gathered on the workers
+  (counted per emitter, given their places in the emitters' order, then written), sorted on the calling thread, and
+  each particle has its own six vertices in the buffer. Classic: the particles each emitter shows are counted on the workers, the emitters' places
   are given out in order up to the buffer's size, then their quads are built on the workers. A particle that turns
   out to show nothing after its place was given out (a quad past its depth offset) is written as six vertices at one
   point, which draw no pixel.
 - The actor effects' step (`app::ActorEmitters::simulate_async`): once the frame is recorded, each attached emitter's
   place is read from the poses as drawn (on the main thread), then both particle systems step on a worker while the
-  frame is submitted and the next one begins; every other call on them waits for the step. The next frame draws the
+  frame is submitted and the next one begins (`game::ParticleSystem::update`: the particles' ends and their motion
+  spread over the other workers, emitters a few at a time; the attachments and the emission stay on the stepping
+  thread in the emitters' order, so a seed draws the same particles however the work is split); every other call on them waits for the step. The next frame draws the
   result, from the same poses the step used before (those drawn the frame before), the particles' own time one frame
   behind. The item previews' emitters still step inline; the tests take both ways (the constructor's `async`).
 - The scene's command recording (`render::SceneRecorder`, `display.parallel_record`). Each draw between `begin_scene`
@@ -626,6 +631,19 @@ size in the modern lighting. The depth offset (+0xd0) brings a quad that much ne
 An EQG model's emitters started by an animation (`.prt` trigger 1; docs/formats/particles.md) start each time it
 starts or loops round on the actor (`ActorRenderer::drawn_playing`), after the entry's delay, and emit for about one
 play (at most 1.5 s): the run dust at the feet, swings, casts.
+
+Hailstone (not in the original): an actor none of whose particles could show emits none
+(`app::ActorEmitters::Actor::in_view`, `display.particle_offscreen_hold`). Its model's bounds, widened by 30 units for
+what its particles drift (a guess: no effect's reach was measured), are tested against the view the scene was drawn
+through last frame; in the classic lighting an actor past 500 units along the view is out too. Its emitters keep
+running, but emit nothing (their ticks pass unspent, so coming back into view does not bring a burst at one place),
+are not placed (its skeleton is not posed for them) and start no animation entries; what they emitted already ages
+and fades as before, at the size and opacity the actor last gave it. An emitter made while its actor is out of view
+keeps its initial burst for when the actor first comes into view. Zoning forgets the last view, so every actor counts
+as in view until the new zone's first frame is drawn. Turning towards such an actor, its effects fill in over their particles' lifetime rather than
+being there at once. `display.particle_offscreen_hold = 0` makes every actor emit wherever it is, as the original.
+The Actor Particle Density setting changes the running emitters' counts in place (`ParticleSystem::set_persistent_density`),
+keeping their particles; Off stops them and makes none until it is turned on again, when they are made afresh.
 
 A spell's stages play for every caster: the cast stage when OP_BeginCast arrives, the impact stage when OP_Action 231
 lands the spell, on players and NPCs alike. Stock EQEmu sends the landing only to players within `Range:SpellMessages`
@@ -2240,6 +2258,7 @@ them in the Options window takes over and is saved as usual.
 | `display.zone_fog` | 0, 1 | 1 | the fog bank on the ground past an outdoor zone's edge (Zone edge fog, Zone Edge Fog); modern only; viewer `--no-zone-fog` |
 | `display.volumetric_clouds` | 0, 1 | 1 | clouds marched through the air over the plain skies, in place of the painted cloud layer and patches (Volumetric Clouds); modern only; viewer `--no-clouds` |
 | `display.worker_threads` | -1, 0 .. 16 | -1 | the frame's worker threads (Worker threads); -1 one fewer than the hardware threads, at most 6; 0 none; read at start-up |
+| `display.particle_offscreen_hold` | 0, 1 | 1 | an actor out of view (or past 500 units in the classic lighting) emits no particles of its own (Particles; a deliberate difference); 0 emits everywhere, as the original; read at start-up |
 | `display.parallel_record` | 0, 1 | 1 | the scene's and the shadow layers' draws recorded on the worker threads into secondary command buffers (Worker threads); 0 records them on the main thread; read at start-up |
 | `display.smooth_ground` | 0, 1 | 1 | a classic zone's ground drawn smooth and curved (Smoothed ground); read as each zone loads; viewer `--no-smooth-ground` |
 | `display.tree_detail` | 50 to 200 | 100 | how far a texture pack's replacement models (generated trees) keep their nearer levels of detail, in percent of their own distances (Tree Detail Distance); viewer `--tree-detail` |

@@ -1614,6 +1614,7 @@ public:
         if (!profile_ || n < 0 || n >= static_cast<std::int32_t>(profile_->disciplines.size())) return 0;
         return profile_->disciplines[static_cast<std::size_t>(n)];
     }
+    bool knows_discipline(std::uint32_t id) const;
     // PlayerBase::CanSee's zone test (the app's collision): true when nothing blocks the segment (world coordinates).
     void set_line_of_sight(std::function<bool(const glm::vec3&, const glm::vec3&)> los) { line_of_sight_ = std::move(los); }
     // True once the app has given this connection its hooks (line of sight, teleport, app commands): the app installs
@@ -3010,6 +3011,9 @@ private:
     void forget_pet_spawn(std::uint32_t spawn_id);
     void move_item(const ItemSlot& from, const ItemSlot& to, std::uint32_t count);
     void refresh_worn_slot(int slot);
+    // PcClient_RefreshWornSlotVisual's instrument bit (0x5923f0): the local player's PlayerState bit 0x10, set when
+    // the primary or secondary hand holds an instrument (item types 23..26).
+    void refresh_instrument_state();
     void init_spells_from_profile();
     void update_spells();
     void update_spells_at(std::int64_t now); // one step of update_spells, at `now` (now_ms()'s clock)
@@ -3294,6 +3298,9 @@ private:
     std::vector<Weather> weather_messages_;
     bool client_spawn_requested_ = false;
     bool zone_ready_ = false;
+    // The instrument bit as last published to the zone (OP_PlayerStateAdd / Remove). The local bit may be set before
+    // OP_ClientReady, when the server would ignore the packet; it is published once the zone is ready.
+    bool instrument_published_ = false;
     std::optional<std::string> zone_to_load_;
     // The server's client files (net/server_files.h): asked at the first zone-in; the zone-in waits for them.
     std::unique_ptr<ServerFileSync> server_files_;
@@ -3332,6 +3339,11 @@ private:
     bool attack_until_xtarget_clear_ = false;
     bool fast_camp_ = false;
     bool cast_animation_fallback_ = true; // set_cast_animation_fallback
+    // The spell whose landing animation the zone was last told of (OP_Animation), and until when (now_ms()) a landing
+    // of it on another target sends none: an area spell or a group song lands on each target with an OP_Action of its
+    // own, and the animation is one.
+    std::uint32_t landing_animation_spell_ = 0;
+    std::int64_t landing_animation_until_ = 0;
     bool attack_held_for_xtarget_ = false; // kept on at the target's death (attack_until_xtarget_clear)
     bool auto_target_xtarget_ = true;
     bool face_on_attack_ = true;
@@ -3394,6 +3406,10 @@ private:
     game::HitModes hit_modes_{};
     game::SpellHitModes spell_hit_modes_{};
     game::SpellState spells_;
+    // Counter SPAs (35/36/116/369, see game/counter_spas.h) whose buff EQEmu faded in the current network update,
+    // before the cure's OP_Action. A 4-bit mask: a fade means the server already cured that type, so the client
+    // skips its local prediction for it. Reset at the end of every update.
+    std::uint8_t faded_counter_spas_ = 0;
 
     // Items.
     enum class CursorOrigin : std::uint8_t { Unknown = 0, Inventory = 1, Server = 2 };

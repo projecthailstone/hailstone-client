@@ -1429,6 +1429,10 @@ private:
     std::unique_ptr<render::TargetRingRenderer> target_ring_renderer_; // the target ring, made on first use
     std::unique_ptr<ActorEmitters> actor_emitters_;         // the models' and held items' own (app/actor_emitters.h)
     std::vector<ActorEmitters::Actor> actor_emitter_list_;  // this frame's actors that have some
+    // Hailstone: an actor out of view emits no particles (ActorEmitters::Actor::in_view; display.particle_offscreen_hold,
+    // read at start-up), judged against the scene's view as drawn last frame (none yet: every actor in view).
+    bool particle_offscreen_hold_ = true;
+    std::optional<glm::mat4> emitter_view_proj_;
     game::Weather weather_;                                 // OP_Weather played out (game/weather.h)
     render::WeatherLook weather_look_;                      // its wet ground, snow and storm light
     render::HazeBlend haze_blend_;                          // the modern haze, eased between places (zone-in resets)

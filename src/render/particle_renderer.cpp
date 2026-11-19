@@ -427,17 +427,48 @@ void ParticleRenderer::draw(const FrameInfo& frame, const glm::mat4& view_proj, 
         // Every particle in one stream, back to front by distance (the nearest kept when there are too many).
         const glm::vec3 camera(modern->camera);
         std::vector<OrderItem>& order = order_;
-        order.clear();
-        for (std::size_t ei = 0; ei < emitters.size(); ++ei) {
-            if (ei < hidden.size() && hidden[ei]) continue;
-            const auto& ps = emitters[ei].particles;
-            for (std::size_t pi = 0; pi < ps.size(); ++pi) {
-                const auto& p = ps[pi];
-                if (p.hidden || !particle_in_view(frustum, p.position, extent(p), p.height, p.size_factor)) continue;
-                glm::vec3 d = p.position - camera;
-                order.push_back({glm::dot(d, d), static_cast<std::uint32_t>(ei), static_cast<std::uint32_t>(pi)});
+        // Gathered on the workers: each emitter's particles in view counted, their places given out in the emitters'
+        // order, then written there (the order the sort starts from is the one a single pass would give).
+        auto modern_shows = [&](const game::Particle& p) {
+            return !p.hidden && particle_in_view(frustum, p.position, extent(p), p.height, p.size_factor);
+        };
+        std::vector<std::uint32_t>& counts = emitter_quads_;
+        std::vector<std::uint32_t>& firsts = emitter_firsts_;
+        counts.assign(emitters.size(), 0);
+        firsts.assign(emitters.size(), 0);
+        core::parallel_for_nested(emitters.size(), kEmitterGrain, [&](std::size_t begin, std::size_t end) {
+            for (std::size_t ei = begin; ei < end; ++ei) {
+                if (ei < hidden.size() && hidden[ei]) continue;
+                std::uint32_t n = 0;
+                for (const auto& p : emitters[ei].particles)
+                    if (modern_shows(p)) ++n;
+                counts[ei] = n;
             }
+        });
+        std::size_t total = 0;
+        for (std::size_t ei = 0; ei < emitters.size(); ++ei) {
+            firsts[ei] = static_cast<std::uint32_t>(total);
+            total += counts[ei];
         }
+        // The two passes test each particle apart, maybe on different threads: an emitter writes no more than its
+        // count, and a slot it leaves (a test that came out the other way) is dropped below.
+        constexpr std::uint32_t kUnwritten = 0xffffffffu;
+        order.assign(total, OrderItem{0.0f, kUnwritten, 0});
+        core::parallel_for_nested(emitters.size(), kEmitterGrain, [&](std::size_t begin, std::size_t end) {
+            for (std::size_t ei = begin; ei < end; ++ei) {
+                if (counts[ei] == 0) continue;
+                const auto& ps = emitters[ei].particles;
+                OrderItem* dst = order.data() + firsts[ei];
+                OrderItem* const dst_end = dst + counts[ei];
+                for (std::size_t pi = 0; pi < ps.size() && dst != dst_end; ++pi) {
+                    const auto& p = ps[pi];
+                    if (!modern_shows(p)) continue;
+                    glm::vec3 d = p.position - camera;
+                    *dst++ = {glm::dot(d, d), static_cast<std::uint32_t>(ei), static_cast<std::uint32_t>(pi)};
+                }
+            }
+        });
+        std::erase_if(order, [](const OrderItem& item) { return item.emitter == kUnwritten; });
         keep_nearest_back_to_front(order, kMaxVertices / 6);
         // Light sources stay unlit; the haze takes away their light. Smoke and dust are lit and hazed. Each
         // definition's look and lit flag first, here; then every item's quad at its own place, on the workers.
@@ -450,7 +481,7 @@ void ParticleRenderer::draw(const FrameInfo& frame, const glm::mat4& view_proj, 
             if (lit < 0) lit = !definitions[definition].additive || scatters_light(definitions[definition].texture) ? 1 : 0;
         }
         const ParticleLight scene_light(*modern);
-        core::parallel_for(order.size(), kQuadGrain, [&](std::size_t begin, std::size_t end) {
+        core::parallel_for_nested(order.size(), kQuadGrain, [&](std::size_t begin, std::size_t end) {
             for (std::size_t i = begin; i < end; ++i) {
                 const OrderItem& item = order[i];
                 GpuVertex* dst = out + i * 6;
@@ -493,7 +524,7 @@ void ParticleRenderer::draw(const FrameInfo& frame, const glm::mat4& view_proj, 
         std::vector<std::uint32_t>& firsts = emitter_firsts_;
         quads.assign(emitters.size(), 0);
         firsts.assign(emitters.size(), 0);
-        core::parallel_for(emitters.size(), kEmitterGrain, [&](std::size_t begin, std::size_t end) {
+        core::parallel_for_nested(emitters.size(), kEmitterGrain, [&](std::size_t begin, std::size_t end) {
             for (std::size_t ei = begin; ei < end; ++ei) {
                 const auto& e = emitters[ei];
                 if ((ei < hidden.size() && hidden[ei]) || e.particles.empty()) continue;
@@ -515,7 +546,7 @@ void ParticleRenderer::draw(const FrameInfo& frame, const glm::mat4& view_proj, 
             batches.push_back({count, quads[ei] * 6, definitions[emitters[ei].definition].additive ? 1 : 0});
             count += quads[ei] * 6;
         }
-        core::parallel_for(emitters.size(), kEmitterGrain, [&](std::size_t begin, std::size_t end) {
+        core::parallel_for_nested(emitters.size(), kEmitterGrain, [&](std::size_t begin, std::size_t end) {
             for (std::size_t ei = begin; ei < end; ++ei) {
                 const std::uint32_t n = quads[ei];
                 if (n == 0) continue;

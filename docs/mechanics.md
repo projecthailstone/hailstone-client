@@ -845,6 +845,19 @@ find affect slot 1600). Each record is replayed call for call against the record
   (`HitLandingResult::placed_buffs`); the spawn's slot query (vtable +0xdc) answers 0 there.
 - No stacking is checked before a cast: find_affect_slot's only caller is the hit-by-spell path, so the client
   predicts where a buff lands when OP_Action 231 arrives and the server's OP_Buff overwrites the slot.
+- Locally placed buffs carry their effect slot data into the buff window, including counters. The numbers are
+  client-local: the server sends `slot_data` as zeros (EQEmu's OP_Buff refresh has no counter data), so the
+  client spends them itself; an all-zero refresh or a full list that keeps the spell in its slot keeps them,
+  a real value overwrites them. A cure (SPA 35/36/116/369) touches only the first matching debuff and never
+  removes it locally: a weak or partial cure leaves the icon standing until the server's fade clears it, while
+  a strong or over-cure leaves the server to decide, so a mispredicted cure cannot hide a buff the server kept.
+  Surplus is not carried on; counters unknown from zone-in stop the scan (docs/unknowns.md). This is a deliberate
+  change to a RoF2 rule: HitBySpell @0x43e8c0 spends the first counter slot of the first buff GetPCSpellAffect
+  @0x433fd0 finds and removes that buff itself (RemovePCAffectex) when the slot drops below 1, which against
+  EQEmu's zeroed `slot_data` removed debuffs the server kept. The original rule is kept for the recorded-vector
+  replay (`HitState::rof2_single_slot_cures`). EQEmu fades a fully cured buff (OP_Buff fade 1) before the cure's
+  landing OP_Action (`Mob::SpellOnTarget`: `SpellEffect` runs before the flag-4 action), so a fade of a counter
+  type in the same network update skips the prediction for that type.
 - Feign death by spell (SPA 74: Imitate Death, Death Peace): HitBySpell calls
   CharacterZoneClient_StopCastAndFeignDeath @0x433b80, which ignores the spell and its base. With the spawn it clears
   the bard twist, stops the cast (StopSpellCast(0, the casting spell)) and calls ChangePosition(0x73), which lies the
@@ -947,9 +960,14 @@ The merchant window's purchase page has a check box, MW_UsableButton, ticked whe
 constructor: SetCheck(1), and PurchasePageHandler +0x60 cleared). While it is ticked, the list
 (PurchasePageHandler::UpdateList @0x6f0bb0, `game::merchant_usable_hides`) leaves out a common item (item class 0)
 whose class mask lacks the character's class or whose race mask lacks the race's bit (0x6f7160: races below 13 as they
-are, Iksar 13, Vah Shir 14, Froglok 15, Drakkin 16, any other 17), and a spell scroll whose spell is in the book, or
-whose group has a higher rank in the book (from the top rank down while above the scroll's). Bags and books always
-show. As a Hailstone extension, if the server supplies a multiclass mask, any class in that mask can match instead
+are, Iksar 13, Vah Shir 14, Froglok 15, Drakkin 16, any other 17), and a spell scroll (item type 20) whose spell is
+known, or whose group has a higher rank known (from the group's top rank down while above the scroll's). The original
+asks SpellBookInfo::IsSpellKnown @0x449cd0, which looks only through the 720 spell book slots (PcProfile +0x2520), so a
+discipline tome (also item type 20, its spell in the scroll effect) stays listed after it is learned, because a learned
+discipline goes to the profile's discipline list, not the book. A deliberate change from RoF2: Hailstone also counts
+the discipline list (the profile's, kept current by OP_DisciplineUpdate), so a learned tome, or one whose group has a
+higher rank learned, is left out too; unticking the box shows it again. Bags and books always show. As a Hailstone
+extension, if the server supplies a multiclass mask, any class in that mask can match instead
 of the profile's class. Level, deity and lore are not looked at. A click on the box flips +0x60 and rebuilds the
 list; the state lasts for the session. The modern pack's box is "Usable only" beside "Affordable only"; the
 gamepad pack's Buy page switches it with X.
@@ -1812,6 +1830,12 @@ the OP_Animation alike (`game::spell_cast_animation`). Off, such a spell plays n
 plays no cast stage here at all, and what its cast animation is for a spell without one is not confirmed
 (docs/unknowns.md).
 
+A bard song's pulse lands the same way and plays its casting animation on the bard (it adds no cast stage): a
+singing song always plays it, and an instrument song follows the classic/Luclin rule in the animation section above
+(an instrument in hand, not sitting; a new-style model has no such model block). An area spell or a group song lands
+on each target with OP_Actions of its own; the local player's OP_Animation is sent once for one spell's landings
+within 500 ms.
+
 Missiles (`game/missiles.h`): an item missile with a target does not sweep the zone; spell missiles sweep and
 also check the target segment. Source despawn ends its missiles; target despawn removes homing. Item type 9 needs
 a loaded spell id in 1..45000. Duration uses normalized AE duration (capped at 14 s except first-slot SPA 76),
@@ -1929,7 +1953,8 @@ for race 0x3c or for the local player in first person nothing plays), an actor t
 for an idle request (0x4b1b97: the packet's P01, P03, P08, O01, O02 or 0xc..0xf), and the play state from before the movement choice decides P01 or P08. A corpse's D05 is not
 0x4afc90's: 0x490366 asks the animation object's slot
 0x20 (0x4afd50), which calls 0x4096c0 directly with speed 0, so it bypasses the factor and holds the end pose.
-Hailstone plays D05 once at rate 1 and holds its last frame, which shows the same end pose.
+Hailstone plays D05 once at rate 1 and holds its last frame, which shows the same end pose; a spawn already dead
+when its state is made starts at that frame (the corpse bullet below).
 
 **Bone groups** (`game/anim_layers.*`, `render/actor_layers.*`). Each actor splits its bones into two CBoneGroups when
 its animations are set up (0x4090f0 / 0x409260 by HasNewStyleHierarchicalModel; EnumerateBones @0x10040f80
@@ -1952,6 +1977,15 @@ it does nothing). The old track keeps running through the blend; a one-shot that
   to the legs while the unfinished action keeps the upper body (0x5890a0, 0x58ac90's modes); another
   sequence (stand, idle) starts on both groups when either group's mode is 2, cutting the action (0x589410).
   Each group's cross-fade is (new.blendIn + that group's old blendOut) / 2.
+- Bard songs (0x4b15b0's bard test): an instrument song's animation (0x27 drum, 0x28 lute, 0x29 horn) plays on a
+  classic or Luclin model only when the spawn is not sitting (StandState 110) and, for a bard (class 8), holds an
+  instrument in the primary or secondary hand (PlayerState bit 0x10, item types 23..26); without either, nothing
+  plays. A singing song (0x2a..0x2c, the ordinary cast animations) always plays. A new-style (EQG) model has no such
+  model block (0x58afa0), so the instrument animation is not suppressed there; the original's landing path
+  (0x593d10) still checks the posture and, for a bard, the instrument modifier before it reaches the model routine,
+  so "no model block" is not a promise that every native landing plays. The local player's bit is set from the
+  inventory (0x5923f0) and its transition is sent as OP_PlayerStateAdd / OP_PlayerStateRemove once the zone is ready
+  (OP_ClientReady; stock EQEmu ignores those packets before then); the server relays it for other players.
 - New-style riders select movement and idle sequences from mounted style column 5, using the mount's motion.
   The layer groups retain the requested style column as part of sequence identity, so the same sequence in a
   different column can start without restarting a repeated request for the same column.
@@ -1988,6 +2022,18 @@ it does nothing). The old track keeps running through the blend; a one-shot that
   a new-style model) once, unless it or the duck walk 0x16 (L06 / CWLK) is playing; 'd' (100) from 'o' plays it
   backward. A plain play, not a held posture: a walk or a jump replaces it, and a still ducking spawn asks for
   nothing more, so the crouch shows without moving (`game::choose_spawn_animation`).
+- Corpses (is_corpse, or stand state 115: feign death) play the death clip D05 (D04, else P01) on both groups, once,
+  and drop any action. A spawn that dies while drawn plays it from its start, even when its model changes in the same
+  frame; one that is already dead when the renderer first draws it (a fresh state after a zone change, or one that
+  comes into view dead) shows the clip's last frame at once, so the fall is not played again. That is the original's
+  actor build: BuildActorForSpawn @0x48f4b0, for a spawn of Type 2+ or stand state 115, calls the animation object's
+  slot 0x20 at 0x490366 with D05 (0x10), reverse 1 and speed 0, with Death_SoundID (+0x1110) cleared around it so
+  no death sound plays; the classic object (0x4afd50, via 0x4096c0) hands that to each group's
+  CBoneGroup::SetCurrentAnimation @0x1003ff10, which puts a reversed clip at its length, so the end pose shows at
+  once and stays. OP_Illusion rebuilds the actor (do_change_form @0x596b20 calls BuildActorForSpawn), so a corpse
+  that already lies keeps that end pose when its model changes; it does when its held variant changes or when it is
+  hidden and drawn again too (`docs/unknowns.md`). The cross-fade out of the death clip samples it as the one-shot it
+  was, as any one-shot, so it starts from the lying pose rather than the fall's first frame.
 - Climbing: CollidingType (+0x24, 6 on a ladder) reaches 0x4afe60 / SelectMovementAnim, which plays L07 / CLMB
   forward going up and reversed going down. Fresh moving remote spawns probe the same world sweep for ladder and
   switch contacts; a stationary spawn retains its contact, while riders, corpses and NoCollide actors do not probe.

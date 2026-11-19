@@ -289,10 +289,10 @@ struct BuffSlot {
     std::uint32_t num_hits = 0;
     float modifier = 1.0f;           // bard instrument modifier (EQ_Affect +4)
     std::uint8_t effect_type = 2;    // EQ_Affect +0: 2 buff, 4 inverted
-    // EQ_Affect +0x28: the per-slot data (the counters left of a counter effect), OP_Buff's slot_data. EQEmu sends
-    // zeros there (rof2.cpp ENCODE(OP_Buff): "TODO: implement slot_data stuff"); the player profile's buffs carry
-    // none this client decodes.
+    // EQ_Affect +0x28: the per-slot data (including counters left). An all-zero array without known
+    // counters does not mean the buff has run out; zone-in lists and the profile do not seed this array.
     std::array<std::int32_t, 12> slot_data{};
+    bool counters_known = false;
     bool empty() const { return spell == kNoSpell || spell == 0; }
 };
 

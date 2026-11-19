@@ -30,6 +30,7 @@
 #include <functional>
 #include <optional>
 #include <random>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -204,6 +205,13 @@ struct Emitter {
     double age = 0.0; // s since it was made (a fixture's runs for hours)
     EmitterCounts counts;
     std::int32_t emitted = -1;     // +0x10: ticks emitted, -1 before the initial burst
+    // Hailstone (not in the original): its owner is out of view, so it emits nothing and its ticks pass unspent
+    // (ParticleSystem::set_held); what it has already emitted lives on.
+    bool held = false;
+    // Held before its initial burst: the burst plays when it comes into view, and the ticks before it stay unspent.
+    bool burst_held = false;
+    // The last scales and alpha its attachment gave, kept while held so what it emitted keeps its look.
+    float held_size_scale = 1.0f, held_offset_scale = 1.0f, held_alpha = 1.0f;
     std::uint32_t spawn_index = 0; // +0x14
     std::vector<Particle> particles;
 };
@@ -255,6 +263,11 @@ public:
     // Remove a particular owner's attachment without affecting its other spells (e.g. a despawned blood point).
     void stop_attachment(std::uint32_t actor, std::int32_t point);
     void stop_actor(std::uint32_t actor);
+    // stop and stop_actor for many at once, in one pass over the emitters: `keys` / `actors` sorted ascending.
+    void stop_keys(std::span<const std::uint32_t> keys);
+    void stop_actors(std::span<const std::uint32_t> actors);
+    // Each attached emitter's Emitter::held, from its actor (`held(actor)`); the others are never held.
+    void set_held(const std::function<bool(std::uint32_t actor)>& held);
     // The density of the persistent emitters (zone fixtures, actors' own): what they emit from now on scales with
     // it (the effect manager's density setters, +0xa4 environment / +0xac actor).
     void set_persistent_density(float density);
@@ -273,9 +286,19 @@ private:
     void spawn(Emitter& e, std::int32_t count, float offset_scale);
     float random(float a, float b);
 
+    // What update's serial pass works out for an emitter's particles to move by (its scales, owner alpha and the
+    // place and basis followers take), read by the parallel pass. Kept so its memory is reused frame to frame.
+    struct EmitterStep {
+        float size_scale = 1.0f, actor_alpha = 1.0f;
+        glm::vec3 follow_origin{0.0f};
+        glm::mat3 follow_axes{1.0f};
+    };
+    static constexpr std::size_t kStepGrain = 4; // emitters a worker takes at a time in update's parallel passes
+
     std::vector<assets::EmitterDefinition> definitions_;
     std::vector<bool> glows_; // per definition (glows)
     std::vector<Emitter> emitters_;
+    std::vector<EmitterStep> steps_;
     std::mt19937 rng_{1};
     std::optional<glm::vec3> viewer_;
 };

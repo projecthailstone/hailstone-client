@@ -383,6 +383,9 @@ private:
         ActorLayers layers; // the two bone groups and the action playing (OP_Animation)
         bool new_style = false; // the new-style animation object drew it last
         bool seen = false;
+        // Drawn alive last frame (not a corpse, not lying down): a visible living -> dead transition plays the fall,
+        // even when the model changes in the same frame.
+        bool drawn_alive = false;
         // Not drawn on purpose (prepare_spawns): kept only so the look it wears is not freed; drawn again, it
         // starts as a new state.
         bool hidden = false;
