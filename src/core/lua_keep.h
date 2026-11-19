@@ -17,6 +17,7 @@
 //   4. pushes from the box (or from a string the state's host keeps for it, as the scripts' Script::scratch).
 // A single string made for one push goes through push_made, which moves it out of the caller's frame first.
 
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <exception>
@@ -25,6 +26,8 @@
 #include <utility>
 
 #include <lua.hpp>
+
+#include "core/log.h"
 
 namespace hailstone::core {
 
@@ -66,12 +69,33 @@ namespace detail {
 template <class T> struct ScratchBox {
     T value{};
     bool busy = false;
+    std::uint64_t generation = 0; // lua_scratch_generation() when it was taken
 };
 
 // The registry key of T's scratch box (its address).
 template <class T> inline const char scratch_key = 0;
 
+inline std::uint64_t& scratch_generation() {
+    static std::uint64_t generation = 1; // (main thread only, as every Lua state here)
+    return generation;
+}
+
+// A box held since an earlier generation was left by a raise: said once, as the cost it brings back (a new box each
+// call) is only garbage.
+inline void scratch_reclaimed() {
+    static bool said = false;
+    if (said) return;
+    said = true;
+    log::info("lua: a per-call scratch box left held by a Lua error was taken back (said once)");
+}
+
 } // namespace detail
+
+// The current generation of LuaScratch boxes. lua_scratch_new_generation starts the next: the host calls it where no
+// lua_CFunction of any state is running (LuaUi::frame, before any Lua runs in it), so a box still held from an earlier
+// generation was left by a raise that skipped its release(), and its next use takes it back.
+inline std::uint64_t lua_scratch_generation() { return detail::scratch_generation(); }
+inline void lua_scratch_new_generation() { ++detail::scratch_generation(); }
 
 // lua_keep for a function called every frame (a window's per-gem or per-button query): one box of T the state keeps
 // (made on the first call, destroyed when the state closes) and reset to T{} for each call, where lua_keep makes a
@@ -80,8 +104,9 @@ template <class T> inline const char scratch_key = 0;
 //
 // This handle has no destructor (a raise would skip it: see above), so the function calls release() before it
 // returns. While the box is held, another use (a call nested in this one) gets a lua_keep box instead, pushed on the
-// stack as lua_keep pushes it; otherwise nothing is pushed. A raise that skips release() leaves the box held for
-// good, and the function's later calls take lua_keep boxes, as they did before this existed.
+// stack as lua_keep pushes it; otherwise nothing is pushed. A raise that skips release() leaves the box held until
+// the host starts a new generation (lua_scratch_new_generation, each frame); until then the function's calls take
+// lua_keep boxes, as they did before this existed, and the first use after it takes the box back.
 template <class T> class LuaScratch {
 public:
     explicit LuaScratch(lua_State* L) {
@@ -94,12 +119,17 @@ public:
             box = &lua_keep<detail::ScratchBox<T>>(L);
             lua_rawsetp(L, LUA_REGISTRYINDEX, &detail::scratch_key<T>); // (the registry holds it from here)
         }
+        const std::uint64_t now = lua_scratch_generation();
         if (box->busy) {
-            value_ = &lua_keep<T>(L);
-            return;
+            if (box->generation == now) { // (held by a call this one is nested in)
+                value_ = &lua_keep<T>(L);
+                return;
+            }
+            detail::scratch_reclaimed(); // (held since an earlier generation: left by a raise)
         }
         box->value = T{};
         box->busy = true;
+        box->generation = now;
         box_ = box;
         value_ = &box->value;
     }

@@ -2191,7 +2191,12 @@ but Apple's is Low.
 In `hailstone.ini`, and in the Options window (`ui/modern/options.lua`, this client's own window: its Display and
 Graphics tabs; the client's options by name in `app/client_app_options.cpp`, the graphics ones `display_option`); the
 viewer (`--zone`, `--model`) takes `--msaa`, `--tonemap`, `--exposure`, `--render-scale`,
-`--sharpness` and `--upscaler`, `--frame-gen` and `--screenshot-generated`.
+`--sharpness` and `--upscaler`, `--frame-gen` and `--screenshot-generated`. The client takes `--lighting` (`classic`,
+`smooth`, `modern`; `none` is the viewer's alone), `--msaa`, `--tonemap`, `--exposure`, `--shadows`, `--light-shadows`,
+`--no-ao`, `--depth-prepass`, `--bloom`, `--render-scale`, `--sharpness`, `--upscaler`, `--frame-gen` and
+`--view-distance` as the `display.*` settings they stand for (`app/display_flags.h`), for that run only: they go over
+hailstone.ini's and the character's values and are never saved (`Config::set_run_override`), and a change to one of
+them in the Options window takes over and is saved as usual.
 
 | Key | Values | Default | |
 |---|---|---|---|

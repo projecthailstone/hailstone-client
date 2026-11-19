@@ -163,6 +163,55 @@ TEST_CASE("LuaScratch: one box for every use, reset each time, freed at close; a
     CHECK(Counted::alive == 0);
 }
 
+// Takes the scratch box, then raises before its release() (a push failing under a memory limit, or an exception
+// cxx_guard turned into an error).
+int raises_holding(lua_State* L) {
+    hailstone::plugin::LuaScratch<Counted> box(L);
+    box->text = "left";
+    return luaL_error(L, "raised before release");
+}
+
+TEST_CASE("LuaScratch: a box left held by a raise is taken back in the next generation, with no new allocation") {
+    Count count;
+    lua_State* L = lua_newstate(counting, &count);
+    REQUIRE(L);
+    Counted::alive = 0;
+    Counted* first = nullptr;
+    {
+        hailstone::plugin::LuaScratch<Counted> a(L); // (makes the box)
+        first = &*a;
+        a.release();
+    }
+    lua_pushcfunction(L, raises_holding);
+    REQUIRE(lua_pcall(L, 0, 0, 0) != LUA_OK);
+    lua_settop(L, 0);
+    {
+        // The same generation: the box is still held (as by a call this one is nested in), so a lua_keep box.
+        hailstone::plugin::LuaScratch<Counted> same(L);
+        CHECK_FALSE(same.kept());
+        same.release();
+        lua_settop(L, 0);
+    }
+    hailstone::core::lua_scratch_new_generation(); // (as LuaUi::frame, each frame)
+    const std::size_t before = count.made;
+    {
+        hailstone::plugin::LuaScratch<Counted> next(L);
+        CHECK(next.kept());
+        CHECK(&*next == first);       // the box taken back
+        CHECK(next->text.empty());    // reset for this use
+        CHECK(lua_gettop(L) == 0);    // nothing pushed
+        next.release();
+    }
+    CHECK(count.made == before);
+    {
+        hailstone::plugin::LuaScratch<Counted> again(L); // and given back as usual
+        CHECK(again.kept());
+        again.release();
+    }
+    lua_close(L);
+    CHECK(Counted::alive == 0);
+}
+
 TEST_CASE("set_string_field: an unchanged string makes no new string; a changed one is written") {
     Count count;
     lua_State* L = lua_newstate(counting, &count);

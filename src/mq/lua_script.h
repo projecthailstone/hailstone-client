@@ -270,7 +270,8 @@ struct Script {
 
     static Script& of(lua_State* L) { return **static_cast<Script**>(lua_getextraspace(L)); }
 
-    void fail(std::string why) {
+    // `log_text`: what the log gets instead of `why` (the error with its traceback), once.
+    void fail(std::string why, std::string_view log_text = {}) {
         if (social >= 0) { // a Lua social reports and stays: the next press tries again
             host->say(std::format("[Lua] {}: {}", name, why));
             log::warn("lua {}: {}", name, why);
@@ -280,7 +281,7 @@ struct Script {
         status = Status::Failed;
         error = std::move(why);
         host->say(std::format("[Lua] {} ended with an error: {}", name, error));
-        log::warn("lua script {}: {}", name, error);
+        log::warn("lua script {}: {}", name, log_text.empty() ? std::string_view(error) : log_text);
         stop_requested = true;
     }
 

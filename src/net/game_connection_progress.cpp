@@ -118,7 +118,9 @@ void GameConnection::handle_progress(Op op, const AppPacket& p) {
         if (auto r = decode_recipe_reply(p); r && tradeskill_.open) tradeskill_.add_recipe(*r);
         break;
     case Op::RecipeDetails:
-        if (auto d = decode_recipe_details(p); d && tradeskill_.open && d->recipe_id == tradeskill_.selected)
+        if (auto d = decode_recipe_details(p); !d)
+            log::warn("could not decode OP_RecipeDetails ({} bytes)", p.data.size());
+        else if (tradeskill_.open && d->recipe_id == tradeskill_.selected)
             tradeskill_.details = std::move(*d);
         break;
     case Op::RecipeAutoCombine:
@@ -347,6 +349,14 @@ std::string GameConnection::aa_name(const game::AltAbility& a) const {
     return strings_.db_string(static_cast<std::uint32_t>(a.title_sid), 1);
 }
 
+std::string GameConnection::aa_display_name(const game::AltAbility& a) const {
+    std::string name = aa_name(a);
+    if (name.empty() && a.activated() && spell_table_)
+        if (const game::SpellData* s = spell_table_->get(static_cast<std::uint32_t>(a.spell))) name = s->name;
+    if (name.empty()) name = std::format("Ability {}", a.group);
+    return name;
+}
+
 std::string GameConnection::aa_description(const game::AltAbility& a) const {
     return strings_.db_string(static_cast<std::uint32_t>(a.desc_sid), 4);
 }
@@ -463,7 +473,7 @@ void GameConnection::aa_train_button(std::uint32_t rank_id, bool train_all) {
     if (!a) return;
     Confirmation c;
     c.id = kConfirmAATrain;
-    c.text = strings_.format(game::aa_train_question(a->cost), std::vector<std::string>{std::to_string(a->cost), aa_name(*a)});
+    c.text = strings_.format(game::aa_train_question(a->cost), std::vector<std::string>{std::to_string(a->cost), aa_display_name(*a)});
     c.timeout_ms = game::kPurchaseConfirmMs;
     c.data = rank_id;
     c.data2 = train_all ? 1 : 0;

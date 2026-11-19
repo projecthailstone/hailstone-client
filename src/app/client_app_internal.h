@@ -17,10 +17,12 @@
 #include "app/addon_suggest.h"
 #include "app/ability_bulk.h"
 #include "app/window_icon.h"
+#include "app/window_desc.h"
 #include "app/automation.h"
 #include "app/progress_ui.h"
 #include "app/market_ui.h"
 #include "app/client_app.h"
+#include "app/close_camp.h"
 #include "app/login_token_session.h"
 #include "app/input_script.h"
 #include "app/zone_settle.h"
@@ -180,19 +182,10 @@ constexpr int kMinCameraZoomSetting = 10;
 constexpr int kMaxCameraZoomSetting = 150;
 
 
-// The game window as it was when the client last closed (hailstone.ini window.*), unless --window-size asked for
-// a size: the UI's places are kept for that screen, so starting it smaller piles the windows up.
+// The game window at start (app/window_desc.h), from hailstone.ini as it is now.
 inline platform::WindowDesc window_desc(const ClientOptions& o) {
-    platform::WindowDesc d{.width = o.window_width, .height = o.window_height};
-    d.pad_input_in_background = !o.input_script.empty();
-    if (o.window_width != 1280 || o.window_height != 720) return d; // --window-size
     Config c;
-    if (!c.load(default_config_path())) return d;
-    d.width = std::max(320, c.get_int("window.width", d.width));
-    d.height = std::max(240, c.get_int("window.height", d.height));
-    if (c.get("window.x") && c.get("window.y")) d.position = {{c.get_int("window.x", 0), c.get_int("window.y", 0)}};
-    d.maximized = c.get_bool("window.maximized", false);
-    return d;
+    return window_desc(o, c.load(default_config_path()) ? &c : nullptr);
 }
 
 // The UI scale: --ui-scale, else hailstone.ini ui.scale (percent; 0 or none: the display's own scale). The fonts
@@ -208,9 +201,10 @@ inline float ui_scale_setting(const ClientOptions& o) {
 // The upscaler provider hailstone.ini's display.upscaler names (render/upscaler_provider.h), loaded before the
 // Vulkan instance is made, which takes its requirements; nullptr for the client's own upscalers. Read at the start
 // only, as display.upscaler always is.
-inline std::unique_ptr<render::UpscalerProvider> start_upscaler_provider() {
+inline std::unique_ptr<render::UpscalerProvider> start_upscaler_provider(const ClientOptions& o) {
     Config c;
-    if (!c.load(default_config_path())) return nullptr;
+    if (!c.load(default_config_path()) && o.display_settings.empty()) return nullptr;
+    for (const auto& [key, value] : o.display_settings) c.set_run_override(key, value); // --upscaler
     return render::load_upscaler_setting(c.get_string("display.upscaler", "off"), platform::upscalers_dir(),
                                          platform::cache_dir() / "upscalers");
 }
@@ -266,7 +260,7 @@ public:
     ClientApp& operator=(const ClientApp&) = delete;
     explicit ClientApp(ClientOptions& options)
         : opts_(options), window_(window_desc(options)),
-          vk_(window_, options.validation, start_upscaler_provider()),
+          vk_(window_, options.validation, start_upscaler_provider(options)),
           ui_(window_, vk_,
               ui::ImGuiLayerDesc{.scale_override = ui_scale_setting(options),
                                  .ini_path = platform::imgui_ini()}) {
@@ -293,6 +287,12 @@ public:
         }
         // A new install's graphics settings for this computer (render/graphics_tier.h), before they are first read.
         detect_graphics_at_first_start();
+        // The display flags (--lighting, --msaa ...) over the saved settings for this run, after a new install's own
+        // settings are written; a change in the Options window takes over from them (Config::set_run_override).
+        for (const auto& [key, value] : opts_.display_settings) {
+            config_.set_run_override(key, value);
+            log::info("{} = {} for this run (a command-line flag)", key, value);
+        }
         // The settings (hailstone.ini's until a character enters, then the character's: apply_settings), before the
         // renderers: their pipelines take the sample count.
         apply_settings();
@@ -1122,6 +1122,7 @@ private:
     ui::ImGuiLayer ui_;
     bool quit_ = false;
     bool close_pending_ = false; // a window close request held through a loading screen
+    CloseCamp close_camp_;       // a window close request's camp, made again when a zone change ended it
 
     Screen screen_ = Screen::Login;
     ui::LoginView login_view_;

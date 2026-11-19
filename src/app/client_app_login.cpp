@@ -971,6 +971,7 @@ void ClientApp::window_close_request() {
     if (screen_ == Screen::InGame && conn_ && !link_death_since_) {
         log::info("window close request in game: /camp desktop");
         conn_->camp_command("desktop");
+        close_camp_.camped(); // a zone change that ends this camp camps again (app/close_camp.h)
         return;
     }
     log::info("window close request: quitting");

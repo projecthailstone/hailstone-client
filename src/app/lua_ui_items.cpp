@@ -12,6 +12,7 @@
 
 #include "app/lua_ui.h"
 #include "app/lua_ui_windows.h"
+#include "core/log.h"
 #include "game/bank.h"
 #include "game/hot_button_menu.h"
 #include "game/quantity_dialog.h"
@@ -916,7 +917,10 @@ public:
         : StockWindow(screen, false), npc_(npc), p_(std::move(prefix)) {}
     bool shown(UiHost& host) override { return session(host) != nullptr; }
     void set_shown(UiHost& host, bool show) override {
-        if (!show && host.conn) host.conn->trade_cancel();
+        if (!show && host.conn && session(host)) {
+            log::info("trade: the {} window was closed, cancelling", npc_ ? "give" : "trade");
+            host.conn->trade_cancel();
+        }
     }
     void child(UiHost& host, std::string_view id, Child& out) override {
         const auto* t = session(host);

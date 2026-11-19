@@ -2061,6 +2061,11 @@ void GameConnection::handle_zone(const AppPacket& p) {
                 // the link (EQEmu's Handle_OP_DeleteSpawn does); then back in through world (zoning = 1).
                 chat(ChatEvent::Kind::System, "Zoning...");
                 send_zone(encode_delete_own_spawn(world_.player_id));
+                // A camp under way ends here, silently: the next zone's EnterZone runs ResetClientStateForZone(1)
+                // @0x5319f0, which clears the camp's time (0xddf8a0) and its kind (0xdd2664). Nothing reads them
+                // while zoning (a link death then is not in game).
+                camp_started_ = {};
+                camp_kind_ = 0;
                 state_ = ConnectionState::Zoning;
                 reset_fellowship(true);
                 reset_achievements();

@@ -2071,8 +2071,12 @@ public:
     // Alternate advancement: the ranks the server sent, the owned ranks, points, AA experience and
     // percentage, the reuse timers (game/alt_adv.h).
     const game::AltAdvState& alt_adv() const { return alt_adv_; }
-    // The rank's name and description (dbstr types 1 and 4).
+    // The rank's name and description (dbstr types 1 and 4); empty for a title the dbstr does not have.
     std::string aa_name(const game::AltAbility& a) const;
+    // The name the windows show: aa_name, else (Hailstone's) the ability's spell's name when it has one, else
+    // "Ability <group>", never empty. A live game folder's dbstr_us.txt numbers many AAs differently from a RoF2
+    // server's ranks, and a server's own export can lack some titles.
+    std::string aa_display_name(const game::AltAbility& a) const;
     std::string aa_description(const game::AltAbility& a) const;
     // The AA window's Category column: the category (dbstr type 0x13), else the expansion (0x14); empty for neither.
     std::string aa_category(const game::AltAbility& a) const;

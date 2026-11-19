@@ -6,12 +6,14 @@
 #include <doctest/doctest.h>
 
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "game/alt_adv.h"
 #include "game/eq_strings.h"
 #include "game/tasks.h"
+#include "game/spells.h"
 #include "game/training.h"
 #include "mock_server/harness.h"
 #include "net/aa_packets.h"
@@ -308,6 +310,33 @@ TEST_CASE("aa: CanTrainAbility, MeetsPrerequisites and CanSeeAbility") {
 // "Buy every rank" on a server without the buy-all action (a stock EQEmu): the client sends OP_AAAction 3 for the next
 // rank each time EQEmu's answer to the last purchase (the owned list, then the points) shows it bought, waits through
 // other updates, and stops at the last rank and on a plain train.
+TEST_CASE("aa: a title the dbstr does not have is named by the ability's spell, else its group, never empty") {
+    // A live game folder's dbstr_us.txt numbers many AAs differently from a RoF2 server's ranks (title_sid), and a
+    // server's own export can lack some: the AA window's Ability column showed nothing for those.
+    test::Rig rig(test::MockConfig::standard());
+    auto& conn = rig.conn;
+    REQUIRE(rig.to_zone());
+    std::vector<std::string> fields(237, "0");
+    fields[0] = "8000";
+    fields[1] = "Fixture Discipline";
+    for (std::size_t i = 86; i <= 97; ++i) fields[i] = "254";
+    std::string line;
+    for (const auto& field : fields) line += (line.empty() ? "" : "^") + field;
+    auto table = std::make_shared<game::SpellTable>();
+    REQUIRE(table->parse(line) == 1);
+    conn.set_spell_table_for_test(table);
+
+    game::AltAbility passive = rank(100, 10, 1, -1, -1);
+    passive.title_sid = 987654; // in no dbstr
+    CHECK(conn.aa_name(passive).empty()); // the raw title, as the plugins and /alternateadv list read it
+    CHECK(conn.aa_display_name(passive) == "Ability 10");
+    game::AltAbility activated = passive;
+    activated.spell = 8000;
+    CHECK(conn.aa_display_name(activated) == "Fixture Discipline");
+    activated.spell = 8001; // a spell the table does not have
+    CHECK(conn.aa_display_name(activated) == "Ability 10");
+}
+
 TEST_CASE("aa: buy all ranks on a stock server buys one rank after another") {
     test::Rig rig(test::MockConfig::standard());
     auto& conn = rig.conn;

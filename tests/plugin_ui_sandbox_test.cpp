@@ -500,7 +500,7 @@ TEST_CASE("Plugin UI: the consent question's windows are the pack's alone") {
                              "  INTO = ui.Begin('Consent##q') ui.Button('inject')\n"
                              "  if ui.BeginChild('c', 10, 10) then ui.Text('inject') end ui.EndChild()\n"
                              "  ui.End()\n"
-                             "  PROMPT = ui.Begin(\"Allow this server's plugin?##hailstone_plugin_consent\") ui.End()\n"
+                             "  PROMPT = ui.Begin(\"Allow these plugins?###hailstone_plugin_consent\") ui.End()\n"
                              "end)\n");
     int foreground = 0;
     auto frame = [&] {

@@ -194,6 +194,10 @@ struct NativePlugins::Impl {
     // A file from the server's plugins/ folder (set_server_dir): it loads only with the player's word.
     bool asks(const fs::path& file, const Sha256Digest& hash) const {
         if (env.policy && env.policy->required_file(FileKind::Plugin, hash)) return true;
+        return in_server_dir(file);
+    }
+    // A library the server sent (servers/<profile>/plugins/), not one of the player's.
+    bool in_server_dir(const fs::path& file) const {
         if (server_dir.empty()) return false;
         const fs::path rel = file.lexically_relative(server_dir);
         return !rel.empty() && *rel.begin() != "..";
@@ -2850,7 +2854,7 @@ bool NativePlugins::load_file(std::string_view name_in, std::string* why, Asker 
                 return refuse(name + " is not loaded: this server's compiled plugins load only once you allow them, "
                               "and only you can ask for that");
             if (c == Consent::Unasked || asker == Asker::Player) {
-                const bool fresh = m.ask({name, *file, bytes->size(), hash});
+                const bool fresh = m.ask({name, *file, bytes->size(), hash, !m.in_server_dir(*file)});
                 return refuse(name + " waits for your answer: this server's compiled plugins load only once you allow them",
                               fresh);
             }
@@ -3304,26 +3308,28 @@ bool NativePlugins::check_required_addons(std::string* problem) const {
     for (const auto& entry : m.required) {
         const auto& name = entry.first;
         const auto& hash = entry.second;
+        // Named by its repository, as the server's add-on policy names it (docs/plugins.md).
+        const std::string who = "Required add-on " + m.env.policy->required_label(FileKind::Plugin, hash, name);
         if (m.env.policy->caps(FileKind::Plugin, hash, name) == 0)
-            return fail("Required add-on " + name + " is not permitted by this server's rules");
+            return fail(who + " is not permitted by this server's rules");
         const Loaded* l = m.find(name);
         if (l && l->hash != hash)
-            return fail("Required add-on " + name + " is shadowed by a different plugin");
+            return fail(who + " is shadowed by a different plugin");
         // One that let an exception out stays loaded (its other callbacks may still work) but is not counted as
         // running as the server requires: the player is told, and plays on (ClientApp::addon_world_allowed).
         if (l && l->hash == hash && !l->threw_at.empty())
-            return fail("Required add-on " + name + " failed with an error in " + l->threw_at.front());
+            return fail(who + " failed with an error in " + l->threw_at.front());
         const Consent consent = m.consent_for(hash);
-        if (consent == Consent::Denied) return fail("Required add-on " + name + " was not approved");
+        if (consent == Consent::Denied) return fail(who + " was not approved");
         if (consent == Consent::Unasked) {
             if (std::any_of(m.pending.begin(), m.pending.end(), [&](const ConsentFile& p) { return p.sha256 == hash; }))
                 return false;
-            return fail("Required add-on " + name + " needs your approval");
+            return fail(who + " needs your approval");
         }
         if (l && l->hash == hash && l->caps != 0) continue;
         for (const auto& f : m.failures)
-            if (iequal(f.name, name)) return fail("Required add-on " + name + ": " + f.error);
-        return fail("Required add-on " + name + " did not load");
+            if (iequal(f.name, name)) return fail(who + ": " + f.error);
+        return fail(who + " did not load");
     }
     return true;
 }

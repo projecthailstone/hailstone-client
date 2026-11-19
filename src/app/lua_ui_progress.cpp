@@ -283,7 +283,7 @@ public:
         for (const game::AltAbility* a : c.aa_list(tab + 1, filter_)) {
             int cur = aa.has(a->id) ? a->rank : a->rank - 1;
             ListRow r;
-            r.texts = {c.aa_name(*a), std::format("{}/{}", cur, a->max_rank), cur < a->max_rank ? std::to_string(a->cost) : "",
+            r.texts = {c.aa_display_name(*a), std::format("{}/{}", cur, a->max_rank), cur < a->max_rank ? std::to_string(a->cost) : "",
                        c.aa_category(*a)};
             r.color = c.aa_can_train(a->id) ? Rgb{1, 1, 1} : argb_to_rgb(0xffc0c0c0);
             d.rows.push_back(std::move(r));
@@ -311,7 +311,7 @@ public:
             for (const game::AltAbility* a : c.aa_list(tab, filter_)) {
                 int cur = aa.has(a->id) ? a->rank : a->rank - 1;
                 ListRow r;
-                r.texts = {c.aa_name(*a),
+                r.texts = {c.aa_display_name(*a),
                            std::format("{}/{}", cur, a->max_rank),
                            cur < a->max_rank ? std::to_string(a->cost) : "",
                            a->category > 0 ? c.strings().db_string(static_cast<std::uint32_t>(a->category), 0x13) : "",
@@ -355,7 +355,7 @@ public:
         game::HotButton b;
         b.type = game::HotButtonType::Social;
         b.slot = game::kSocialCount + a->group;
-        b.label = host.conn->aa_name(*a).substr(0, 63);
+        b.label = host.conn->aa_display_name(*a).substr(0, 63);
         return b;
     }
     void child(UiHost& host, std::string_view id, Child& out) override {
@@ -404,7 +404,7 @@ public:
         if (!a) return;
         if (id == "ModernSelected") {
             int cur = aa.has(a->id) ? a->rank : a->rank - 1;
-            out.text = std::format("{}\t{}\t{}\t{}\t{}", a->id, c.aa_name(*a), cur, a->max_rank,
+            out.text = std::format("{}\t{}\t{}\t{}\t{}", a->id, c.aa_display_name(*a), cur, a->max_rank,
                                    cur < a->max_rank ? std::to_string(a->cost) : std::string());
         } else if (id == "ModernLevel") {
             std::int32_t level = c.player_status().level;
@@ -419,7 +419,7 @@ public:
                 std::string name;
                 for (const auto& [rid, r] : aa.table)
                     if (r.group == g) {
-                        name = c.aa_name(r);
+                        name = c.aa_display_name(r);
                         break;
                     }
                 const game::AltAbility* held = aa.owned_rank(g);

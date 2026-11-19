@@ -60,7 +60,10 @@ void guard_drawing_window();
 void raise_guarded_windows();
 // The client's own consent prompt's ImGui window (app/automation.cpp): while the question is up, only the pack's
 // code may begin a window of this name, before the prompt's first frame too.
-inline constexpr const char* kConsentWindowName = "Allow this server's plugin?##hailstone_plugin_consent";
+inline constexpr const char* kConsentWindowName = "Allow this server's plugin?###hailstone_plugin_consent";
+// Its id alone: the prompt's title follows what it asks about (plugin::consent_wording), and a name with another
+// title before this id is the same window.
+inline constexpr const char* kConsentWindowId = "###hailstone_plugin_consent";
 // Around each script's draw function (the Lua UI's windows, an MQ script's), always as a pair: how many windows
 // ui.Begin and ui.BeginChild have open before it runs (and the style and font stacks' sizes then: its pops stop
 // there, so it cannot pop what the code around it pushed); after it returns (normally or not, once ImGui's stacks are

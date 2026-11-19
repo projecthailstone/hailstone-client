@@ -142,8 +142,9 @@ void GameConnection::send_command(const std::string& typed) {
     if (!zone_session_ || line.empty()) return;
     // InterpretCmd @0x51fce0: with the interface locked (/safelock) only /safelock gets through.
     if (interface_locked() && !game::locked_line_allowed(line, fmt_eq(strings_, 14193))) return system(game::kStrInterfaceLocked);
-    bool gm = profile_ && profile_->gm;
-    game::CommandLine cl = game::parse_command_line(line, gm, &strings_);
+    // A command's Restriction asks for me->IsGm(): the player spawn's GM flag (PlayerBase +0x25c, vtable +0xdc),
+    // which SpawnAppearance 20 changes mid-session (#gm on), not the profile's copy from the zone-in.
+    game::CommandLine cl = game::parse_command_line(line, player_is_gm(), &strings_);
     switch (cl.kind) {
     case game::CommandLine::Kind::Empty:
         return;

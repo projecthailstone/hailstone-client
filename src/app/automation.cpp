@@ -378,18 +378,20 @@ void Automation::Impl::consent_window() {
                             ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowBgAlpha(0.95f);
     bool open = true;
-    ImGui::Begin(ui::lua::kConsentWindowName, &open,
+    const plugin::ConsentWording words = plugin::consent_wording(*prompt, server);
+    ImGui::Begin((words.title + ui::lua::kConsentWindowId).c_str(), &open,
                  ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse);
     ui::lua::guard_current_window();
-    ImGui::Text("%s wants to run %s on your computer:", server.c_str(),
-                prompt->files.size() == 1 ? "a compiled plugin" : "compiled plugins");
+    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
+    ImGui::TextUnformatted(words.intro.c_str());
+    ImGui::PopTextWrapPos();
     for (const auto& f : prompt->files) {
         ImGui::BulletText("%s  (%s, %llu bytes)", f.name.c_str(), f.file.filename().string().c_str(),
                           static_cast<unsigned long long>(f.size));
         ImGui::TextDisabled("    sha256 %s", to_hex(f.sha256).substr(0, 16).c_str());
     }
     ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
-    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f), "%s", std::string(plugin::kConsentWarning).c_str());
+    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f), "%s", words.warning.c_str());
     ImGui::TextDisabled("Your answer is kept for this server. The add-on list on the login screen can change it.");
     ImGui::PopTextWrapPos();
     const float em = ImGui::GetFontSize();

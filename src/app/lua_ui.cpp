@@ -35,6 +35,7 @@
 #include "app/lua_ui_api.h"
 #include "app/lua_ui_hooks.h"
 #include "app/lua_ui_plugins.h"
+#include "app/lua_ui_record.h"
 #include "app/lua_ui_extensions.h"
 #include "plugin/lua_keep.h"
 #include "plugin/ui_bridge.h"
@@ -1102,21 +1103,6 @@ void set_art_fields(lua_State* L, int n) {
     for (int k = 4; k >= 0; --k) lua_setfield(L, -2 - k, kFields[k]);
 }
 
-// The record table an hs.*Info call fills: the argument at `arg` when it is a plain table (a caller's, kept from frame
-// to frame), else a new one; left on the top of the stack. A table with a metatable (a plugin's view of the pack's,
-// or one of its own) is not filled: its __newindex or __index would run Lua code in the middle of the fill, which can
-// raise past the C++ objects the fill reads from, or call back in.
-void push_record(lua_State* L, int arg, int fields) {
-    if (lua_type(L, arg) == LUA_TTABLE) {
-        if (!lua_getmetatable(L, arg)) {
-            lua_pushvalue(L, arg);
-            return;
-        }
-        lua_pop(L, 1);
-    }
-    lua_createtable(L, 0, fields);
-}
-
 void set_number(lua_State* L, const char* field, double v) {
     lua_pushnumber(L, v);
     lua_setfield(L, -2, field);
@@ -1174,7 +1160,7 @@ int GemInfo(lua_State* L) {
     plugin::LuaScratch<Child> box(L);
     Child& c = *box;
     if (w) w->child(m.host, id, c);
-    push_record(L, 3, 16);
+    record::push(L, 3, 16);
     if (c.shown) lua_pushboolean(L, *c.shown);
     else lua_pushnil(L);
     lua_setfield(L, -2, "shown");
@@ -1476,7 +1462,7 @@ int HotButtonInfoFn(lua_State* L) {
     if (w) hb = w->hot_button(m.host, child);
     const HotButtonInfo empty;
     const HotButtonInfo& info = hb ? *hb : empty;
-    push_record(L, 3, 24);
+    record::push(L, 3, 24);
     // (the strings only when changed: no new ones each frame for a record the caller keeps)
     plugin::set_string_field(L, "kind", info.kind.c_str());
     plugin::set_string_field(L, "label", info.label.c_str());
@@ -1488,7 +1474,7 @@ int HotButtonInfoFn(lua_State* L) {
     }
     // Fills the table in field `name` with `n` numbers (a new table when the field holds none).
     auto set_list = [L](const char* name, const float* v, int n) {
-        lua_getfield(L, -1, name); // (the record has no metatable: push_record; the list is written raw)
+        lua_getfield(L, -1, name); // (the record has no metatable: record::push; the list is written raw)
         if (!lua_istable(L, -1)) {
             lua_pop(L, 1);
             lua_createtable(L, n, 0);

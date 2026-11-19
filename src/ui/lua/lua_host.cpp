@@ -64,11 +64,15 @@ const LuaUi::CallbackOwner* g_callback_source=nullptr;
 char kSourceFunctions;
 char kMaintenanceHost;
 
-// The collector runs in Lua's generational mode, on its own (collect_garbage sets it up once the scripts have
-// loaded): the windows make a few hundred KB of garbage a frame over a live heap of tens of MB, nearly all of it
-// dead by the next frame, which the minor collections take as the allocations run. Before, the incremental collector
-// ran in a 1 ms slice a frame, and its catch-up finished a whole cycle in one frame when the slices fell behind
-// (pauses of up to 40 ms).
+// The collector runs in Lua's generational mode (collect_garbage sets it up once the scripts have loaded): the
+// windows make a few hundred KB of garbage a frame over a live heap of tens of MB, nearly all of it dead by the next
+// frame, which the minor collections take as the allocations run. The major collections, which are atomic (a whole
+// mark and sweep at once, lgc.c fullgen), are the host's: LuaUi::frame runs one between the windows' draws, timed,
+// when the heap reaches kGcMajorTrigger times what was live after the last. Lua's own would come at twice that
+// (genmajormul 100 %) inside whichever window's allocation crossed it, untimed and charged to that window; its
+// genmajormul is set as high as it goes (kGcLuaMajorMul) so that the host's always come first. Before, the
+// incremental collector ran in a 1 ms slice a frame, and its catch-up finished a whole cycle in one frame when the
+// slices fell behind (pauses of up to 40 ms).
 // The state's memory and the time a piece of code may run (LuaUi::Impl::alloc, budget_hook), well above what the
 // packs use (tens of MB; a window's draw takes well under a millisecond, loading the largest file a few): a window
 // or plugin that loops forever or keeps allocating is stopped with an error, and its window is turned off, instead of
@@ -87,9 +91,18 @@ constexpr std::size_t kPluginSettings = 1024;
 constexpr std::size_t kPluginSettingKey = 256, kPluginSettingValue = 16384;
 constexpr std::size_t kPluginWindows = 128;
 constexpr std::size_t kPluginSections = 512; // plugin windows' timed sections kept by name, all plugins together
-// LuaUi::frame forces a full collection when the heap reaches this many times what was live after the last one, a
-// bound for the old generation should Lua's own major collections fall behind.
-constexpr int kGcMajorTrigger = 6;
+// LuaUi::frame runs a major collection when the heap reaches this many times what was live after the last one: the
+// old generation's bound (minor collections free only what died young). Three times: the old incremental cycle
+// started at twice and finished at once by four.
+constexpr int kGcMajorTrigger = 3;
+// Lua's own majors: when the heap has grown by this percentage of what was live after the last major (lgc.c genstep).
+// setgcparam keeps it divided by 4 in a byte (lgc.h), so 1020 is the most it holds; 1000 puts Lua's own major at 11
+// times the live heap, past kGcMajorTrigger by far, so it comes only should one frame's allocations grow the heap
+// from under three times to over eleven.
+constexpr int kGcLuaMajorMul = 1000;
+constexpr int kGcMinorMul = 20; // Lua's default (LUAI_GENMINORMUL): a minor collection each 20 % the heap grows
+// A major collection this long or longer is logged.
+constexpr float kGcMajorLogMs = 8.0f;
 // The live heap is what the cycle found reachable (gc_live_bytes), not the heap when it ended: a sweep spread over
 // many frames ends with all the garbage the windows made meanwhile, which only the next cycle frees. Counted as
 // live, it raised both thresholds, so the next sweep was longer and its garbage more: a night with the Triune loot
@@ -144,13 +157,14 @@ struct LuaUi::Impl {
     Clock::duration pack_budget = kPackBudget, plugin_budget = kPluginBudget;
     int live_kb = 0; // the live heap the last full collection found (0: none yet)
 
-    // Once the scripts have loaded, the generational collector; after that, a full collection only past
-    // kGcMajorTrigger.
+    // Once the scripts have loaded, the generational collector; after that, a major collection (timed) when the heap
+    // reaches kGcMajorTrigger times the live heap, or when Lua has taken its majors back after a bad collection of its
+    // own (gc_left_generational), so that none of them run untimed inside a window's draw.
     void collect_garbage() {
         auto live = [&] { return std::max(1, static_cast<int>(gc_live_bytes(L) >> 10)); };
-        if (live_kb == 0) { // runs once after scripts finish loading
-            lua_gc(L, LUA_GCGEN, 20, 100); // generational mode (20% minor, 100% major); leave GC running!
-            lua_gc(L, LUA_GCCOLLECT);      // promote initial script state to old generation & clean startup garbage
+        if (live_kb == 0) { // the scripts as loaded: their loading's garbage goes, and what stays is the old generation
+            lua_gc(L, LUA_GCGEN, kGcMinorMul, kGcLuaMajorMul);
+            gc_full_generational(L);
             live_kb = live();
             return;
         }
@@ -158,20 +172,14 @@ struct LuaUi::Impl {
         // Minor collections happen automatically during Lua allocations (sub-millisecond).
         // Only intervene here if long-lived/old objects grow past kGcMajorTrigger.
         const int kb = lua_gc(L, LUA_GCCOUNT);
-        if (kb < live_kb * kGcMajorTrigger) return;
-
+        if (kb < live_kb * kGcMajorTrigger && !gc_left_generational(L)) return;
         const auto began = Clock::now();
-
-        // Perform a major generational collection to sweep promoted/old objects
-        lua_gc(L, LUA_GCCOLLECT);
+        gc_full_generational(L);
         live_kb = live();
-
-        using Ms = std::chrono::duration<float, std::milli>;
-        const float total_ms = Ms(Clock::now() - began).count();
-        core::frame_sections::add("Lua GC major", total_ms);
-        if (total_ms >= 8.0f)
-            log::info("ui: Lua generational major GC took {:.1f} ms (heap {} KB -> live {} KB)",
-                total_ms, kb, live_kb);
+        const float ms = std::chrono::duration<float, std::milli>(Clock::now() - began).count();
+        core::frame_sections::add("Lua GC major", ms);
+        if (ms >= kGcMajorLogMs)
+            log::info("ui: Lua major collection took {:.1f} ms (heap {} KB, live {} KB)", ms, kb, live_kb);
     }
 
     static Impl& of(lua_State* L) {
@@ -2061,6 +2069,7 @@ void LuaUi::frame(bool draw) {
     Impl& m = *impl_;
     lua_State* L = m.L;
     core::frame_sections::Lap lap;
+    core::lua_scratch_new_generation(); // (no Lua runs here: a scratch box still held was left by a raise)
     if (m.scripts.empty() && m.last_scan == Clock::time_point{}) {
         m.last_scan = Clock::now();
         m.scan(true);

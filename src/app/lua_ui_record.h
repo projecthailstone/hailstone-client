@@ -19,8 +19,10 @@
 
 namespace hailstone::app::record {
 
-// The record to fill, left on top of the stack: the table at `arg` when it is a plain table, else a new one with room
-// for `fields`.
+// The record to fill, left on top of the stack: the table at `arg` when it is a plain table (a caller's, kept from
+// frame to frame), else a new one with room for `fields`. A table with a metatable (a plugin's view of the pack's, or
+// one of its own) is not filled: its __newindex or __index would run Lua code in the middle of the fill, which can
+// raise past the C++ objects the fill reads from, or call back in. (The hs.*Info calls use it too.)
 inline void push(lua_State* L, int arg, int fields) {
     if (lua_type(L, arg) == LUA_TTABLE) {
         if (!lua_getmetatable(L, arg)) {
