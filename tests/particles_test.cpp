@@ -790,8 +790,9 @@ TEST_CASE("the particle update draws the same particles on the worker threads as
             r.bone_point = 0;
             r.point_only = true;
             r.persistent = true;
-            REQUIRE(ps.create(r) > 0);
+            ps.create(r); // 0: its particles show past 600 s (EmitterCounts::length_ms), not that none was made
         }
+        REQUIRE(ps.emitters().size() == 52);
         return ps;
     };
     auto run = [](game::ParticleSystem& ps, std::thread::id caller, int& foreign) {
