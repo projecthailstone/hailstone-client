@@ -279,6 +279,22 @@ void ParticleSystem::stop_actor(std::uint32_t actor) {
     std::erase_if(emitters_, [&](const Emitter& e) { return e.actor == actor; });
 }
 
+void ParticleSystem::stop_keys(std::span<const std::uint32_t> keys) {
+    if (keys.empty()) return;
+    std::erase_if(emitters_, [&](const Emitter& e) { return std::binary_search(keys.begin(), keys.end(), e.key); });
+}
+
+void ParticleSystem::stop_actors(std::span<const std::uint32_t> actors) {
+    if (actors.empty()) return;
+    std::erase_if(emitters_, [&](const Emitter& e) {
+        return e.actor != 0 && std::binary_search(actors.begin(), actors.end(), e.actor);
+    });
+}
+
+void ParticleSystem::set_held(const std::function<bool(std::uint32_t actor)>& held) {
+    for (auto& e : emitters_) e.held = e.actor != 0 && held && held(e.actor);
+}
+
 void ParticleSystem::move(std::uint32_t key, const glm::vec3& origin) {
     for (auto& e : emitters_)
         if (e.key == key) e.origin = origin;
@@ -516,7 +532,11 @@ void ParticleSystem::update(float dt, const AttachmentFn& attachment) {
         const double left = e.duration - e.age;
         if (e.persistent || left > 0.0) {
             const double elapsed = e.age - d.delay;
-            if (elapsed >= 0.0) {
+            if (elapsed >= 0.0 && e.held) {
+                // Hailstone: out of view it emits nothing, and the ticks pass unspent, so it does not make them all
+                // up in one burst at one place when it comes back into view.
+                e.emitted = std::max(e.emitted, trunc_int(elapsed * e.counts.rate));
+            } else if (elapsed >= 0.0) {
                 const std::int32_t target = trunc_int(elapsed * e.counts.rate);
                 const float distance = viewer_ ? glm::distance(*viewer_, e.origin) : 0.0f;
                 if (e.emitted < 0) {

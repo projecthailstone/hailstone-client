@@ -30,6 +30,7 @@
 #include <functional>
 #include <optional>
 #include <random>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -204,6 +205,9 @@ struct Emitter {
     double age = 0.0; // s since it was made (a fixture's runs for hours)
     EmitterCounts counts;
     std::int32_t emitted = -1;     // +0x10: ticks emitted, -1 before the initial burst
+    // Hailstone (not in the original): its owner is out of view, so it emits nothing and its ticks pass unspent
+    // (ParticleSystem::set_held); what it has already emitted lives on.
+    bool held = false;
     std::uint32_t spawn_index = 0; // +0x14
     std::vector<Particle> particles;
 };
@@ -255,6 +259,11 @@ public:
     // Remove a particular owner's attachment without affecting its other spells (e.g. a despawned blood point).
     void stop_attachment(std::uint32_t actor, std::int32_t point);
     void stop_actor(std::uint32_t actor);
+    // stop and stop_actor for many at once, in one pass over the emitters: `keys` / `actors` sorted ascending.
+    void stop_keys(std::span<const std::uint32_t> keys);
+    void stop_actors(std::span<const std::uint32_t> actors);
+    // Each attached emitter's Emitter::held, from its actor (`held(actor)`); the others are never held.
+    void set_held(const std::function<bool(std::uint32_t actor)>& held);
     // The density of the persistent emitters (zone fixtures, actors' own): what they emit from now on scales with
     // it (the effect manager's density setters, +0xa4 environment / +0xac actor).
     void set_persistent_density(float density);

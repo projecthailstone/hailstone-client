@@ -845,3 +845,27 @@ TEST_CASE("the particle update draws the same particles on the worker threads as
     same(alone, tasked);
     core::set_workers(nullptr);
 }
+
+TEST_CASE("stop_keys and stop_actors take many emitters in one pass; set_held marks the attached ones") {
+    game::ParticleSystem ps({assets::EmitterDefinition{}, rising_flame(1.0f, 1.0f)});
+    for (std::uint32_t i = 1; i <= 6; ++i) {
+        game::SpellEmitterRequest r;
+        r.emitter = 1;
+        r.key = i;
+        r.duration_ms = 1000;
+        r.actor = i <= 4 ? 10 + (i % 2) : 0; // keys 1, 3 on actor 11; 2, 4 on actor 10; 5, 6 on none
+        REQUIRE(ps.create(r) > 0);
+    }
+    ps.set_held([](std::uint32_t actor) { return actor == 11; });
+    std::size_t held = 0;
+    for (const auto& e : ps.emitters()) held += e.held ? 1u : 0u;
+    CHECK(held == 2);
+    const std::vector<std::uint32_t> keys{2, 5};
+    ps.stop_keys(keys);
+    CHECK(ps.emitters().size() == 4);
+    const std::vector<std::uint32_t> actors{0, 11}; // 0 is no actor: the unattached ones stay
+    ps.stop_actors(actors);
+    REQUIRE(ps.emitters().size() == 2);
+    CHECK(ps.emitters()[0].key == 4);
+    CHECK(ps.emitters()[1].key == 6);
+}

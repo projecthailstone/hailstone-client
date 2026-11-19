@@ -632,6 +632,17 @@ An EQG model's emitters started by an animation (`.prt` trigger 1; docs/formats/
 starts or loops round on the actor (`ActorRenderer::drawn_playing`), after the entry's delay, and emit for about one
 play (at most 1.5 s): the run dust at the feet, swings, casts.
 
+Hailstone (not in the original): an actor none of whose particles could show emits none
+(`app::ActorEmitters::Actor::in_view`, `display.particle_offscreen_hold`). Its model's bounds, widened by 30 units for
+what its particles drift (a guess: no effect's reach was measured), are tested against the view the scene was drawn
+through last frame; in the classic lighting an actor past 500 units along the view is out too. Its emitters keep
+running, but emit nothing (their ticks pass unspent, so coming back into view does not bring a burst at one place),
+are not placed (its skeleton is not posed for them) and start no animation entries; what they emitted already ages
+and fades as before. Turning towards such an actor, its effects fill in over their particles' lifetime rather than
+being there at once. `display.particle_offscreen_hold = 0` makes every actor emit wherever it is, as the original.
+The Actor Particle Density setting changes the running emitters' counts in place (`ParticleSystem::set_persistent_density`),
+keeping their particles; Off stops them and makes none until it is turned on again, when they are made afresh.
+
 A spell's stages play for every caster: the cast stage when OP_BeginCast arrives, the impact stage when OP_Action 231
 lands the spell, on players and NPCs alike. Stock EQEmu sends the landing only to players within `Range:SpellMessages`
 (75 units) of the struck spawn, but the begin cast within `Range:BeginCast` (200), so between the two a bystander sees
@@ -2245,6 +2256,7 @@ them in the Options window takes over and is saved as usual.
 | `display.zone_fog` | 0, 1 | 1 | the fog bank on the ground past an outdoor zone's edge (Zone edge fog, Zone Edge Fog); modern only; viewer `--no-zone-fog` |
 | `display.volumetric_clouds` | 0, 1 | 1 | clouds marched through the air over the plain skies, in place of the painted cloud layer and patches (Volumetric Clouds); modern only; viewer `--no-clouds` |
 | `display.worker_threads` | -1, 0 .. 16 | -1 | the frame's worker threads (Worker threads); -1 one fewer than the hardware threads, at most 6; 0 none; read at start-up |
+| `display.particle_offscreen_hold` | 0, 1 | 1 | an actor out of view (or past 500 units in the classic lighting) emits no particles of its own (Particles; a deliberate difference); 0 emits everywhere, as the original; read at start-up |
 | `display.parallel_record` | 0, 1 | 1 | the scene's and the shadow layers' draws recorded on the worker threads into secondary command buffers (Worker threads); 0 records them on the main thread; read at start-up |
 | `display.smooth_ground` | 0, 1 | 1 | a classic zone's ground drawn smooth and curved (Smoothed ground); read as each zone loads; viewer `--no-smooth-ground` |
 | `display.tree_detail` | 50 to 200 | 100 | how far a texture pack's replacement models (generated trees) keep their nearer levels of detail, in percent of their own distances (Tree Detail Distance); viewer `--tree-detail` |

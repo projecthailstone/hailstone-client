@@ -8,6 +8,7 @@
 #include "core/build_info.h"
 #include "core/frame_sections.h"
 #include "core/wipe.h"
+#include "render/culling.h"
 #include "game/visual_surface_patch.h"
 #include "game/zone_exits.h"
 
@@ -38,6 +39,7 @@ int ClientApp::run() {
         log::info("worker threads: {}", count);
         // The scene's draws recorded on them (render/scene_recorder.h): display.parallel_record, 0 for inline.
         parallel_record_ = config_.get_bool("display.parallel_record", true);
+        particle_offscreen_hold_ = config_.get_bool("display.particle_offscreen_hold", true);
         scene_recorder_ = std::make_unique<render::SceneRecorder>(vk_);
         shadow_recorder_ = std::make_unique<render::SceneRecorder>(vk_, false);
     }
@@ -368,10 +370,27 @@ int ClientApp::run() {
             }
             actor_emitter_list_.clear();
             const auto& world = pre_game ? *pre_game_world_ : conn_->world();
+            // Hailstone (not in the original): an actor none of whose particles could show emits none. Its model's
+            // bounds, widened by what its particles drift (kEmitterViewMargin, a guess: no effect's reach is
+            // measured), against last frame's view; in the classic lighting, past the 500 units no particle is drawn
+            // beyond (render::ParticleRenderer). Missiles and objects are always in view.
+            constexpr float kEmitterViewMargin = 30.0f;
+            const bool hold = particle_offscreen_hold_ && emitter_view_proj_.has_value();
+            const render::Frustum emitter_frustum = render::frustum_from(hold ? *emitter_view_proj_ : glm::mat4(1.0f));
+            const bool classic_reach = lighting_mode_ != render::LightingMode::Modern;
+            const glm::vec3 eye = camera_.position, ahead = camera_.forward();
+            auto in_view = [&](std::uint32_t id) {
+                glm::vec3 center;
+                float radius = 0.0f;
+                if (!hold || !actor_renderer_->spawn_bounds(id, center, radius)) return true;
+                radius += kEmitterViewMargin;
+                if (!render::box_in_frustum(emitter_frustum, render::sphere_box(center, radius))) return false;
+                return !classic_reach || glm::dot(center - eye, ahead) - radius <= 500.0f;
+            };
             for (const auto& [id, spawn] : world.spawns)
                 if (const auto* mesh = actor_renderer_->drawn_mesh(id); mesh && !mesh->emitters.empty())
                     actor_emitter_list_.push_back({id, mesh, actor_renderer_->drawn_standing(id),
-                                                   actor_renderer_->drawn_alpha(id)});
+                                                   actor_renderer_->drawn_alpha(id), in_view(id)});
             // The missiles' (a spell bolt's flames: its model's own emitters, app/world_objects.h).
             const WorldObjects* objects = in_world ? world_objects_.get() : nullptr;
             if (objects) {
@@ -816,6 +835,7 @@ int ClientApp::run() {
             // the temporal upscaler's jitter (none without it), which follows the plain one (render/temporal.h).
             const glm::mat4 plain_proj = camera_.projection(width, height, lit.far_plane);
             const glm::mat4 plain_vp = plain_proj * camera_.view();
+            emitter_view_proj_ = plain_vp; // next frame's view test for the actors' emitters
             glm::mat4 proj = render::jittered(plain_proj, vk_.projection_jitter());
             glm::mat4 vp = proj * camera_.view();
             // Each draw is a job of the scene recorder, in a lane by what it touches (render/scene_recorder.h): a

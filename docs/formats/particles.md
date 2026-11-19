@@ -72,6 +72,10 @@ An EQG model's `<model>.prt` (beside its mesh and `.pts`) lists emitters of `Act
 
 When an actor is made, each always-on record whose point exists and whose variant is below 1 makes its emitter on the point (CActor::vf126 @0x1003a950): for 5,000,000 ms whatever +0x58 says, with the actor density and opacity, scale 1, its shape and counts scaled by the actor's emitter-scaling radius over the record's +0xac when that radius is 0 or more (OP_ZoneSpawns sends -1 from stock EQEmu: no scaling). With the floor flag it is made on the floor below the point (+ 0.05), along the actor's matrix, without the point. Held items do the same on their own points: an item's points hang from `ATTACH_TO_ORIGIN`, its origin, which is the holding bone's frame.
 
+Hailstone does not make an actor's records while ActorParticleDensity is 0, and a change of the density between
+non-zero values recounts the running emitters in place rather than making them again; an actor out of view emits
+nothing (docs/graphics.md, Particles: a deliberate difference).
+
 Here a floor record stays on its point and follows the actor: what makes the original's again as the actor moves was not traced (docs/unknowns.md). The records are made once per dressed mesh; one that makes nothing (an index past the file's end) is not tried again until the actor's mesh changes.
 
 The client (`app/actor_emitters.h`): the dressed mesh carries the always-on records of the EQG body and of its held items (`assets::MeshEmitter`; EQG held items are drawn too, `CharacterLibrary::item_mesh`); each drawn actor keeps a persistent emitter per record, placed every frame on the point as the actor renderer posed it; eqclient.ini `ActorParticleDensity` / `ActorParticleOpacity`. 12,449 always-on records in the shipped files point into its `ActorEmittersNew.edd` (945 records), 315 past its end (e.g. IT12753's 1059), which make nothing.
