@@ -480,6 +480,11 @@ public:
         aenv.autoskill_list = [this] { return autoskill_list(ui_host_); };
         aenv.use_ability = [this](mq::AbilityKind kind, std::string_view name) { return use_ability(ui_host_, kind, name); };
         aenv.ability_bulk = [this] { return ability_bulk_rows(ui_host_); };
+        aenv.spell_description = [this](const game::SpellData& s) {
+            return ui_host_.conn ? spell_description(s, ui_host_.conn->strings(),
+                                                     description_player(*ui_host_.conn, ui_host_.character))
+                                 : std::string();
+        };
         aenv.can_see = [this](std::uint32_t id) -> std::optional<bool> {
             return conn_ ? can_see_spawn(id) : std::nullopt;
         };

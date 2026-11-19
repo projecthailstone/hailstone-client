@@ -121,6 +121,7 @@ struct SpellData {
     std::int32_t req_association = 0;         // 211 (+0x1e8 SpellReqAssociationID: CastSpell asks the spell manager)
     bool can_cast_in_combat = true;            // 213
     bool can_cast_out_of_combat = true;        // 214
+    std::int32_t max_targets = 0;              // 218 (EQEmu aoe_max_targets: an AE's target cap, 0 none)
     std::int32_t spell_class = 0;              // 221 (+0x1e0)
     std::int32_t spell_subclass = 0;           // 222 (+0x1e4)
     float distance_mod_start_x = 0;            // 227 (+0x21c)
@@ -199,7 +200,8 @@ private:
 enum TargetType : std::uint8_t {
     kTargetOptional = 1, kTargetAEClientV1 = 2, kTargetGroupTeleport = 3, kTargetAECaster = 4, kTargetSingle = 5,
     kTargetSelf = 6, kTargetAETarget = 8, kTargetAnimal = 9, kTargetUndead = 10, kTargetSummoned = 11,
-    kTargetTap = 13, kTargetPet = 14, kTargetCorpse = 15, kTargetGroup = 41,
+    kTargetTap = 13, kTargetPet = 14, kTargetCorpse = 15, kTargetAEClientV2 = 40, kTargetGroup = 41,
+    kTargetDirectional = 42,
 };
 
 // EQ_Spell_TargetTypeNeedsTarget @0x432500: the single-target types.

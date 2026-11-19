@@ -172,7 +172,7 @@ extension's `command_line`) from the moment it lost the bit, and its web tabs cl
 
 | Bit | Name | Lets a script or plugin |
 |---|---|---|
-| 1 | `read` | read game state: `mq.TLO`, `${...}`, `mq.parse`, `ParseMacroData`, spawn events, `ability_state`, `get_ability_data_bulk` |
+| 1 | `read` | read game state: `mq.TLO`, `${...}`, `mq.parse`, `ParseMacroData`, spawn events, `ability_state`, `get_ability_data_bulk`, `get_spells_data_bulk` |
 | 2 | `commands` | run commands outside the groups below: windows, options, `/who`, other plugins' commands, `/lua`; add commands of its own (`mq.bind`, `AddCommand`). The player is told "run other commands (windows, options, /who, other plugins' commands)" |
 | 4 | `target` | change the target: `/target`, `/assist`, `/xtarget`, ... |
 | 8 | `actions` | act: `/cast`, `/disc`, `/doability`, `/useitem`, `/attack`, `/memspellset`, `/pet`, `/loot`, `/autoinventory`, `/alternateadv` (`/alt`), `/split`, `/consent`, `/guilddelete`, non-movement `/keypress`; Hailstone's own item commands `/destroy`, `/destroycursor` and `/stowcursor`, and `use_ability` |
@@ -633,8 +633,8 @@ the stock classes.
   `get_avail_aa_data_bulk` the owned alternate abilities, `get_avail_disc_data_bulk` the combat abilities,
   `get_ability_data_bulk` the Ability Book's entries with their readiness (below),
   `get_buff_name_data_bulk` the player's buffs with their casters' names, `get_spawns_data_bulk` every spawn in the
-  zone and `get_raid_data_bulk` the raid roster, as packed records (Buff, spawn, extended target, ability and raid
-  records below). `server_info` gives the
+  zone, `get_raid_data_bulk` the raid roster and `get_spells_data_bulk` spells by id with their effects as text, as
+  packed records (Buff, spawn, extended target, ability and raid records below). `server_info` gives the
   server this login is on (the saved server's name, host and port, the world's name and address), so a plugin for
   one server can tell it from another that sends the same packets.
 - **take item clicks** (`item_right_click`, then the client's own with `right_click_item`, which needs `actions`)
@@ -723,7 +723,8 @@ Buff, spawn, extended target, ability and raid records: `get_buff_data_bulk(host
 `out` is an `unsigned char*` and `out_size` an `int32_t`) write records into `out` and return the bytes written.
 The records are the SDK's packed structs (`HS_Bulk_BuffData`, `HS_Bulk_PetBuffData`, `HS_Bulk_SpawnHeader`,
 `HS_Bulk_SpawnFixedRecord`, `HS_Bulk_XTargetData`, `HS_Bulk_TargetBuffFixedRecord`, `HS_Bulk_BuffNameFixedRecord`,
-`HAILSTONE_ID_NAME_RECORD`, `HS_Bulk_AbilityRecord`, `HS_Bulk_ListHeader`, `HS_Bulk_RaidHeader`, `HS_Bulk_RaidData`, all in `#pragma pack(push, 1)`), in the machine's byte order (little-endian on every
+`HAILSTONE_ID_NAME_RECORD`, `HS_Bulk_AbilityRecord`, `HS_Bulk_ListHeader`, `HS_Bulk_RaidHeader`, `HS_Bulk_RaidData`,
+`HS_Bulk_SpellFixedRecord`, all in `#pragma pack(push, 1)`), in the machine's byte order (little-endian on every
 platform Hailstone runs on) and unaligned. For speed, the bulk reads are the one place where a struct may be cast
 onto the buffer, by the client writing it and by a plugin reading it: read each field through the packed struct
 (`rec->level`), which the compiler reads unaligned, and never keep a plain pointer or reference to a field (`&rec->x`),
@@ -1001,6 +1002,153 @@ size nothing is written and 0 comes back; with nothing to list the header alone 
   The `LOOTER` flag follows the loot type: 1 Leader Only, 2 Leader and Group Leader, 3 Leader Selected, 4 Entire
   Raid. That differs from the raid window's own `looter()` check for the member menu, which only tests the leader
   and the listed looters; the flag here answers "may this member loot under the current type".
+
+- `get_spells_data_bulk(host, ids, id_count, out, out_size)`: spells by id in one call, each with its effect slots
+  decoded to text, so a plugin needs neither `get_spell` once per spell nor its own copy of the effect rules. `ids`
+  points at `id_count` spell ids (`const int32_t*`). `out` gets an i32 `count` (`HS_BULK_SPELL_HEADER_SIZE` = 4
+  bytes), then one record per id, in the order asked, as many whole records as fit: `count` below `id_count` means
+  `out_size` was too small for the next one, so call again for the rest. Each record is an
+  `HS_Bulk_SpellFixedRecord` (`HS_BULK_SPELL_RECORD_SIZE` = 509 bytes) and, for a spell the client holds, the
+  strings after it; step from record to record by its `recordSize`, never a fixed stride. An id the client has no
+  spell for (not in spells_us.txt, 0 or negative) gets the fixed record alone, `found` 0 and the rest 0.
+
+  Fixed record (`HS_Bulk_SpellFixedRecord`, `HS_BULK_SPELL_RECORD_SIZE` = 509 bytes). The column is the field's in
+  spells_us.txt, as the client reads it into `game::SpellData`; an array's columns run on from the one given.
+
+  | Offset | Type | Field | Column |
+  |---|---|---|---|
+  | 0 | i32 | `recordSize`: this record's bytes, its strings and lines included; the next record starts here | |
+  | 4 | i32 | `id`: the spell id asked for | 0 |
+  | 8 | i32 | `found`: 1 the client holds the spell, 0 it does not (every field after is 0 and nothing follows) | |
+  | 12 | f32 | `range` | 9 |
+  | 16 | f32 | `aeRange` | 10 |
+  | 20 | f32 | `pushBack` | 11 |
+  | 24 | f32 | `pushUp` | 12 |
+  | 28 | i32 | `castTime`, ms | 13 |
+  | 32 | i32 | `recoveryTime`, ms | 14 |
+  | 36 | i32 | `recastTime`, ms | 15 |
+  | 40 | i32 | `durationFormula` | 16 |
+  | 44 | i32 | `durationCap`, ticks | 17 |
+  | 48 | i32 | `aeDuration` | 18 |
+  | 52 | i32 | `mana` | 19 |
+  | 56 | i32[12] | `base`, per effect slot | 20..31 |
+  | 104 | i32[12] | `base2` (limit) | 32..43 |
+  | 152 | i32[12] | `max` | 44..55 |
+  | 200 | i32[12] | `formula` | 70..81 |
+  | 248 | i32[12] | `effect`: SPA ids, 254 unused | 86..97 |
+  | 296 | i32 | `bookIcon` | 56 |
+  | 300 | i32 | `gemIcon` | 57 |
+  | 304 | i32[4] | `reagentId` | 58..61 |
+  | 320 | i32[4] | `reagentCount` | 62..65 |
+  | 336 | i32[4] | `noExpendReagent` | 66..69 |
+  | 352 | i32 | `spaIndex` | 123 |
+  | 356 | u32 | `deityMask`: bit n set when column 125 + n is; 0 any deity | 125..141 |
+  | 360 | i32 | `spellIcon` | 144 |
+  | 364 | i32 | `spellAnim` | 145 |
+  | 368 | i32 | `resistAdj` | 147 |
+  | 372 | i32 | `recourseLink` | 150 |
+  | 376 | i32 | `descriptionId` (dbstr type 6; its text is the ninth string) | 155 |
+  | 380 | i32 | `category` (dbstr type 5; its name is the twelfth string) | 156 |
+  | 384 | i32 | `subcategory` | 157 |
+  | 388 | i32 | `subcategory2` | 158 |
+  | 392 | i32 | `enduranceCost` | 166 |
+  | 396 | i32 | `reuseTimerIndex` | 167 |
+  | 400 | i32 | `enduranceUpkeep` | 174 |
+  | 404 | i32 | `hitCountType` | 175 |
+  | 408 | i32 | `hitCount` | 176 |
+  | 412 | i32 | `globalGroup` | 180 |
+  | 416 | i32 | `pcnpcOnly` | 183 |
+  | 420 | i32 | `spellGroup` | 207 |
+  | 424 | i32 | `spellRank` | 208 |
+  | 428 | i32 | `spellSubgroup` | 236 |
+  | 432 | i32 | `reqAssociation` | 211 |
+  | 436 | i32 | `spellClass` | 221 |
+  | 440 | i32 | `spellSubclass` | 222 |
+  | 444 | i32 | `maxTargets`: an AE's target cap, 0 none | 218 |
+  | 448 | f32 | `distanceModStartX` | 227 |
+  | 452 | f32 | `distanceModStartMod` | 228 |
+  | 456 | f32 | `distanceModEndX` | 229 |
+  | 460 | f32 | `distanceModEndMod` | 230 |
+  | 464 | f32 | `minRange` | 231 |
+  | 468 | u32 | `flags`: the yes/no columns, below | |
+  | 472 | i32 | `stringCount`: the strings after this record, `HS_BULK_SPELL_STRINGS` (14) today; 0 for `found` 0 | |
+  | 476 | i32 | `effectCount`: the effect lines after the strings | |
+  | 480 | u8 | `lightType` | 82 |
+  | 481 | u8 | `spellType`: 0 detrimental, 1 beneficial, 2 beneficial group-only | 83 |
+  | 482 | u8 | `activated` | 84 |
+  | 483 | u8 | `resist` | 85 |
+  | 484 | u8 | `targetType` | 98 |
+  | 485 | u8 | `castDifficulty` | 99 |
+  | 486 | u8 | `skill` | 100 |
+  | 487 | u8 | `zoneType` | 101 |
+  | 488 | u8 | `environment` | 102 |
+  | 489 | u8 | `timeOfDay` | 103 |
+  | 490 | u8 | `castingAnim` | 120 |
+  | 491 | u8 | `targetAnim` | 121 |
+  | 492 | u8 | `travelType` | 122 |
+  | 493 | u8[16] | `classLevel`: classes 1..16, 255 (or 0) cannot use | 104..119 |
+  | 509 | | the strings, for a found spell | |
+
+  `flags` (`HS_BULK_SPELL_*`, bit: column):
+
+  | Bit | Flag | Column |
+  |---|---|---|
+  | 0 | `CANCEL_ON_SIT` | 124 |
+  | 1 | `UNINTERRUPTABLE` | 146 |
+  | 2 | `NOT_STACKABLE_DOT` | 148 |
+  | 3 | `DELETABLE` | 149 |
+  | 4 | `DURATION_WINDOW`: shown in the short buff (song) window | 154 |
+  | 5 | `NPC_NO_LOS` | 159 |
+  | 6 | `IS_SKILL` | 168 |
+  | 7 | `CAST_NOT_STANDING` | 184 |
+  | 8 | `NO_DISPELL` | 186 |
+  | 9 | `SNEAK` | 196 |
+  | 10 | `NOT_FOCUSABLE` | 197 |
+  | 11 | `STACKS_WITH_SELF` | 203 |
+  | 12 | `SUSPENDABLE` | 200 |
+  | 13 | `BYPASS_REGEN_CHECK` | 212 |
+  | 14 | `CAN_CAST_IN_COMBAT` | 213 |
+  | 15 | `CAN_CAST_OUT_OF_COMBAT` | 214 |
+  | 16 | `NO_REMOVE` | 232 |
+  | 17 | `ONLY_DURING_FAST_REGEN` | 234 |
+
+  After a found spell's fixed record come `stringCount` strings and then `effectCount` effect lines,
+  each a u16 length and that many bytes with no NUL, as `get_spawns_data_bulk`'s strings:
+
+  | # | String | Column |
+  |---|---|---|
+  | 1 | the name | 1 |
+  | 2 | the target or model text | 2 |
+  | 3 | the teleport zone or pet name (MacroQuest's `Extra`) | 3 |
+  | 4 | the cast-by-me text | 4 |
+  | 5 | the cast-by-other text | 5 |
+  | 6 | the cast-on-you text | 6 |
+  | 7 | the cast-on-other text | 7 |
+  | 8 | the wear-off text | 8 |
+  | 9 | the description, dbstr_us.txt's type 6 text for `descriptionId`: for one of the player's own spells (in the spell book, in the discipline list, or the spell an owned AA casts), as the spell display window shows it to the player, its `#n`, `$n`, `@n` and `%z` codes filled in for the player's level, class and effects; for any other spell, as the file has it, the codes left in. Empty when the game folder's file has none | |
+  | 10 | `targetTypeDesc`: the target type's name, MacroQuest's `${Spell.TargetType}` text (`Single`, `Group v2`, ...), `Unknown` for a type it does not name | 98 |
+  | 11 | `resistTypeDesc`: the resist type's name, MacroQuest's `${Spell.ResistType}` text (`Unresistable` for 0, `Magic`, `Fire`, `Cold`, ...), `Unknown` for a type it does not name | 85 |
+  | 12 | the category's name: dbstr_us.txt type 5, as MacroQuest's `${Spell.Category}` gives it, `Unknown` for 0 or one the game folder's file lacks | 156 |
+  | 13 | the subcategory's name, the same way | 157 |
+  | 14 | the second subcategory's name, the same way | 158 |
+  | 15.. | any strings a later client appends, up to `stringCount`: skip the ones you do not know | |
+  | then | the effect lines, `effectCount` of them | |
+
+  Read `stringCount` strings, never a fixed number: the effect lines start after the last of them, so a plugin
+  built against this header keeps reading a later client's records correctly.
+
+  The effect lines are MacroQuest's `ParseSpellEffect` text for each slot that has one, in slot order,
+  `Slot <n>: ...` (for example `Slot 1: Increase HP by 11 (L1) to 20 (L10)`); a slot with nothing to show (SPA 254,
+  the teleport's location slots) has no line. The value ranges run to level 100, as MacroQuest's `/spellslotinfo`
+  shows them. Spell names in the text are the client's (`Unknown Spell` for one it has not); skill and faction names
+  come from the game folder's string tables (`Unknown[n]`, `Unknown Faction[n]` without one); a summoned item reads
+  `[  id]`, since the client keeps no item database. The text is ported from MacroQuest
+  (game/spell_effect_text.cpp).
+
+  Below 4 bytes nothing is written and 0 comes back; with no game connection, or no ids, the count alone (0). A
+  plugin without `read` gets 0 bytes. A record is 509 bytes plus its texts and lines, a few hundred bytes for a
+  stock spell, so about 1500 bytes per id is ample. Added later in ABI 3: test
+  `HAILSTONE_HOST_HAS(host, get_spells_data_bulk)` first.
 
 ### Connections (ABI 2)
 

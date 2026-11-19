@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Plugins: `get_spells_data_bulk` reads many spells by id in one call, each with its spells_us.txt fields, its description, the names of its target type, resist type and categories, and its effect slots as text, in MacroQuest's `ParseSpellEffect` wording ("Slot 1: Increase HP by 11 (L1) to 20 (L10)"). For developers: docs/plugins.md "Buff and spawn records"
+- Scripts: `${Spell.TargetType}` now gives MacroQuest's text for every target type: `LifeTap` (was `Life Tap`), and `None`, `Special Muramites`, `Target_AE_No_Players_Pets` and `Single Friendly (or Target's Target` where it said `Unknown`
+
 ## 0.7.2-beta (2026-11-19)
 
 - **Lua 5.5:** Lua is now 5.5.1 (was 5.4.7), for the interface packs, plugin windows and MQ-style scripts. **A script or add-on that assigns to a `for` loop's variable no longer loads** and must copy it into a `local` first; most other 5.4 code runs unchanged

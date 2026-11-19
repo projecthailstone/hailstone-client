@@ -277,6 +277,7 @@ std::optional<SpellData> SpellTable::parse_line(std::string_view line) {
         s.bypass_regen_check = b(212);
         s.can_cast_in_combat = b(213);
         s.can_cast_out_of_combat = b(214);
+        s.max_targets = i32(218);
         s.spell_class = i32(221);
         s.spell_subclass = i32(222);
         s.distance_mod_start_x = to_float(f[227]);

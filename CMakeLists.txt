@@ -274,6 +274,7 @@ add_library(hailstone_engine STATIC
   src/net/evolving_packets.cpp
   src/net/spell_packets.cpp
   src/game/spell_description.cpp
+  src/game/spell_effect_text.cpp
   src/game/item_compare.cpp
   src/game/item_display.cpp
   src/game/augments.cpp
@@ -1333,6 +1334,7 @@ if(HAILSTONE_BUILD_TESTS)
     tests/nameplate_input_test.cpp
     tests/spawn_pick_test.cpp
     tests/spells_test.cpp
+    tests/spell_effect_text_test.cpp
     tests/spell_hit_modes_test.cpp
     tests/proc_cast_stage_test.cpp
     tests/passage_of_time_test.cpp

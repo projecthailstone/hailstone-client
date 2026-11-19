@@ -92,6 +92,14 @@ License version 2.
   and `Spawn::IsNamed`, `GetSpawnType`, `GetTypeDesc` and `GetRaceIDName` follow MacroQuest's eqlib constants and
   `src/main/MQ2Utilities.cpp` almost line for line. `IsNamed` was changed in Hailstone and mixes MacroQuest's older
   and newer tests.
+- `src/game/dbstr_types.h`: the dbstr_us.txt string types (`eDatabaseStringType`) are copied from
+  `src/eqlib/include/eqlib/game/EQClasses.h`.
+- `src/game/spell_effect_text.cpp`: a spell effect slot's text is ported from `src/main/MQ2Spells.cpp`:
+  `ParseSpellEffect`, `CalcValue`, `CalcMinSpellLevel`, `CalcMaxSpellLevel`, `CalcValueRange`, `CalcExtendedRange`,
+  `GetSpellRestrictions`, `GetClassesFromMask`, the `Format*` helpers and the compass words of `szHeadingNormal`
+  (`src/main/MQ2Globals.cpp`), and the target and resist type names of `${Spell.TargetType}` and `${Spell.ResistType}`
+  (`src/main/datatypes/MQ2SpellType.cpp`). Names MacroQuest reads from the live client's memory come from the client's own data
+  instead (game/spell_effect_text.h).
 
 ### MacroQuest used as a specification
 

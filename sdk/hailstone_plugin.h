@@ -341,6 +341,125 @@ typedef struct HS_Bulk_RaidData {
 /* bit 0x0040 is reserved: this client keeps no offline flag for a raid member */
 #define HS_BULK_RAID_PRESENT 0x0080u
 #define HS_BULK_RAID_ME 0x0100u
+
+/* get_spells_data_bulk: an int32_t count (HS_BULK_SPELL_HEADER_SIZE bytes), then `count` records, one per spell id
+ * asked for, in the order asked. A record is an HS_Bulk_SpellFixedRecord (HS_BULK_SPELL_RECORD_SIZE bytes), then
+ * stringCount strings, then effectCount effect lines, each a uint16_t length and that many bytes (no NUL), as
+ * get_spawns_data_bulk's strings. Step from record to record by recordSize.
+ *
+ * The strings, in order (HS_BULK_SPELL_STRINGS of them today): the name; the target or model text (spells_us.txt
+ * column 2); the teleport zone or pet name (column 3, MacroQuest's Extra); the cast-by-me, cast-by-other,
+ * cast-on-you and cast-on-other texts; the wear-off text; the description (for one of the player's own spells, in
+ * the spell book, a discipline or an owned AA's, as the spell display shows it, its #n, $n, @n and %z codes filled
+ * in for the player; for any other, dbstr_us.txt's type 6 text for descriptionId with the codes left in; "" when the
+ * game folder has none); then the names of targetType (MacroQuest's ${Spell.TargetType} text), resist
+ * (${Spell.ResistType}'s), category, subcategory and subcategory2 (dbstr_us.txt type 5, as ${Spell.Category} gives
+ * them), each "Unknown" where there is no name. A later client may append strings: read stringCount of them, use
+ * the ones this header knows and skip the rest; the effect lines follow the last.
+ *
+ * The effect lines are MacroQuest's ParseSpellEffect text for each effect slot that has one, in slot order ("Slot 1:
+ * Increase HP by 30"). An id the client has no spell for gets a record with found 0, its other fields 0 (stringCount
+ * and effectCount among them) and nothing after it. Only whole records go out: count less than the ids asked for
+ * means out_size was too small for the next one. The fields follow game::SpellData (spells_us.txt's columns); the
+ * yes/no columns are bits of flags. docs/plugins.md gives each field's offset and column. */
+enum HS_BulkSpellFlags {
+    HS_BULK_SPELL_NONE = 0,
+    HS_BULK_SPELL_CANCEL_ON_SIT = 1 << 0,
+    HS_BULK_SPELL_UNINTERRUPTABLE = 1 << 1,
+    HS_BULK_SPELL_NOT_STACKABLE_DOT = 1 << 2,
+    HS_BULK_SPELL_DELETABLE = 1 << 3,
+    HS_BULK_SPELL_DURATION_WINDOW = 1 << 4, /* shown in the short buff (song) window */
+    HS_BULK_SPELL_NPC_NO_LOS = 1 << 5,
+    HS_BULK_SPELL_IS_SKILL = 1 << 6,
+    HS_BULK_SPELL_CAST_NOT_STANDING = 1 << 7,
+    HS_BULK_SPELL_NO_DISPELL = 1 << 8,
+    HS_BULK_SPELL_SNEAK = 1 << 9,
+    HS_BULK_SPELL_NOT_FOCUSABLE = 1 << 10,
+    HS_BULK_SPELL_STACKS_WITH_SELF = 1 << 11,
+    HS_BULK_SPELL_SUSPENDABLE = 1 << 12,
+    HS_BULK_SPELL_BYPASS_REGEN_CHECK = 1 << 13,
+    HS_BULK_SPELL_CAN_CAST_IN_COMBAT = 1 << 14,
+    HS_BULK_SPELL_CAN_CAST_OUT_OF_COMBAT = 1 << 15,
+    HS_BULK_SPELL_NO_REMOVE = 1 << 16,
+    HS_BULK_SPELL_ONLY_DURING_FAST_REGEN = 1 << 17
+};
+#define HS_BULK_SPELL_HEADER_SIZE 4
+#define HS_BULK_SPELL_RECORD_SIZE 509
+#define HS_BULK_SPELL_STRINGS 14 /* the strings this header knows; a record says how many it holds */
+#pragma pack(push, 1)
+typedef struct HS_Bulk_SpellFixedRecord {
+    int32_t recordSize; /* this record's bytes, its strings included; the next record starts here */
+    int32_t id;         /* the spell id asked for */
+    int32_t found;      /* 1 the client holds the spell; 0 it does not (the rest 0, no strings follow) */
+    float range;
+    float aeRange;
+    float pushBack;
+    float pushUp;
+    int32_t castTime;     /* ms */
+    int32_t recoveryTime; /* ms */
+    int32_t recastTime;   /* ms */
+    int32_t durationFormula;
+    int32_t durationCap; /* ticks */
+    int32_t aeDuration;
+    int32_t mana;
+    int32_t base[12];
+    int32_t base2[12];
+    int32_t max[12];
+    int32_t formula[12];
+    int32_t effect[12]; /* SPA ids; 254 unused */
+    int32_t bookIcon;
+    int32_t gemIcon;
+    int32_t reagentId[4];
+    int32_t reagentCount[4];
+    int32_t noExpendReagent[4];
+    int32_t spaIndex;
+    uint32_t deityMask; /* bit n: deity column 125 + n set; 0 any deity */
+    int32_t spellIcon;
+    int32_t spellAnim;
+    int32_t resistAdj;
+    int32_t recourseLink;
+    int32_t descriptionId; /* dbstr type 6; its text is the ninth string */
+    int32_t category;      /* dbstr type 5; its name is the twelfth string */
+    int32_t subcategory;
+    int32_t subcategory2;
+    int32_t enduranceCost;
+    int32_t reuseTimerIndex;
+    int32_t enduranceUpkeep;
+    int32_t hitCountType;
+    int32_t hitCount;
+    int32_t globalGroup;
+    int32_t pcnpcOnly;
+    int32_t spellGroup;
+    int32_t spellRank;
+    int32_t spellSubgroup;
+    int32_t reqAssociation;
+    int32_t spellClass;
+    int32_t spellSubclass;
+    int32_t maxTargets; /* an AE's target cap; 0 none */
+    float distanceModStartX;
+    float distanceModStartMod;
+    float distanceModEndX;
+    float distanceModEndMod;
+    float minRange;
+    uint32_t flags;      /* HS_BULK_SPELL_* */
+    int32_t stringCount; /* strings after this record: HS_BULK_SPELL_STRINGS today, 0 for found 0 (see above) */
+    int32_t effectCount; /* effect lines after the strings */
+    uint8_t lightType;
+    uint8_t spellType; /* 0 detrimental, 1 beneficial, 2 beneficial group-only */
+    uint8_t activated;
+    uint8_t resist;
+    uint8_t targetType;
+    uint8_t castDifficulty;
+    uint8_t skill;
+    uint8_t zoneType;
+    uint8_t environment;
+    uint8_t timeOfDay;
+    uint8_t castingAnim;
+    uint8_t targetAnim;
+    uint8_t travelType;
+    uint8_t classLevel[16]; /* class 1..16; 255 or 0 cannot use */
+} HS_BulkSpellFixedRecord;
+#pragma pack(pop)
 /* A TLO the plugin adds (AddTopLevelObject): asked for ${Name[index]} (member NULL: the TLO's own value) and for
  * ${Name[index].Member[member_index]}. Return nonzero when `out` was set; zero is NULL. */
 typedef int (*HailstoneTloFn)(void* user, const char* index, const char* member, const char* member_index,
@@ -1002,6 +1121,13 @@ typedef struct PluginHostApi {
     int (*nameplate_measure_text)(void* host, const char* text, uint32_t text_bytes, float font_size, int32_t font,
                                   HailstoneNameplateTextMetrics* out);
     int (*nameplate_spell_icon)(void* host, uint32_t icon, HailstoneNameplateImage* out);
+    /* Spells by id in one call (HAILSTONE_CAP_READ): `ids` holds id_count spell ids; out gets an int32_t count,
+     * then one HS_Bulk_SpellFixedRecord with its strings (its description among them) and effect lines per id, in
+     * that order, as many whole records as fit. Bytes written; 0 without `read` or when out_size cannot hold the
+     * count. With no game connection, or no ids, the count alone (0). Added later in ABI 3: test
+     * HAILSTONE_HOST_HAS(host, get_spells_data_bulk) first. */
+    int32_t (*get_spells_data_bulk)(void* host, const int32_t* ids, int32_t id_count, unsigned char* out,
+                                    int32_t out_size);
 } PluginHostApi;
 /* What use_ability and ability_state take: the kinds of ability the Ability Book lists. The values are stable. */
 enum HS_AbilityKinds {

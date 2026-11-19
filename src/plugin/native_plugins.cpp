@@ -14,6 +14,7 @@
 #include <sstream>
 #include <system_error>
 #include <type_traits>
+#include <unordered_set>
 #include <tuple>
 #include <utility>
 
@@ -29,11 +30,13 @@
 #include "core/sha256.h"
 #include "game/chat_text.h"
 #include "game/combat.h"
+#include "game/dbstr_types.h"
 #include "game/eq_names.h"
 #include "game/item_links.h"
 #include "game/merchant.h"
 #include "game/server_ext_chain.h"
 #include "game/spa_ids.h"
+#include "game/spell_effect_text.h"
 #include "game/spells.h"
 #include "game/xtarget.h"
 #include "game/zone_names.h"
@@ -2167,6 +2170,231 @@ int32_t h_get_avail_disc_data_bulk(void* h, unsigned char* data, int32_t datamax
     });
 }
 
+static_assert(sizeof(HS_BulkSpellFixedRecord) == HS_BULK_SPELL_RECORD_SIZE);
+
+/// <summary>
+/// Spells by id in one call: an int32_t count, then for each of the id_count ids, in order, an HS_Bulk_SpellFixedRecord
+/// (the spell's spells_us.txt fields, game::SpellData's) followed by fourteen length-prefixed strings and effectCount
+/// effect lines. The strings: the name, target or model text, teleport zone, the four cast texts and the wear-off
+/// text; the description (filled in for the player for one of their own spells: spell book, disciplines, owned AAs;
+/// dbstr_us.txt's unfilled text for any other); then the names of the target type, resist type, category, subcategory
+/// and second subcategory. The effect lines are MacroQuest's ParseSpellEffect text for each slot that has one
+/// (game/spell_effect_text.h). An id the client has no spell for gets the fixed record alone, found 0. recordSize
+/// gives each record's whole size. Only whole records go out, as many as fit after the count, none after the first
+/// that does not; count below id_count means the buffer was too small. Nothing (0 bytes) when not even the count
+/// fits; the count alone (0) with no game connection or no ids.
+/// </summary>
+/// <param name="h">host</param>
+/// <param name="ids">the spell ids</param>
+/// <param name="id_count">how many ids</param>
+/// <param name="data">buffer to put data in</param>
+/// <param name="datamax">4 bytes for the count, 509 per record and its strings: a spell's texts and its effect lines
+/// run to a few hundred bytes more, so about 1500 bytes per id holds any stock spell</param>
+/// <returns>bytes written; 0 below 4 bytes</returns>
+int32_t h_get_spells_data_bulk(void* h, const int32_t* ids, int32_t id_count, unsigned char* data, int32_t datamax)
+{
+    Loaded& l = Loaded::of(h);
+    const net::GameConnection* c = readable(l, "get_spells_data_bulk");
+    if (!c && !l.can(kCapRead)) return 0;
+    const std::size_t headerBytes = HS_BULK_SPELL_HEADER_SIZE;
+    if (!data || datamax <= 0 || static_cast<std::size_t>(datamax) < headerBytes) return 0;
+    const std::size_t room = static_cast<std::size_t>(datamax);
+    std::size_t bufferSize = headerBytes;
+    int32_t count = 0;
+    if (c && ids && id_count > 0) {
+        const game::SpellTable& spells = c->spell_table();
+        game::SpellEffectTextContext ctx;
+        ctx.spells = &spells;
+        // Names from the game folder's string tables, as the client's own windows show them.
+        ctx.skill_name = [c](std::int32_t skill) {
+            return skill >= 0 ? c->skill_name(static_cast<std::uint32_t>(skill)) : std::string();
+        };
+        ctx.faction_name = [c](std::int32_t faction) {
+            return faction >= 0 ? c->strings().db_string(static_cast<std::uint32_t>(faction), game::eFactionName)
+                                : std::string();
+        };
+        const std::size_t fixedBytes = sizeof(HS_BulkSpellFixedRecord);
+        // The player's own spells get their description as the spell display shows it to the player: those in the
+        // spell book, the disciplines and the spells of the AAs the player owns (activated ones cast one).
+        const auto& describe = l.host->env.spell_description;
+        std::unordered_set<std::uint32_t> own;
+        if (describe) {
+            if (const auto& profile = c->profile()) {
+                for (std::uint32_t spell : profile->spell_book) own.insert(spell);
+                for (std::uint32_t spell : profile->disciplines) own.insert(spell);
+            }
+            const auto& aa = c->alt_adv();
+            for (const auto& o : aa.owned)
+                if (const game::AltAbility* a = o.id ? aa.get(o.id) : nullptr; a && a->spell > 0)
+                    own.insert(static_cast<std::uint32_t>(a->spell));
+            own.erase(0);
+            own.erase(game::kNoSpell); // the book's and the list's empty entries
+        }
+        // ${Spell.Category}'s text: dbstr_us.txt's eSpellCategory, "Unknown" for 0 or one the file lacks.
+        auto category_name = [c](std::int32_t category) {
+            std::string name =
+                category > 0 ? c->strings().db_string(static_cast<std::uint32_t>(category), game::eSpellCategory)
+                             : std::string();
+            return name.empty() ? std::string("Unknown") : name;
+        };
+        for (int32_t n = 0; n < id_count; ++n) {
+            const int32_t id = ids[n];
+            const game::SpellData* sp = id > 0 ? spells.get(static_cast<std::uint32_t>(id)) : nullptr;
+            std::vector<std::string> lines;
+            std::string description;
+            std::string_view targetTypeDesc;
+            std::string_view resistTypeDesc;
+            std::string category, subcategory, subcategory2;
+            std::size_t recordBytes = fixedBytes;
+            if (sp) {
+                lines = game::spell_effect_lines(*sp, ctx);
+                // One of the player's own spells: its description with the codes filled in for the player
+                // (GetSpellDescriptionText, game/spell_description.h). Any other: dbstr_us.txt's eSpellDescription
+                // text with its #n / $n / @n / %z codes left in. "" when the game folder's file lacks it.
+                if (describe && own.contains(static_cast<std::uint32_t>(id)))
+                    description = describe(*sp);
+                else if (sp->description_id > 0)
+                    description = c->strings().db_string(static_cast<std::uint32_t>(sp->description_id),
+                                                         game::eSpellDescription);
+                targetTypeDesc = game::spell_target_type_desc(sp->target_type);
+                resistTypeDesc = game::spell_resist_type_desc(sp->resist);
+                category = category_name(sp->category);
+                subcategory = category_name(sp->subcategory);
+                subcategory2 = category_name(sp->subcategory2);
+                recordBytes += str16_size(sp->name) + str16_size(sp->player_1) + str16_size(sp->teleport_zone)
+                    + str16_size(sp->cast_by_me) + str16_size(sp->cast_by_other) + str16_size(sp->cast_on_you)
+                    + str16_size(sp->cast_on_other) + str16_size(sp->wear_off) + str16_size(description)
+                    + str16_size(targetTypeDesc) + str16_size(resistTypeDesc) + str16_size(category) + str16_size(subcategory)
+                    + str16_size(subcategory2);
+                for (const std::string& line : lines) recordBytes += str16_size(line);
+            }
+            // Buffer is full: only whole records go out, none after the first that does not fit.
+            if (recordBytes > room - bufferSize) break;
+            unsigned char* pBuffer = data + bufferSize;
+            // Written in place through the packed struct (the bulk reads may cast, docs/plugins.md).
+            HS_BulkSpellFixedRecord* rec = reinterpret_cast<HS_BulkSpellFixedRecord*>(pBuffer);
+            *rec = HS_BulkSpellFixedRecord{}; // an unknown id: found 0, the rest 0
+            rec->recordSize = static_cast<int32_t>(recordBytes);
+            rec->id = id;
+            pBuffer += fixedBytes;
+            if (sp) {
+                const game::SpellData& s = *sp;
+                rec->found = 1;
+                rec->range = s.range;
+                rec->aeRange = s.ae_range;
+                rec->pushBack = s.push_back;
+                rec->pushUp = s.push_up;
+                rec->castTime = static_cast<int32_t>(s.cast_time);
+                rec->recoveryTime = static_cast<int32_t>(s.recovery_time);
+                rec->recastTime = static_cast<int32_t>(s.recast_time);
+                rec->durationFormula = static_cast<int32_t>(s.duration_formula);
+                rec->durationCap = static_cast<int32_t>(s.duration_cap);
+                rec->aeDuration = static_cast<int32_t>(s.ae_duration);
+                rec->mana = s.mana;
+                for (std::size_t k = 0; k < 12; ++k) {
+                    rec->base[k] = s.base[k];
+                    rec->base2[k] = s.base2[k];
+                    rec->max[k] = s.max[k];
+                    rec->formula[k] = s.formula[k];
+                    rec->effect[k] = s.effect[k];
+                }
+                rec->bookIcon = s.book_icon;
+                rec->gemIcon = s.gem_icon;
+                for (std::size_t k = 0; k < 4; ++k) {
+                    rec->reagentId[k] = s.reagent_id[k];
+                    rec->reagentCount[k] = s.reagent_count[k];
+                    rec->noExpendReagent[k] = s.no_expend_reagent[k];
+                }
+                rec->spaIndex = s.spa_index;
+                rec->deityMask = s.deity_mask;
+                rec->spellIcon = s.spell_icon;
+                rec->spellAnim = s.spell_anim;
+                rec->resistAdj = s.resist_adj;
+                rec->recourseLink = s.recourse_link;
+                rec->descriptionId = s.description_id;
+                rec->category = s.category;
+                rec->subcategory = s.subcategory;
+                rec->subcategory2 = s.subcategory2;
+                rec->enduranceCost = s.endurance_cost;
+                rec->reuseTimerIndex = s.reuse_timer_index;
+                rec->enduranceUpkeep = s.endurance_upkeep;
+                rec->hitCountType = s.hit_count_type;
+                rec->hitCount = s.hit_count;
+                rec->globalGroup = s.global_group;
+                rec->pcnpcOnly = s.pcnpc_only;
+                rec->spellGroup = s.spell_group;
+                rec->spellRank = s.spell_rank;
+                rec->spellSubgroup = s.spell_subgroup;
+                rec->reqAssociation = s.req_association;
+                rec->spellClass = s.spell_class;
+                rec->spellSubclass = s.spell_subclass;
+                rec->maxTargets = s.max_targets;
+                rec->distanceModStartX = s.distance_mod_start_x;
+                rec->distanceModStartMod = s.distance_mod_start_mod;
+                rec->distanceModEndX = s.distance_mod_end_x;
+                rec->distanceModEndMod = s.distance_mod_end_mod;
+                rec->minRange = s.min_range;
+                uint32_t flags = HS_BULK_SPELL_NONE;
+                if (s.cancel_on_sit)          flags |= HS_BULK_SPELL_CANCEL_ON_SIT;
+                if (s.uninterruptable)        flags |= HS_BULK_SPELL_UNINTERRUPTABLE;
+                if (s.not_stackable_dot)      flags |= HS_BULK_SPELL_NOT_STACKABLE_DOT;
+                if (s.deletable)              flags |= HS_BULK_SPELL_DELETABLE;
+                if (s.duration_window)        flags |= HS_BULK_SPELL_DURATION_WINDOW;
+                if (s.npc_no_los)             flags |= HS_BULK_SPELL_NPC_NO_LOS;
+                if (s.is_skill)               flags |= HS_BULK_SPELL_IS_SKILL;
+                if (s.cast_not_standing)      flags |= HS_BULK_SPELL_CAST_NOT_STANDING;
+                if (s.no_dispell)             flags |= HS_BULK_SPELL_NO_DISPELL;
+                if (s.sneak)                  flags |= HS_BULK_SPELL_SNEAK;
+                if (s.not_focusable)          flags |= HS_BULK_SPELL_NOT_FOCUSABLE;
+                if (s.stacks_with_self)       flags |= HS_BULK_SPELL_STACKS_WITH_SELF;
+                if (s.suspendable)            flags |= HS_BULK_SPELL_SUSPENDABLE;
+                if (s.bypass_regen_check)     flags |= HS_BULK_SPELL_BYPASS_REGEN_CHECK;
+                if (s.can_cast_in_combat)     flags |= HS_BULK_SPELL_CAN_CAST_IN_COMBAT;
+                if (s.can_cast_out_of_combat) flags |= HS_BULK_SPELL_CAN_CAST_OUT_OF_COMBAT;
+                if (s.no_remove)              flags |= HS_BULK_SPELL_NO_REMOVE;
+                if (s.only_during_fast_regen) flags |= HS_BULK_SPELL_ONLY_DURING_FAST_REGEN;
+                rec->flags = flags;
+                rec->stringCount = HS_BULK_SPELL_STRINGS; // the write_str16 calls below
+                rec->effectCount = static_cast<int32_t>(lines.size());
+                rec->lightType = s.light_type;
+                rec->spellType = s.spell_type;
+                rec->activated = s.activated;
+                rec->resist = s.resist;
+                rec->targetType = s.target_type;
+                rec->castDifficulty = s.cast_difficulty;
+                rec->skill = s.skill;
+                rec->zoneType = s.zone_type;
+                rec->environment = s.environment;
+                rec->timeOfDay = s.time_of_day;
+                rec->castingAnim = s.casting_anim;
+                rec->targetAnim = s.target_anim;
+                rec->travelType = s.travel_type;
+                for (std::size_t k = 0; k < 16; ++k) rec->classLevel[k] = s.class_level[k];
+
+                write_str16(pBuffer, s.name);
+                write_str16(pBuffer, s.player_1);
+                write_str16(pBuffer, s.teleport_zone);
+                write_str16(pBuffer, s.cast_by_me);
+                write_str16(pBuffer, s.cast_by_other);
+                write_str16(pBuffer, s.cast_on_you);
+                write_str16(pBuffer, s.cast_on_other);
+                write_str16(pBuffer, s.wear_off);
+                write_str16(pBuffer, description);
+                write_str16(pBuffer, targetTypeDesc);
+                write_str16(pBuffer, resistTypeDesc);
+                write_str16(pBuffer, category);
+                write_str16(pBuffer, subcategory);
+                write_str16(pBuffer, subcategory2);
+                for (const std::string& line : lines) write_str16(pBuffer, line);
+            }
+            bufferSize += recordBytes;
+            ++count;
+        }
+    }
+    std::memcpy(data, &count, sizeof count); // in the machine's byte order, unaligned, as the records
+    return static_cast<int32_t>(bufferSize);
+}
+
 int32_t h_get_raid_data_bulk(void* h, unsigned char* data, int32_t datamax) {
     const net::GameConnection* c = readable(Loaded::of(h), "get_raid_data_bulk");
     if (!c || !data || datamax < static_cast<int32_t>(sizeof(HS_BulkRaidHeader))) return 0;
@@ -3113,6 +3341,7 @@ bool NativePlugins::load_file(std::string_view name_in, std::string* why, Asker 
     p.table.nameplate_submit = main_only<h_nameplate_submit>;
     p.table.nameplate_measure_text = main_only<h_nameplate_measure_text>;
     p.table.nameplate_spell_icon = main_only<h_nameplate_spell_icon>;
+    p.table.get_spells_data_bulk = main_only<h_get_spells_data_bulk>;
     Hooks& hooks = *m.env.hooks;
     Loaded* lp = &p;
     // Each callback runs with the plugin's capabilities and counts as the plugin being busy (no unloading under it).
