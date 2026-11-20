@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generates src/net/opcodes_rof2.inc from an EQEmu patch_RoF2.conf.
+"""Generates src/net/protocol/rof2/opcodes.inc from an EQEmu patch_RoF2.conf.
 
 Usage: tools/gen_opcodes.py path/to/patch_RoF2.conf [output.inc]
 
@@ -18,7 +18,7 @@ import re
 import sys
 from pathlib import Path
 
-DEFAULT_OUT = Path(__file__).resolve().parent.parent / "src/net/opcodes_rof2.inc"
+DEFAULT_OUT = Path(__file__).resolve().parent.parent / "src/net/protocol/rof2/opcodes.inc"
 
 LINE = re.compile(r"^OP_([A-Za-z0-9_]+)\s*=\s*0x([0-9A-Fa-f]{1,4})\b")
 
@@ -27,7 +27,7 @@ LINE = re.compile(r"^OP_([A-Za-z0-9_]+)\s*=\s*0x([0-9A-Fa-f]{1,4})\b")
 # 0x4656e0/0x465a90, sends of kinds 4/5/6/8), 0x47cb (Cmd_achievements, the window request 0x4edb00, byte 0x30),
 # 0x1665 (Send_AchievementCompareRequest @0x51fb90) and 0x17f8 (a HandleWorldMessage receive, @0x4c1760).
 # Taken from the server side of EQEmu#5119 and not yet traced in the original (docs/unknowns.md "Achievements"):
-# 0xdab0, 0x618f, 0x2b42, 0x059d, 0x28e0, 0x171e and 0x675d. src/net/achievement_packets.h and reward_packets.h
+# 0xdab0, 0x618f, 0x2b42, 0x059d, 0x28e0, 0x171e and 0x675d. src/net/protocol/rof2/packets/achievement_packets.h and reward_packets.h
 # repeat these values as constants for switch labels; tests/achievement_packets_test.cpp checks they agree.
 # Native fellowship routes were independently checked at CFellowshipWnd sends
 # 0x669440/0x6688e0 and receive routes 0x4c5733/0x4c55cd/0x6691d0/0x4cd4d3.
