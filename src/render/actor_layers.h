@@ -9,6 +9,8 @@
 // both, an OP_Animation action on both or on the upper body alone.
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 #include "assets/character.h"
 
@@ -97,6 +99,13 @@ struct PoseInput {
 // looping clip wraps (0x1003fcc0's old track). `previous` is the scratch buffer for the previous pose.
 void pose_actor(const assets::CharacterModel& model, const PoseInput& in, std::vector<assets::BonePose>& local,
                 std::vector<assets::BonePose>& previous, std::vector<glm::mat4>& world);
+
+// /debug_animinfo's readout of one actor's pose (Hailstone's debugging aid, not the original's), a line each: the
+// model and its clip donor; what each bone group plays, by the clip's code in `model` ("?" for a clip the model does
+// not hold), with its time and cross-fade; and the bones the pose leaves at their rest rotation and translation (the
+// points left out, which most clips do not animate). A bone at rest in a clip that moves the body is where a clip
+// lent nothing for it.
+std::vector<std::string> describe_pose(const assets::CharacterModel& model, const PoseInput& in);
 
 struct ActorLayers {
     GroupTrack group[2]; // game::kUpperBones, game::kLowerBones

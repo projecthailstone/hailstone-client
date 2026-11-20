@@ -661,6 +661,49 @@ TEST_CASE("a played-out one-shot's blend holds its last frame in the pose") {
     CHECK(local[0].translation.z == doctest::Approx(kHalfPoseZ));
 }
 
+TEST_CASE("describe_pose names the clips and the bones a clip leaves at rest") {
+    assets::CharacterModel model;
+    model.code = "TST";
+    model.source = "test.s3d:test.wld";
+    model.animation_donor = "ELF";
+    model.bone_names = {"TST_TRACK", "TSTBI_L_TRACK", "TSTBI_R_TRACK", "TSTL_POINT_TRACK"};
+    model.parents = {-1, 0, 0, 1};
+    model.order = {0, 1, 2, 3};
+    const assets::BonePose rest;
+    assets::BonePose raised;
+    raised.rotation = glm::angleAxis(glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    assets::AnimationClip rest_clip;
+    rest_clip.frame_count = 1;
+    for (int b = 0; b < 4; ++b) rest_clip.tracks.push_back(assets::AnimationTrack{rest});
+    // The right arm moves; the left arm and the point keep their rest frames.
+    assets::AnimationClip stand;
+    stand.frame_count = 1;
+    stand.frame_ms = kFrameMs;
+    stand.borrowed = true;
+    stand.tracks = {assets::AnimationTrack{rest}, assets::AnimationTrack{rest}, assets::AnimationTrack{raised},
+                    assets::AnimationTrack{rest}};
+    model.clips.emplace("", std::move(rest_clip));
+    model.clips.emplace("P01", std::move(stand));
+
+    render::PoseInput in;
+    in.clip = &model.clips.at("P01");
+    auto lines = render::describe_pose(model, in);
+    REQUIRE(lines.size() == 3);
+    CHECK(lines[0] == "model TST from test.s3d:test.wld, clips lent by ELF");
+    CHECK(lines[1].starts_with("whole body: P01 (lent) at 0.00"));
+    CHECK(lines[2] == "bones at rest: BI_L"); // not the root, not the point
+
+    // A clip the model does not hold, on the upper body alone.
+    assets::AnimationClip foreign = model.clips.at("P01");
+    std::vector<std::uint8_t> groups = {game::kLowerBones, game::kUpperBones, game::kUpperBones, game::kUpperBones};
+    in.upper_clip = &foreign;
+    in.bone_groups = &groups;
+    lines = render::describe_pose(model, in);
+    REQUIRE(lines.size() == 4);
+    CHECK(lines[1].starts_with("lower body: P01 (lent)"));
+    CHECK(lines[2].starts_with("upper body: ? at"));
+}
+
 TEST_CASE("bone_world blends a played-out one-shot's last frame") {
     // A one-shot whose last frame differs from its first; frame_count comes from the track.
     assets::AnimationClip one_shot;

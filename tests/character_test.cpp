@@ -479,6 +479,34 @@ TEST_CASE("a Luclin model borrows nothing from the classic donor's skeleton" * d
     }
 }
 
+TEST_CASE("a bone named with another model's code still takes the donor's track" *
+          doctest::skip(!hailstone::test::game_dir())) {
+    // South Karana's Halas female (HLF) names her left upper arm HUFBI_L_TRACK. Matched by her own code alone, it
+    // took no ELF track: in every clip her left arm stood out at its rest angle, the hand at shoulder height.
+    auto lib = CharacterLibrary::load(*hailstone::test::game_dir(), "southkarana", true);
+    auto m = lib.model("HLF");
+    if (!m) return; // an asset folder without the zone's model
+    const int bi_l = m->find_bone("BI_L_TRACK"), fi_l = m->find_bone("FI_L_TRACK");
+    const int bi_r = m->find_bone("BI_R_TRACK"), fi_r = m->find_bone("FI_R_TRACK");
+    REQUIRE(bi_l >= 0);
+    REQUIRE(fi_l >= 0);
+    REQUIRE(bi_r >= 0);
+    REQUIRE(fi_r >= 0);
+    for (const char* code : {"P01", "O01", "L01"}) {
+        CAPTURE(code);
+        const auto* clip = m->clip(code);
+        REQUIRE(clip);
+        std::vector<glm::mat4> world;
+        m->sample(*clip, 0.3f, true, world);
+        auto drop = [&](int hand, int shoulder) {
+            return world[static_cast<std::size_t>(shoulder)][3].z - world[static_cast<std::size_t>(hand)][3].z;
+        };
+        // The hand hangs well below the shoulder, as the right one does (at rest it is 0.25 below).
+        CHECK(drop(fi_l, bi_l) > 0.8f);
+        CHECK(drop(fi_l, bi_l) == doctest::Approx(drop(fi_r, bi_r)).epsilon(0.5));
+    }
+}
+
 TEST_CASE("a spawn holding something plays the model's variant B, else what it has (0x4b1210)") {
     CharacterModel m;
     for (const char* c : {"", "P01", "P01B", "C01"}) m.clips[c].frame_count = 2;

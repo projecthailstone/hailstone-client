@@ -503,6 +503,19 @@ public:
         perf_ui_.set_log_hitches(config_.get_bool("ui.perf_log_hitches", false));
         automation_->hooks().add_command(plugin::Hooks::kClient, "/perf", [this](std::string_view) { perf_ui_.toggle(); });
         automation_->hooks().add_command(plugin::Hooks::kClient, "/screenshot", [this](std::string_view) { take_screenshot(); });
+        // /debug_animinfo: the target's (or your own) model, the clips its bone groups play and the bones left at rest
+        // (render::describe_pose; a debugging aid of Hailstone's).
+        automation_->hooks().add_command(plugin::Hooks::kClient, "/debug_animinfo", [this](std::string_view) {
+            if (!conn_) return;
+            const auto& w = conn_->world();
+            const std::uint32_t id = w.target_id ? w.target_id : w.player_id;
+            auto it = w.spawns.find(id);
+            const std::string who = it != w.spawns.end() ? it->second.name : std::to_string(id);
+            const auto lines = actor_renderer_ ? actor_renderer_->describe_animation(id) : std::vector<std::string>{};
+            if (lines.empty()) return conn_->ui_message("[debug_animinfo] " + who + " is not drawn as a character model");
+            conn_->ui_message("[debug_animinfo] " + who + ":");
+            for (const auto& line : lines) conn_->ui_message("  " + line);
+        });
         // /web [address]: the in-game browser (docs/browser.md; a client extension), on the address in a new tab.
         // The player's own: a script or plugin opens pages with /url, under its 'web' permission.
         automation_->hooks().add_command(plugin::Hooks::kClient, "/web", [this](std::string_view args) {

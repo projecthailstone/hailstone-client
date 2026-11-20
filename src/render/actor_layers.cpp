@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <format>
 
 #include <glm/gtc/quaternion.hpp>
 
@@ -321,6 +322,59 @@ void pose_actor(const assets::CharacterModel& model, const PoseInput& in, std::v
             if (groups[b] == game::kUpperBones) local[b] = upper[b];
     }
     model.compose(local, world);
+}
+
+std::vector<std::string> describe_pose(const assets::CharacterModel& model, const PoseInput& in) {
+    std::vector<std::string> lines;
+    lines.push_back(std::format("model {} from {}{}, clips lent by {}", model.code, model.source,
+                                model.eqg ? " (EQG)" : "",
+                                model.animation_donor.empty() ? "none" : model.animation_donor));
+    // A clip by its pointer: the draw holds pointers into the model's clips, so one the model does not hold is
+    // itself a finding.
+    auto name = [&](const assets::AnimationClip* clip) -> std::string {
+        if (!clip) return "none";
+        for (const auto& [code, c] : model.clips)
+            if (&c == clip) return std::format("{}{}", code.empty() ? "rest" : code, c.borrowed ? " (lent)" : "");
+        return "?";
+    };
+    auto group = [&](const char* label, const assets::AnimationClip* clip, float time, bool loop,
+                     const assets::AnimationClip* from, float from_time, float blend) {
+        std::string line = std::format("{}: {} at {:.2f} of {:.2f} s{}", label, name(clip), time,
+                                       clip ? clip->duration_seconds() : 0.0f, loop ? ", looping" : "");
+        if (from && blend < 1.0f) line += std::format(", {:.0f}% faded in from {} at {:.2f} s", blend * 100.0f,
+                                                      name(from), from_time);
+        lines.push_back(std::move(line));
+    };
+    const bool split = in.upper_clip && in.bone_groups;
+    group(split ? "lower body" : "whole body", in.clip, in.time, in.loop, in.previous, in.previous_time, in.blend);
+    if (split)
+        group("upper body", in.upper_clip, in.upper_time, in.upper_loop, in.upper_previous, in.upper_previous_time,
+              in.upper_blend);
+    if (!in.clip) return lines;
+
+    std::vector<assets::BonePose> local, previous;
+    std::vector<glm::mat4> world;
+    pose_actor(model, in, local, previous, world);
+    const auto rest_clip = model.clips.find("");
+    std::string at_rest;
+    if (rest_clip != model.clips.end()) {
+        const auto& rest = rest_clip->second.tracks;
+        constexpr float kSameRotation = 0.99999f, kSameTranslation = 1e-4f;
+        for (std::size_t b = 1; b < local.size() && b < rest.size() && b < model.bone_names.size(); ++b) {
+            if (rest[b].empty()) continue;
+            std::string bone = model.bone_names[b];
+            if (bone.find("POINT") != std::string::npos) continue;
+            const assets::BonePose r = rest[b].front();
+            if (std::abs(glm::dot(local[b].rotation, r.rotation)) < kSameRotation ||
+                glm::length(local[b].translation - r.translation) > kSameTranslation)
+                continue;
+            if (bone.starts_with(model.code)) bone.erase(0, model.code.size());
+            if (bone.ends_with("_TRACK")) bone.resize(bone.size() - 6);
+            at_rest += (at_rest.empty() ? "" : " ") + bone;
+        }
+    }
+    lines.push_back("bones at rest: " + (at_rest.empty() ? std::string("none") : at_rest));
+    return lines;
 }
 
 bool ActorLayers::split() const {

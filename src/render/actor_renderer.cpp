@@ -812,6 +812,16 @@ ActorRenderer::ModelChoice ActorRenderer::choose_model(const game::Spawn& spawn)
 
 void ActorRenderer::pose_bones(const ActorDraw& a, std::vector<assets::BonePose>& local,
                                std::vector<assets::BonePose>& previous, std::vector<glm::mat4>& world) {
+    pose_actor(*a.model, pose_input(a), local, previous, world);
+}
+
+std::vector<std::string> ActorRenderer::describe_animation(std::uint32_t id) const {
+    auto it = last_draws_.find(id);
+    if (it == last_draws_.end() || !it->second.model) return {};
+    return describe_pose(*it->second.model, pose_input(it->second));
+}
+
+PoseInput ActorRenderer::pose_input(const ActorDraw& a) {
     PoseInput in;
     in.clip = a.clip;
     in.time = a.time;
@@ -828,7 +838,7 @@ void ActorRenderer::pose_bones(const ActorDraw& a, std::vector<assets::BonePose>
     in.upper_previous_loop = a.upper_previous_loop;
     in.upper_blend = a.upper_blend;
     in.bone_groups = a.bone_groups;
-    pose_actor(*a.model, in, local, previous, world);
+    return in;
 }
 
 glm::mat4 ActorRenderer::instance_matrix(const ActorDraw& a) {

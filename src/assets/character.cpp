@@ -1237,11 +1237,20 @@ CharacterModel CharacterLibrary::build_actor(const std::string& code, const wld:
         if (b.size() > code.size() && b.starts_with(code) && std::string_view(b).substr(code.size()) == "TUNIC_POINT_TRACK")
             tunic_point = true;
     m.animation_donor = game::animation_source(code, tunic_point);
+    // A bone's suffix is what follows the first code.size() letters, whatever they are: a few skeletons name a bone
+    // with another model's code. South Karana's Halas female (HLF) has HUFBI_L_TRACK, HUFL_POINT_TRACK and
+    // HLMHEAD_POINT_TRACK, and by its own code alone its left upper arm took no ELF track and stood out at its rest
+    // angle. LanternExtractor matches tracks to bones by position too (SkeletonHierarchy.IsValidSkeleton) and
+    // renames these three (CharacterFixer.FixHalasFemale). How the original builds the borrowed track's name is not
+    // confirmed (docs/unknowns.md).
+    auto bone_suffix = [&](const std::string& bone) {
+        return bone.size() > code.size() ? bone.substr(code.size()) : std::string();
+    };
     std::vector<std::string> donor_names(n);
     if (!m.animation_donor.empty())
         for (std::size_t i = 0; i < n; ++i)
-            if (m.bone_names[i].starts_with(code))
-                donor_names[i] = m.animation_donor + m.bone_names[i].substr(code.size());
+            if (auto suffix = bone_suffix(m.bone_names[i]); !suffix.empty())
+                donor_names[i] = m.animation_donor + suffix;
     // Another skeleton of the same code shares some bone names (the root "WOL_TRACK", points such as
     // "WOLHEAD_POINT_TRACK"): live's wol_v2_chr WOL has an L01 for them, which gave a zone's classic WOL (no L01)
     // a one-frame walk and froze it. A track in another WLD whose own <code>_ACTORDEF has different bones belongs
@@ -1273,7 +1282,7 @@ CharacterModel CharacterLibrary::build_actor(const std::string& code, const wld:
     // skeleton keeps all its tracks, as before.
     std::set<std::string> suffixes;
     for (const auto& b : m.bone_names)
-        if (b.starts_with(code)) suffixes.insert(b.substr(code.size()));
+        if (auto suffix = bone_suffix(b); !suffix.empty()) suffixes.insert(std::move(suffix));
     std::map<const wld::WldFile*, bool> donor_rivals;
     auto donor_rival = [&](const TrackLoc* loc) {
         if (!loc || loc->wld == &w) return false;

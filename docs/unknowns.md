@@ -331,6 +331,13 @@ The experimental texture broker (docs/graphics.md "Shared GPU textures", docs/re
 
 ## Characters and models
 
+- A borrowed clip's track for a bone named with another model's code (South Karana's HLF: `HUFBI_L_TRACK`,
+  `HUFL_POINT_TRACK`, `HLMHEAD_POINT_TRACK`): Hailstone replaces the bone name's first letters by position, as
+  many as the model's code has, so HLF's left arm takes ELF's `<clip>ELFBI_L_TRACK` and hangs as the right one does
+  (docs/formats/characters.md). Whether the original builds the borrowed name by position or by the model's code
+  (which would leave that arm at its rest angle there too) is not traced. Settled by InitAnimationTracks @0x407800's
+  track-name build, or by watching a Halas citizen female idle in South Karana on the original client.
+
 - Held-item effects now retain WLD cloud nodes, bitmap sequences and EQG surface maps. The WLD creator's manager
   density configuration (`+0xa8`, separate from EDD actor density) is untraced; the native default 1 and descriptor
   opacity are verified and used here.

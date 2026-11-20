@@ -235,6 +235,7 @@ These are not in the original client.
 | `/lighting [modern \| smooth \| classic]` | Switch the lighting (docs/graphics.md); without a mode, between modern and classic. |
 | `/screenshot` | Take a screenshot. |
 | `/perf` | The performance window. |
+| `/debug_animinfo` | For finding animation faults: your target's (or your own) model and where its clips come from, what its upper and lower body play (time, cross-fade, `(lent)` for a clip borrowed from another model, `?` for one the model does not hold), and the bones the pose leaves at their rest frame (points left out). |
 | `/chattabs [help]` | List Hailstone's chat tab commands. |
 | `/chattabs status` | List chat windows by ID and bracket the selected tab in each window. |
 | `/chattabs next`, `/chattabs prev` | Cycle through tabs in the current chat window. |
