@@ -17,7 +17,7 @@
 #include "game/path_trail.h"
 #include "game/spells.h"
 #include "game/missiles.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "render/actor_renderer.h"
 
 namespace hailstone::app {

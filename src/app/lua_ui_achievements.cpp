@@ -7,7 +7,8 @@
 #include <lua.hpp>
 
 #include "app/lua_ui_record.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
+#include "net/messages/achievement.h"
 
 namespace hailstone::app {
 namespace {

@@ -1,6 +1,7 @@
 #include "core/log.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -29,10 +30,11 @@ constexpr std::size_t kRecentLength = 200;
 char g_recent[kRecentLines][kRecentLength] = {};
 std::atomic<std::size_t> g_recent_next{0}; // the slot the next line goes to (counts up; modulo kRecentLines)
 
-void remember_line(const char* tag, std::string_view message) {
+void remember_line(std::string_view prefix, std::string_view message) {
     std::size_t n = g_recent_next.load(std::memory_order_relaxed);
     char* line = g_recent[n % kRecentLines];
-    std::snprintf(line, kRecentLength, "[%s] %.*s", tag, static_cast<int>(message.size()), message.data());
+    std::snprintf(line, kRecentLength, "%.*s%.*s", static_cast<int>(prefix.size()), prefix.data(),
+                  static_cast<int>(message.size()), message.data());
     g_recent_next.store(n + 1, std::memory_order_release);
 }
 
@@ -94,6 +96,41 @@ const char* tag(Level level) {
     case Level::Error: return "error";
     }
     return "?";
+}
+
+// Keep only the basename, for readable diagnostics and to avoid writing the developer's home path.
+std::string_view filename(std::string_view file) {
+    if (file.starts_with('@')) file.remove_prefix(1); // Lua source names begin with @ for file-backed chunks.
+    const auto slash = file.find_last_of("/\\");
+    if (slash != std::string_view::npos) file.remove_prefix(slash + 1);
+    return file.empty() ? "unknown" : file;
+}
+
+// source_location::function_name() often includes the return type, scopes and parameters. The concise name
+// (rather than the whole signature) matches Lua's debug.name; leave unusual signatures alone when necessary.
+std::string_view function_name(std::string_view name) {
+    if (name.empty()) return "?";
+    // GCC describes a lambda as "Owner::method()::<lambda()>"; the first '(' belongs to the enclosing
+    // function, not the lambda. Keep the lambda marker instead of misreporting the enclosing function.
+    if (const auto lambda = name.rfind("::<lambda"); lambda != std::string_view::npos) {
+        if (const auto end = name.find('>', lambda); end != std::string_view::npos)
+            return name.substr(lambda + 2, end - lambda - 1);
+    }
+    if (name.find("operator()") != std::string_view::npos) return "operator()";
+    const auto paren = name.find('(');
+    if (paren != std::string_view::npos) name = name.substr(0, paren);
+    const auto space = name.find_last_of(" \t");
+    if (space != std::string_view::npos) name.remove_prefix(space + 1);
+    const auto scope = name.rfind("::");
+    if (scope != std::string_view::npos) name.remove_prefix(scope + 2);
+    return name.empty() ? "?" : name;
+}
+
+std::string prefix(Level level, Location site) {
+    const auto file = filename(site.file);
+    const auto func = site.function.empty() ? std::string_view("?") : site.function;
+    if (site.line == 0) return std::format("[{}] [{}:?, {}] ", tag(level), file, func);
+    return std::format("[{}] [{}:{}, {}] ", tag(level), file, site.line, func);
 }
 } // namespace
 
@@ -192,23 +229,62 @@ std::string_view escape_controls(std::string_view message, std::string& scratch)
     return scratch;
 }
 
-void write(Level level, std::string_view message) {
+std::string_view redact_home_paths(std::string_view message, std::string& scratch) {
+    // Match complete path components, never a username embedded in an ordinary
+    // word. The backslash variant covers C:\Users\<name> as well as UNC paths.
+    constexpr std::array<std::string_view, 5> roots{
+        "/home/", "/var/home/", "/Users/", "\\Users\\", "\\users\\",
+    };
+    constexpr std::string_view terminators = "/\\ \t\r\n\"'()[]{}<>,;|";
+    std::size_t consumed = 0;
+    for (std::size_t pos = 0; pos < message.size(); ++pos) {
+        for (const auto root : roots) {
+            if (message.substr(pos).starts_with(root)) {
+                const std::size_t begin = pos + root.size();
+                const std::size_t end = message.find_first_of(terminators, begin);
+                const std::size_t stop = end == std::string_view::npos ? message.size() : end;
+                const std::string_view name = message.substr(begin, stop - begin);
+                if (name.empty() || name == "." || name == "..") break;
+                scratch.append(message.substr(consumed, begin - consumed));
+                scratch += "redacted";
+                consumed = stop;
+                pos = stop - 1;
+                break;
+            }
+        }
+    }
+    if (consumed == 0) return message;
+    scratch.append(message.substr(consumed));
+    return scratch;
+}
+
+void write(Level level, std::string_view message, std::source_location site) {
+    write_at(level, message, {site.file_name(), site.line(), function_name(site.function_name())});
+}
+
+void write_at(Level level, std::string_view message, Location site) {
     if (level < g_level.load()) return;
     std::string escaped; // empty, so no allocation, unless the message has a control character
     message = escape_controls(message, escaped);
+    std::string redacted; // redact before terminal, file and crash-history sinks
+    message = redact_home_paths(message, redacted);
+    const std::string head = prefix(level, site);
     std::lock_guard lock(g_mutex);
-    remember_line(tag(level), message);
-    std::fprintf(level >= Level::Warn ? stderr : stdout, "[%s] %.*s\n", tag(level),
+    remember_line(head, message);
+    std::fprintf(level >= Level::Warn ? stderr : stdout, "%s%.*s\n", head.c_str(),
                  static_cast<int>(message.size()), message.data());
     if (g_file && !g_file_full) {
         // Flushed at once, so the file holds everything up to a crash.
-        const int n = std::fprintf(g_file, "[%s] %.*s\n", tag(level), static_cast<int>(message.size()), message.data());
+        const int n = std::fprintf(g_file, "%s%.*s\n", head.c_str(),
+                                   static_cast<int>(message.size()), message.data());
         if (n > 0) g_file_written += static_cast<std::uint64_t>(n);
         if (g_file_written >= g_file_limit) {
             // A run that logs without end (a message every frame) must not fill the disk: the file stops here, with
             // a line saying so, and the rest goes to stdout and stderr only.
-            std::fprintf(g_file, "[warn] the log reached its limit of %llu bytes: nothing more is written to it in "
-                                 "this run\n",
+            const std::string limit_head = prefix(Level::Warn, {"log.cpp", std::source_location::current().line(),
+                                                                 "write_at"});
+            std::fprintf(g_file, "%sthe log reached its limit of %llu bytes: nothing more is written to it in "
+                                 "this run\n", limit_head.c_str(),
                          static_cast<unsigned long long>(g_file_limit));
             g_file_full = true;
         }

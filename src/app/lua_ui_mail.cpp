@@ -1,5 +1,5 @@
 // The mail windows: MailWindow (CMailWnd) and MailCompositionWindow (CMailCompositionWnd) over GameConnection's
-// UCS mail (game/mail.h, net/game_connection_mail.cpp). Rows, the message view and the reply text are built as the
+// UCS mail (game/mail.h, net/connection/game_connection_mail.cpp). Rows, the message view and the reply text are built as the
 // original's CMailWnd_AddMessageRow, CMailWnd_BuildMessageSTML and CMailWnd_ComposeReply build them.
 
 #include <ctime>
@@ -18,7 +18,7 @@
 #include "core/log.h"
 #include "game/mail.h"
 #include "game/feature_restrictions.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 
 namespace hailstone::app {
 

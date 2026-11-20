@@ -4,7 +4,7 @@
 #include <limits>
 
 #include "game/server_ext.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 
 namespace hailstone::app {
 

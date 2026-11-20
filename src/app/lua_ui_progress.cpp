@@ -23,7 +23,7 @@
 #include "game/task_window.h"
 #include "game/tasks.h"
 #include "game/zone_names.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "plugin/lua_keep.h"
 #include "ui/dev_screens.h"
 

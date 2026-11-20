@@ -46,7 +46,7 @@
 
 #include "app/lua_ui.h"
 #include "app/lua_ui_windows.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "plugin/lua_keep.h"
 #include "ui/lua/lua_host.h"
 

@@ -8,7 +8,7 @@
 
 #include "app/gamepad.h"
 #include "app/lua_ui.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "ui/lua/lua_host.h"
 
 namespace hailstone::app {

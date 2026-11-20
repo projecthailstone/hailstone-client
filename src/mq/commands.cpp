@@ -9,7 +9,7 @@
 #include "mq/nav_commands.h"
 #include "mq/parse.h"
 #include "mq/spawn_search.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "plugin/policy.h"
 
 namespace hailstone::mq {

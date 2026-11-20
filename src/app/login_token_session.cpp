@@ -4,7 +4,7 @@
 
 #include "core/ascii_case.h"
 #include "core/wipe.h"
-#include "net/login.h"
+#include "net/messages/login.h"
 
 namespace hailstone::app {
 
@@ -13,7 +13,7 @@ LoginTokenSession::~LoginTokenSession() { clear(); }
 bool LoginTokenSession::remember(std::string_view host, int port, std::string_view token) {
     clear();
     if (host.empty() || host.find('\0') != std::string_view::npos || port < 1 || port > 65535 ||
-        !net::login_codec::valid_login_token(token)) return false;
+        !net::messages::valid_login_token(token)) return false;
     host_ = host;
     port_ = port;
     token_ = token;

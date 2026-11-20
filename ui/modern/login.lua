@@ -181,6 +181,28 @@ local function serverSection(view, s)
     ui.Dummy(0, 2 * s)
     submit = serverDetails(view, s)
   end
+  if not view.transient then
+    ui.Dummy(0, 3 * s)
+    P.Muted("Protocol")
+    ui.SameLine()
+    ui.SetNextItemWidth(140 * s)
+    local protocolName = view.gameCodec
+    for _, choice in ipairs(view.protocols) do
+      if choice.id == view.gameCodec and choice.transport == view.sessionProtocol then
+        protocolName = choice.name
+      end
+    end
+    if ui.BeginCombo("##protocol", protocolName) then
+      for _, choice in ipairs(view.protocols) do
+        local selected = choice.id == view.gameCodec and choice.transport == view.sessionProtocol
+        if ui.Selectable(choice.name, selected) and not selected then
+          API.pregame.LoginSet("protocol", choice.id)
+        end
+      end
+      ui.EndCombo()
+    end
+    P.Tip("The game packet format for this server. Saved when you save the server or log in.")
+  end
   return submit
 end
 

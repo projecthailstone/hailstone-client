@@ -34,7 +34,7 @@
 #include "game/map_data.h"
 #include "game/useful_npcs.h"
 #include "game/world_state.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "game/server_ext.h"
 #include "plugin/lua_keep.h"
 

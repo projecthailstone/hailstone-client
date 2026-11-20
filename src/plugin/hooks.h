@@ -20,7 +20,7 @@
 #include <string_view>
 #include <vector>
 
-#include "net/packet.h"
+#include "net/wire/app_packet.h"
 
 namespace hailstone::plugin {
 

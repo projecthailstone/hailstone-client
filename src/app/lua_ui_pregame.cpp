@@ -25,7 +25,7 @@
 #include "core/server_profile.h"
 #include "game/eq_names.h"
 #include "game/zone_names.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "ui/dev_screens.h"
 #include "ui/lua/lua_host.h"
 
@@ -349,6 +349,8 @@ void emit_login(Out& o, const ui::LoginView& v) {
         o.str("host", p.host);
         o.integer("port", p.port);
         o.str("ui", p.ui.empty() ? v.default_ui : p.ui);
+        o.str("gameCodec", p.game_codec);
+        o.str("sessionProtocol", p.session_protocol);
         o.close(i);
     }
     o.close("servers");
@@ -365,6 +367,18 @@ void emit_login(Out& o, const ui::LoginView& v) {
     o.boolean("music", v.pregame_music);
     o.str("ui", v.ui);
     o.str("defaultUi", v.default_ui);
+    o.str("gameCodec", v.game_codec);
+    o.str("sessionProtocol", v.session_protocol);
+    o.table();
+    for (std::size_t i = 0; i < ui::kLoginProtocols.size(); ++i) {
+        const auto& choice = ui::kLoginProtocols[i];
+        o.table();
+        o.str("name", choice.name);
+        o.str("id", choice.codec);
+        o.str("transport", choice.transport);
+        o.close(i);
+    }
+    o.close("protocols");
     o.table();
     for (std::size_t i = 0; i < v.ui_packs.size(); ++i) {
         const ui::UiPack& p = v.ui_packs[i];
@@ -435,6 +449,7 @@ void emit_login(Out& o, const ui::LoginView& v) {
 //   sessionTicketAvailable (the app holds a returned ticket for this endpoint; no ticket value is exposed),
 //   servers {name, host, port, id, ui}, selected (0: a new server), name, host, port, username, password, remember,
 //   savePassword, canSavePasswords, music, ui, defaultUi, uiPacks {id, name, description, input, available, reason},
+//   gameCodec, sessionProtocol, protocols {id, name, transport} (only registered game/transport pairs),
 //   accounts {username, passwordSaved, box, canBox, world, character, characters {name, world, level, classes}},
 //   worlds, characters {name, world, level, classes, account, passwordSaved, last}, quick (0: none),
 //   gameFolders {path, label, live, usable} (the one in use first), gameFolderFixed, assetsDir, boxCount, boxReady,
@@ -462,7 +477,8 @@ int LoginScreen(lua_State* L) {
 }
 
 // hs.LoginSet(field, value): a field as the player edits it. "name", "host", "username", "password", "ui" (a pack's
-// id: the client switches to it at once, and a saved server keeps it at once), strings; "port", 1..65535; "remember", "savePassword", "music" (the
+// id: the client switches to it at once, and a saved server keeps it at once), "protocol" (the game codec's id,
+// paired with its session transport; saved with the server on Save/Login), strings; "port", 1..65535; "remember", "savePassword", "music" (the
 // pre-game music, kept in hailstone.ini at once), booleans; "quick", the Characters list's row (0: none); "addonLink",
 // the add-on link field; "addonsOpen", the add-ons panel shown.
 int LoginSet(lua_State* L) {
@@ -499,6 +515,17 @@ int LoginSet(lua_State* L) {
                 if (save_profile(*saved, v.servers_dir))
                     v.profiles[static_cast<std::size_t>(v.selected)].ui = id;
             }
+        }
+    } else if (field == "protocol") {
+        if (v.transient) return 0;
+        const std::string id = text();
+        const auto it = std::find_if(ui::kLoginProtocols.begin(), ui::kLoginProtocols.end(),
+                                     [&](const ui::LoginProtocolChoice& choice) { return choice.codec == id; });
+        if (it == ui::kLoginProtocols.end()) return 0;
+        if (v.game_codec != it->codec || v.session_protocol != it->transport) {
+            v.game_codec = it->codec;
+            v.session_protocol = it->transport;
+            v.hailstone_extensions = false;
         }
     } else if (field == "addonLink") {
         v.addons.link = text().substr(0, 400);

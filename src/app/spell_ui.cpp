@@ -9,7 +9,7 @@
 #include "core/log.h"
 #include "game/spell_description.h"
 #include "game/spells.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 
 namespace hailstone::app {
 

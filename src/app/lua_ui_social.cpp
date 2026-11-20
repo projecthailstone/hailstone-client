@@ -28,8 +28,8 @@
 #include "game/quantity_dialog.h"
 #include "game/zone_names.h"
 #include "mq/commands.h"
-#include "net/game_connection.h"
-#include "net/social_packets.h"
+#include "net/connection/game_connection.h"
+#include "net/messages/social.h"
 #include "plugin/lua_keep.h"
 #include "ui/ui_ini.h"
 
@@ -1606,7 +1606,7 @@ private:
 };
 
 // GuildBankWnd (CGuildBankWnd) over the connection's guild bank
-// (net/game_connection_guild_bank.cpp). The two lists show the items you may see (permission 15, else your own),
+// (net/connection/game_connection_guild_bank.cpp). The two lists show the items you may see (permission 15, else your own),
 // the main list through the filter; one selection across both. The buttons follow CGuildBankWnd_UpdateButtons and
 // WndNotification: Withdraw and Split ask how many in the quantity dialog, an item's permission Single Member and
 // Change Member ask for the member's name in the text entry window, and an Alt click on a row views its item.

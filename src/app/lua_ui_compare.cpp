@@ -27,7 +27,7 @@
 #include "game/item_moves.h"
 #include "game/mechanics/character.h"
 #include "game/server_ext.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "plugin/lua_keep.h"
 
 namespace hailstone::app {

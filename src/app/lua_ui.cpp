@@ -54,7 +54,8 @@
 #include "game/spell_gem.h"
 #include "game/spells.h"
 #include "game/world_state.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
+#include "net/messages/group.h"
 #include "ui/ui_ini.h"
 #include "ui/ui_textures.h"
 #include "ui/texture_ids.h"
@@ -1942,6 +1943,17 @@ int InventorySpace(lua_State* L) {
     return 2;
 }
 
+// icon = hs.ParcelIcon() -- current zone's parcel notification (0 off, 1 waiting,
+// 2 over limit); nil until the server sends it. Works without a merchant open.
+int ParcelIcon(lua_State* L) {
+    auto& h = Impl::of(L).host;
+    if (!h.conn) return 0;
+    const auto status = h.conn->parcel_icon_status();
+    if (!status) return 0;
+    lua_pushinteger(L, static_cast<lua_Integer>(*status));
+    return 1;
+}
+
 // parcels, claiming, busy, sending, picked, money = hs.Parcels()   -- the parcels waiting at the open parcel merchant (EQEmu's), by slot order:
 // { { slot, item (hs.Item's), from, note, sent (Unix seconds) } }; claiming: how many are still to be taken (Claim
 // all's queue and the one being taken; 0 when none is); busy: a retrieve is waiting for its answer; sending: a parcel
@@ -3237,7 +3249,7 @@ void UiApi::register_functions(lua_State* L) {
         {"CursorAttachment", CursorAttachment}, {"StmlLink", StmlLink}, {"DebugTree", ReturnEmptyTable},
         {"SetSlider", SetSlider}, {"ComboInfo", ComboInfo}, {"ListHeaderClick", ListHeaderClick}, {"Option", Option}, {"SetOption", SetOption}, {"UiIni", UiIniGet}, {"SetUiIni", UiIniSet}, {"OptionChoices", OptionChoices},
         {"InterfaceList", InterfaceList}, {"InterfaceLoadBase", InterfaceLoadBase}, {"InterfaceLoadData", InterfaceLoadData}, {"InterfaceStatus", InterfaceStatus},
-        {"ComboSelect", ComboSelect}, {"BagInfo", BagInfo}, {"SortItems", SortItems}, {"SellJunk", SellJunk}, {"Parcels", Parcels}, {"RetrieveParcel", RetrieveParcel}, {"ClaimAllParcels", ClaimAllParcels}, {"SendParcel", SendParcel}, {"SendParcelMoney", SendParcelMoney}, {"ItemJob", ItemJob}, {"StopItemJob", StopItemJob}, {"FindItems", FindItems},
+        {"ComboSelect", ComboSelect}, {"BagInfo", BagInfo}, {"SortItems", SortItems}, {"SellJunk", SellJunk}, {"ParcelIcon", ParcelIcon}, {"Parcels", Parcels}, {"RetrieveParcel", RetrieveParcel}, {"ClaimAllParcels", ClaimAllParcels}, {"SendParcel", SendParcel}, {"SendParcelMoney", SendParcelMoney}, {"ItemJob", ItemJob}, {"StopItemJob", StopItemJob}, {"FindItems", FindItems},
         {"InventorySpace", InventorySpace}, {"PlaceClick", PlaceClick}, {"BagSlotItem", BagSlotItem}, {"BagSlotClick", BagSlotClick},
         // The EQ button's menu (CascadeMenu.txt) and the windows' context menus (UiHost::menus).
         {"CascadeMenus", CascadeMenus}, {"CascadeClick", CascadeClick}, {"CascadeHover", CascadeHover},
@@ -3259,7 +3271,7 @@ void UiApi::register_functions(lua_State* L) {
         "GemInfo", "HoldingButton", "SlotItem", "ListInfo", "ListRow", "ChildState", "WindowTitle", "ChildGauge",
         "ChildColor", "TabPage", "ItemPreview",
         "ChildTooltip", "DebugScreens", "ChildUnder", "VoiceChat", "ChildRect", "WindowClient", "CursorAttachment",
-        "DebugTree", "ComboInfo", "Option", "UiIni", "OptionChoices", "BagInfo", "Parcels", "FindItems",
+        "DebugTree", "ComboInfo", "Option", "UiIni", "OptionChoices", "BagInfo", "Parcels", "ParcelIcon", "FindItems",
         "InventorySpace", "BagSlotItem", "CascadeMenus", "GameMenus", "ContextMenus", "ItemJob", "InterfaceList", "InterfaceLoadBase", "InterfaceLoadData", "InterfaceStatus"};
     auto changes_lists = [](lua_State* L2) -> int {
         Impl::of(L2).lists_changed();

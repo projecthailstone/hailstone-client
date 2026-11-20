@@ -13,7 +13,7 @@
 #include "game/mechanics/character.h"
 #include "game/mechanics/sheet_builder.h"
 #include "game/mechanics/tables.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 
 namespace hailstone::app {
 

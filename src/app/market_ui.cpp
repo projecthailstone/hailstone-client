@@ -9,7 +9,7 @@
 #include "core/env.h"
 #include "game/bazaar.h"
 #include "game/mail.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "ui/lua/lua_host.h"
 
 namespace hailstone::app {

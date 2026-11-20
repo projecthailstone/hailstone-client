@@ -1,10 +1,10 @@
 // The name change windows: NameChangeWnd, NameChangePetWnd and NameChangeMercWnd (CNameChangeWnd and its two copies)
-// over GameConnection's name change state (net/game_connection_names.cpp).
+// over GameConnection's name change state (net/connection/game_connection_names.cpp).
 
 #include <string>
 
 #include "app/lua_ui_windows.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 
 namespace hailstone::app {
 

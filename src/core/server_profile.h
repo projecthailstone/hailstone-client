@@ -44,16 +44,30 @@ struct SavedAccount {
     bool save_password = false; // its password is in the system keyring (credential_server(host, port), username)
 };
 
+struct LoginHost {
+    std::string host;
+    int port = 5997;
+};
+
 struct ServerProfile {
     std::string id; // the folder name under servers/
     std::string name;
     std::string host;
     int port = 5997;
+    // Ordered fallback endpoints from eqhost.txt Host1, Host2, ... . The first host remains in host/port;
+    // alternate endpoints belong to the same login-server profile and do not create separate saved servers.
+    std::vector<LoginHost> login_fallbacks;
     std::string username;
     bool remember = true; // keep the username (the last account used) and the accounts list
     std::vector<SavedAccount> accounts; // in the order they were first used
     // The user interface used on this server (a folder of ui/, ui/ui_packs.h); empty means hailstone.ini ui.name.
     std::string ui;
+    // Application and session choices are separate, even while only RoF2/SOE
+    // is registered. Unknown names are preserved and rejected at endpoint
+    // creation; never silently reinterpret a TOB/custom profile as RoF2.
+    std::string game_codec = "rof2";
+    std::string session_protocol = "soe";
+    bool hailstone_extensions = false;
 };
 
 // A name made safe as one folder name on every file system: characters other than letters, digits, space, '-',
@@ -106,8 +120,9 @@ std::optional<ServerProfile> load_profile(std::string_view id,
 // error (false); use make_profile_id() for a new profile first.
 bool save_profile(const ServerProfile& profile, const std::filesystem::path& servers = platform::servers_dir());
 // The login server an EverQuest install's eqhost.txt names, as a new profile named after the host, with no id yet:
-// [LoginServer]'s first Host line (Host1, Host2 and other keys are not read), "name:port", "name", "[v6]:port" or a
-// bare IPv6 address. A missing port keeps ServerProfile's default (what the original does then is not confirmed:
+// [LoginServer]'s first Host and consecutive Host1, Host2, ... entries; Host is the primary and later hosts are
+// login_fallbacks. Each accepts "name:port", "name", "[v6]:port" or bare IPv6. A missing port keeps the profile
+// default (what the original does then is not confirmed:
 // docs/unknowns.md). A UTF-8 byte order mark is skipped. Nullopt when the text names none. A server's patcher ships
 // this file, so it is the first server's default (ui::load_login_settings).
 std::optional<ServerProfile> profile_from_eqhost(std::string_view text);

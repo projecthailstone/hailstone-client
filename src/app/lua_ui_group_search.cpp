@@ -1,5 +1,5 @@
 // The group finder: GroupSearchWnd (CGroupSearchWnd @0x679620) and GroupSearchFiltersWnd (CGroupSearchFiltersWnd
-// @0x675e60), over the fields, posts and results the connection keeps (net/game_connection_group_search.cpp) and
+// @0x675e60), over the fields, posts and results the connection keeps (net/connection/game_connection_group_search.cpp) and
 // the rules in game/group_search.h.
 
 #include <algorithm>
@@ -14,7 +14,7 @@
 #include "game/eq_names.h"
 #include "game/group_search.h"
 #include "game/zone_names.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 
 namespace hailstone::app {
 

@@ -1,6 +1,6 @@
 // The bazaar and barter windows: BazaarWnd (CBazaarWnd, the trader window), BazaarSearchWnd (CBazaarSearchWnd),
 // BazaarConfirmationWnd (CBazaarConfirmationWnd) and BarterMerchantWnd (CBarterMerchantWnd) over GameConnection's
-// market state (game/bazaar.h, net/game_connection_market.cpp). The connection keeps the original's rules; these
+// market state (game/bazaar.h, net/connection/game_connection_market.cpp). The connection keeps the original's rules; these
 // models lay its state out as the original windows do (addresses at each class).
 
 #include <algorithm>
@@ -17,7 +17,7 @@
 #include "game/bazaar.h"
 #include "game/client_options.h"
 #include "game/quantity_dialog.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "ui/ui_ini.h"
 
 namespace hailstone::app {

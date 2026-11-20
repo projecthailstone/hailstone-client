@@ -14,7 +14,7 @@
 #include "game/mechanics/shown_stats.h"
 #include "game/spells.h"
 #include "game/world_state.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 
 // Each case names the original's switch case (the label function's byte-table index, or the gauge type) and what
 // it reads (__GetLabelFromEQ, __GetGaugeValueFromEQ).

@@ -130,7 +130,7 @@ bool addon_allowed(const AddonRules& rules, std::string_view source);
 struct Rules {
     bool configured = false; // false: no hailstone.cfg, no rules
     // Before the zone-in's check of the server's files (world login, character select): the rules as the last login
-    // left them (net/server_files.h cached_server_rules). Only files whose capabilities include kCapLogin run; the
+    // left them (game/server_file_sync.h cached_server_rules). Only files whose capabilities include kCapLogin run; the
     // zone-in's rules replace these.
     bool provisional = false;
     std::filesystem::path dir; // servers/<profile>/ (empty: a login without one)

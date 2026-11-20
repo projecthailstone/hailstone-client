@@ -161,6 +161,10 @@ function W.begin(name, opts)
   end
   current.top, current.bottom = top, y + h - pd - hintH
   ui.SetCursorPos(pd, top - y)
+  -- ImGui stores its cursor coordinates as float32; the independent x/y/top
+  -- arithmetic above is Lua double precision. Use ImGui's snapped cursor as
+  -- the content origin so hit rectangles and area bounds agree exactly.
+  current.contentX, current.contentY = ui.GetCursorScreenPos()
   return true
 end
 
@@ -177,7 +181,9 @@ end
 -- The content area of the current window: x0, y0, x1, y1 (screen) and its width and height.
 function W.area()
   local c = current
-  return c.x + c.pd, c.top, c.x + c.w - c.pd, c.bottom, c.w - 2 * c.pd, c.bottom - c.top
+  local x0, y0 = c.contentX, c.contentY
+  local x1, y1 = c.x + c.w - c.pd, c.bottom
+  return x0, y0, x1, y1, x1 - x0, y1 - y0
 end
 
 -- Ends the window; true when it was asked to close (its close button, or B while it has the focus).

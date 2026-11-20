@@ -15,7 +15,7 @@
 #include "core/server_profile.h"
 #include "core/update_manifest.h"
 #include "core/version.h"
-#include "net/server_files.h"
+#include "game/server_file_sync.h"
 #include "platform/http_get.h"
 #include "platform/open_folder.h"
 #include "plugin/consent.h"

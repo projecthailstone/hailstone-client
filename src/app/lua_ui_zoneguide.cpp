@@ -5,7 +5,7 @@
 #include <string>
 
 #include "app/lua_ui_windows.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 
 namespace hailstone::app {
 

@@ -8,8 +8,9 @@
 #include "game/eq_names.h"
 #include "game/spells.h"
 #include "game/world_state.h"
-#include "net/game_connection.h"
-#include "net/pet_packets.h"
+#include "net/connection/game_connection.h"
+#include "net/messages/group.h"
+#include "net/messages/pet.h"
 
 namespace hailstone::app {
 

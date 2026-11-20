@@ -394,7 +394,7 @@ bool UdpSocket::open(Endpoint::Family family, std::string& error, const Endpoint
     WSAIoctl(s, SIO_UDP_CONNRESET, &report_resets, sizeof report_resets, nullptr, 0, &returned, nullptr, nullptr);
 #endif
     // The original client asks for 128 KiB socket buffers. The receive buffer is 2 MiB: the
-    // server's files come in bursts of up to net::ServerFileSync::kWindow pieces (net/server_files.h), which overflow
+    // server's files come in bursts of up to net::ServerFileSync::kWindow pieces (game/server_file_sync.h), which overflow
     // 128 KiB between two service passes, and EQEmu's resends of what was dropped back off for seconds.
     int buf = 0x20000;
     int rcvbuf = 0x200000;

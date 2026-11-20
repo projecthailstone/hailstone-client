@@ -170,7 +170,7 @@ void ClientApp::show_select_model() {
         return;
     }
     pre_game_shown_for_ = source;
-    const net::CharacterSelectEntry& e = list[static_cast<std::size_t>(i)];
+    const net::CharacterPreview& e = list[static_cast<std::size_t>(i)];
     // SetPlayerAppearanceFromPInfo @0x51c050 uses the roster's ShroudRace and ShroudClass for the preview.
     const auto model_race = e.shroud_race ? e.shroud_race : e.race;
     const auto model_class = e.shroud_class ? e.shroud_class : e.class_;
@@ -197,8 +197,8 @@ void ClientApp::show_select_model() {
     a.hair_color = e.hair_color;    // +0x148
     a.eye_color1 = e.eye_color1;    // +0x14a
     a.eye_color2 = e.eye_color2;    // +0x14b
-    a.texture = e.unknown15;        // +0x130 TextureType
-    a.helm = e.unknown19;           // +0x133 HeadType
+    a.texture = e.texture;        // +0x130 TextureType
+    a.helm = e.helm;           // +0x133 HeadType
     a.drakkin_heritage = e.drakkin_heritage;
     a.drakkin_tattoo = e.drakkin_tattoo;
     a.drakkin_details = e.drakkin_details;
@@ -221,7 +221,7 @@ void ClientApp::show_select_model() {
               e.beard_color, e.eye_color1, e.eye_color2, e.drakkin_heritage, e.drakkin_tattoo, e.drakkin_details);
     log::debug("character select: {} materials {} {} {} {} {} {} {} held {} {} texture {} head {}", e.name, a.material[0],
                a.material[1], a.material[2], a.material[3], a.material[4], a.material[5], a.material[6], a.material[7],
-               a.material[8], e.unknown15, e.unknown19);
+               a.material[8], e.texture, e.helm);
     switch_model_player();
 }
 

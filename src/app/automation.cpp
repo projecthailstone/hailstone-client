@@ -17,7 +17,7 @@
 #include "mq/commands.h"
 #include "mq/lua_mq.h"
 #include "mq/tlo.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "plugin/native_plugins.h"
 #include "plugin/policy.h"
 #include "plugin/ui_bridge.h"
@@ -204,8 +204,14 @@ Automation::Automation(AutomationEnv env) : impl_(std::make_unique<Impl>()) {
     se.set_max_camera_distance = m.env.set_max_camera_distance;
     se.send = [&m](plugin::Stream s, const net::AppPacket& p) {
         if (net::GameConnection* c = m.conn()) {
-            if (s == plugin::Stream::World) c->send_world_packet(p);
-            else c->send_zone_packet(p);
+            const auto scope = s == plugin::Stream::World ? net::messages::ServiceScope::World
+                                                           : net::messages::ServiceScope::Zone;
+            // A capability-checked script/plugin uses the explicit diagnostic wire port,
+            // not GameConnection's semantic send path or a codec bypass fallback.
+            if (auto* port = c->diagnostic_port(scope)) {
+                auto result = port->inject_wire(p);
+                if (!result) log::warn("plugin diagnostic send rejected: {}", result.error()->detail);
+            }
         }
     };
     // A compiled plugin's name, also one the add-on manager installed (built later than this env: asked at call time).
@@ -227,8 +233,14 @@ Automation::Automation(AutomationEnv env) : impl_(std::make_unique<Impl>()) {
     ne.run = ce.run;
     ne.send = [&m](plugin::Stream s, const net::AppPacket& p) {
         if (net::GameConnection* c = m.conn()) {
-            if (s == plugin::Stream::World) c->send_world_packet(p);
-            else c->send_zone_packet(p);
+            const auto scope = s == plugin::Stream::World ? net::messages::ServiceScope::World
+                                                           : net::messages::ServiceScope::Zone;
+            // A capability-checked script/plugin uses the explicit diagnostic wire port,
+            // not GameConnection's semantic send path or a codec bypass fallback.
+            if (auto* port = c->diagnostic_port(scope)) {
+                auto result = port->inject_wire(p);
+                if (!result) log::warn("plugin diagnostic send rejected: {}", result.error()->detail);
+            }
         }
     };
     ne.imgui_context = [] { return static_cast<void*>(ImGui::GetCurrentContext()); };

@@ -22,7 +22,7 @@
 #include "core/ascii_case.h"
 #include "game/social.h"
 #include "game/world_state.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "hailstone_plugin.h"
 
 namespace hailstone::plugin {

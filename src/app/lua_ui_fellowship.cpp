@@ -12,7 +12,8 @@
 #include "game/eq_names.h"
 #include "game/fellowship_categories.h"
 #include "game/zone_names.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
+#include "net/messages/fellowship.h"
 #include "platform/local_time.h"
 
 namespace hailstone::app {
@@ -335,7 +336,7 @@ public:
                 host.conn->show_eqstr(5422, {}, 0xd);
                 return;
             }
-            host.conn->send_zone_packet(net::AppPacket(kOpTrophyTributeRequest));
+            host.conn->send_zone_message(net::messages::outgoing(net::messages::GameOpcode::TrophyTributeRequest));
         }
         open_ = show;
     }
@@ -378,7 +379,7 @@ public:
     }
 
 private:
-    static constexpr std::uint16_t kOpTrophyTributeRequest = 0x51a9;
+
     ListData available_, active_;
     bool guild_ = false;
 };

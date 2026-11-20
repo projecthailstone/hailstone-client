@@ -3,7 +3,7 @@
 #include "game/eq_names.h"
 #include "game/zone_names.h"
 #include "mq/commands.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "ui/lua/lua_host.h"
 
 namespace hailstone::app {

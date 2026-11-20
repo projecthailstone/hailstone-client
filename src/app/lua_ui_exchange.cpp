@@ -26,8 +26,8 @@
 #include <imgui.h>
 
 #include "app/lua_ui_windows.h"
-#include "net/game_connection.h"
-#include "net/item_packets.h"
+#include "net/connection/game_connection.h"
+#include "net/messages/item.h"
 
 namespace hailstone::app {
 

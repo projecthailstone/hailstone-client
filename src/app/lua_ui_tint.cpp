@@ -12,8 +12,8 @@
 #include <string>
 
 #include "app/lua_ui_windows.h"
-#include "net/game_connection.h"
-#include "net/player_packets.h"
+#include "net/connection/game_connection.h"
+#include "net/messages/player_progress.h"
 
 namespace hailstone::app {
 

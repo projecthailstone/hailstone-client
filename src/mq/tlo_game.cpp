@@ -22,7 +22,7 @@
 #include "mq/spawn_search.h"
 #include "mq/tlo.h"
 #include "nav/nav_control.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 
 namespace hailstone::mq {
 

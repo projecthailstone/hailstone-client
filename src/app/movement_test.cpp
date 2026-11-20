@@ -6,7 +6,7 @@
 
 #include "assets/zone.h"
 #include "core/log.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 
 namespace hailstone::app {
 

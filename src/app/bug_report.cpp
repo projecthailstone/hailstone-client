@@ -193,11 +193,9 @@ std::string redact_private(std::string_view text, const std::vector<std::string>
 }
 
 std::string redact_chat(std::string_view text) {
-    // GameConnection::chat logs each line as "[info] chat: <the line>" (core/log.h), the crash report's last lines
-    // the same way: tells, guild and group chat are other players' words, and the report is posted in public. A
-    // chat text with a newline in it (a server's or a plugin's can have one) goes on over lines with no level's tag:
-    // those go too, up to the next tagged line.
-    static constexpr std::string_view kMark = "] chat: ";
+    // GameConnection::chat writes "[info] [file:line, function] chat: <the line>" (core/log.h).
+    // Older logs without a location also occur in reports. Both must remove chat, including multiline chat.
+    static constexpr std::string_view kMark = "chat: ";
     static constexpr std::string_view kWith = "(chat taken out of the report)";
     // Where a line's level tag ("[info]") ends, npos when it does not start with one.
     auto tag_end = [](std::string_view line) {
@@ -218,10 +216,19 @@ std::string redact_chat(std::string_view text) {
             if (!in_chat) out.append(line);
             continue;
         }
-        // The level's tag only: a line that merely holds "] chat: " further in stays.
-        in_chat = line.substr(close).starts_with(kMark);
+        // Skip the single source-location field when present. Do not mistake brackets in message text for it.
+        std::size_t message_at = close + 2;
+        if (line.substr(message_at).starts_with('[')) {
+            const std::size_t loc_end = line.find("] ", message_at + 1);
+            if (loc_end != std::string_view::npos) {
+                const std::string_view site = line.substr(message_at + 1, loc_end - message_at - 1);
+                if (site.find(':') != std::string_view::npos && site.find(", ") != std::string_view::npos)
+                    message_at = loc_end + 2;
+            }
+        }
+        in_chat = line.substr(message_at).starts_with(kMark);
         if (in_chat) {
-            out.append(line.substr(0, close + kMark.size()));
+            out.append(line.substr(0, message_at + kMark.size()));
             out += kWith;
             out += line.ends_with("\r\n") ? "\r\n" : line.ends_with('\n') ? "\n" : "";
         } else {

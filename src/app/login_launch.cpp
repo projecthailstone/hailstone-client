@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "core/ascii_case.h"
+#include "net/messages/login.h"
 
 namespace hailstone::app {
 
@@ -39,7 +40,7 @@ bool consume_login_launch_arg(LoginLaunch& launch, std::span<const std::string_v
         // value is cut short; Hailstone rejects it rather than send a truncated ticket. The explicit transports
         // accept larger opaque tickets as an extension.
         const bool too_long = native_ticket && ticket.size() > 63;
-        const bool valid = net::login_codec::valid_login_token(ticket);
+        const bool valid = net::messages::valid_login_token(ticket);
         if (valid && !too_long) launch.ticket.assign(ticket);
         if (from_env) core::wipe(*from_env);
         if (too_long)

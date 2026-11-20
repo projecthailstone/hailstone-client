@@ -1,7 +1,7 @@
 // The player windows: InspectWnd (CInspectWnd), ConfirmationDialogBox (CConfirmationDialogBoxWnd), BookWindow
 // (CBookWnd), NoteWindow (CNoteWnd), BandolierWnd (CBandolierWnd), TextEntryWnd (CTextEntryWnd),
 // LargeDialogWindow (CLargeDialogWnd) and TipWindow (CTipWnd, the context tips) over GameConnection's duel, inspect, book, bandolier and popup state
-// (net/game_connection_player.cpp). Each window's rules are its original's (addresses at each
+// (net/connection/game_connection_player.cpp). Each window's rules are its original's (addresses at each
 // class); what is not known is in docs/unknowns.md.
 
 #include <algorithm>
@@ -26,7 +26,7 @@
 #include "game/mechanics/character.h"
 #include "core/game_dir.h"
 #include "ui/ui_ini.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 
 namespace hailstone::app {
 

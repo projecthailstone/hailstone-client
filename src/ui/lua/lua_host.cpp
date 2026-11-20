@@ -482,7 +482,7 @@ struct LuaUi::Impl {
         callback_generations.erase(s.file);
         s.error = message ? message : "(error)";
         maintain_callbacks();
-        log::warn("ui script error: {}", s.error);
+        log::warn("ui script error ({}): {}", s.file, s.error);
     }
     // A window's draw function failed: the error goes to its script, or, for a window registered outside its folder's
     // loading (no file), to the window itself, shown and logged as a script's is.
@@ -491,7 +491,10 @@ struct LuaUi::Impl {
         if (!w.file.empty()) {
             for (Script& s : scripts)
                 if (s.file == w.file) {
-                    report(s, message);
+                    // Keep the failing window identity in the script's diagnostic; several
+                    // windows can be registered by one script and the error belongs to the draw.
+                    const std::string detail = w.name + ": " + (message ? message : "(error)");
+                    report(s, detail.c_str());
                     return;
                 }
         }
@@ -787,7 +790,18 @@ int lua_set_setting(lua_State* L) {
 
 // ui.Log(text)   -- a line in the client's log (diagnostics from scripts)
 int lua_log(lua_State* L) {
-    log::info("ui script: {}", luaL_checkstring(L, 1));
+    const char* message = luaL_checkstring(L, 1);
+    // Inspect the *Lua caller* (level 1), not this C binding (level 0). The restricted UI sandbox need not
+    // expose Lua's debug library to scripts: lua_getstack/lua_getinfo provide the same debug information here.
+    log::Location site{"unknown", 0, "?"};
+    lua_Debug ar{};
+    if (lua_getstack(L, 1, &ar) && lua_getinfo(L, "nSl", &ar)) {
+        if (ar.source && ar.source[0] == '@') site.file = ar.source + 1;
+        else if (ar.source && ar.source[0] != '=') site.file = ar.source;
+        if (ar.currentline > 0) site.line = static_cast<std::uint_least32_t>(ar.currentline);
+        if (ar.name && ar.name[0]) site.function = ar.name;
+    }
+    log::write_at(log::Level::Info, std::format("ui script: {}", message), site);
     return 0;
 }
 

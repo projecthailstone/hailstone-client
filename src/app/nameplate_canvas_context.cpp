@@ -3,7 +3,7 @@
 #include <cmath>
 #include "game/spa_ids.h"
 #include "game/world_state.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 
 namespace hailstone::app {
 namespace {

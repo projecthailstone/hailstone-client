@@ -161,9 +161,21 @@ std::optional<ServerProfile> load_profile(std::string_view id, const std::filesy
     p.name = ini.get_string("Server", "name", id);
     p.host = ini.get_string("Server", "host");
     p.port = ini.get_int("Server", "port", p.port);
+    // Host/Host1/... are an ordered set for a single login service. A hole terminates the list, as in eqmain.
+    for (int i = 1; i <= 32; ++i) {
+        const std::string suffix = std::to_string(i);
+        const std::string host = ini.get_string("LoginHosts", "host" + suffix);
+        if (host.empty()) break;
+        const int port = ini.get_int("LoginHosts", "port" + suffix, ServerProfile{}.port);
+        if (port < 1 || port > 65535) break;
+        p.login_fallbacks.push_back({host, port});
+    }
     p.username = ini.get_string("Server", "username");
     p.remember = ini.get_int("Server", "remember", 1) != 0;
     p.ui = ini.get_string("Server", "ui");
+    p.game_codec = ini.get_string("Protocol", "game_codec", "rof2");
+    p.session_protocol = ini.get_string("Protocol", "session_protocol", "soe");
+    p.hailstone_extensions = ini.get_int("Protocol", "hailstone_extensions", 0) != 0;
     for (const std::string& section : ini.sections()) {
         if (!section.starts_with(kAccountPrefix) || section.size() == kAccountPrefix.size()) continue;
         SavedAccount a;
@@ -198,11 +210,23 @@ bool save_profile(const ServerProfile& profile, const std::filesystem::path& ser
     ini.set("Server", "name", profile.name);
     ini.set("Server", "host", profile.host);
     ini.set_int("Server", "port", profile.port);
+    // Replace the full ordered fallback list, including obsolete entries from an earlier profile revision.
+    ini.erase_section("LoginHosts");
+    for (std::size_t i = 0; i < profile.login_fallbacks.size() && i < 32; ++i) {
+        const auto& host = profile.login_fallbacks[i];
+        if (host.host.empty() || host.port < 1 || host.port > 65535) break;
+        const std::string suffix = std::to_string(i + 1);
+        ini.set("LoginHosts", "host" + suffix, host.host);
+        ini.set_int("LoginHosts", "port" + suffix, host.port);
+    }
     if (profile.remember) ini.set("Server", "username", profile.username);
     else ini.erase("Server", "username");
     ini.set_int("Server", "remember", profile.remember ? 1 : 0);
     if (!profile.ui.empty()) ini.set("Server", "ui", profile.ui);
     else ini.erase("Server", "ui");
+    ini.set("Protocol", "game_codec", profile.game_codec);
+    ini.set("Protocol", "session_protocol", profile.session_protocol);
+    ini.set_int("Protocol", "hailstone_extensions", profile.hailstone_extensions ? 1 : 0);
     for (const std::string& section : ini.sections())
         if (section.starts_with(kAccountPrefix)) ini.erase_section(section);
     for (const SavedAccount& a : profile.accounts) {
@@ -313,7 +337,10 @@ std::optional<ServerProfile> profile_from_eqhost(std::string_view text) {
         while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.remove_suffix(1);
         return s;
     };
-    if (text.starts_with("\xEF\xBB\xBF")) text.remove_prefix(3); // a UTF-8 byte order mark
+    // eqmain's ReadHosts visits Host, Host1, Host2, ... until the first absent value.
+    // Keep their ordering and the existing 64 KiB file-input limit. The 32-entry cap bounds profile state.
+    std::array<std::optional<LoginHost>, 33> hosts{};
+    if (text.starts_with("\xEF\xBB\xBF")) text.remove_prefix(3);
     std::string_view section;
     while (!text.empty()) {
         const std::size_t end = text.find('\n');
@@ -324,20 +351,27 @@ std::optional<ServerProfile> profile_from_eqhost(std::string_view text) {
             section = trim(line.substr(1, close == std::string_view::npos ? std::string_view::npos : close - 1));
             continue;
         }
-        // Only [LoginServer]'s Host (or one before any section); Host1, Host2 and the like are not read.
         if (!section.empty() && !iequals(section, "LoginServer")) continue;
         const std::size_t eq = line.find('=');
-        if (eq == std::string_view::npos || !iequals(trim(line.substr(0, eq)), "host")) continue;
+        if (eq == std::string_view::npos) continue;
+        std::string_view key = trim(line.substr(0, eq));
+        if (key.size() < 4 || !iequals(key.substr(0, 4), "host")) continue;
+        std::size_t index = 0;
+        if (key.size() > 4) {
+            std::string_view digits = key.substr(4);
+            if (digits.empty() || digits.front() == '0') continue;
+            const auto [ptr, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), index);
+            if (ec != std::errc() || ptr != digits.data() + digits.size() || index > 32 || index == 0) continue;
+        }
+        // The first usable definition of a key wins, matching the earlier single-host importer.
+        if (hosts[index]) continue;
         std::string_view value = trim(line.substr(eq + 1));
-        // The port after the ':' when there is only one ("name:port"), or after "]" in "[v6]:port". A bare IPv6
-        // address has several and no port. Without a port the profile keeps ServerProfile's default: what the
-        // original client does then is not confirmed (docs/unknowns.md).
         std::string_view port_text;
         bool has_port = false;
         if (value.starts_with('[')) {
             const std::size_t close = value.find(']');
             if (close == std::string_view::npos) continue;
-            std::string_view rest = value.substr(close + 1);
+            const std::string_view rest = value.substr(close + 1);
             if (!rest.empty()) {
                 if (rest.front() != ':') continue;
                 port_text = rest.substr(1);
@@ -350,21 +384,28 @@ std::optional<ServerProfile> profile_from_eqhost(std::string_view text) {
             value = value.substr(0, colon);
             has_port = true;
         }
-        ServerProfile p;
+        LoginHost host;
         if (has_port) {
             port_text = trim(port_text);
             int port = 0;
             const auto [ptr, ec] = std::from_chars(port_text.data(), port_text.data() + port_text.size(), port);
-            if (ec != std::errc() || ptr != port_text.data() + port_text.size() || port < 1 || port > 65535) continue;
-            p.port = port;
+            if (ec != std::errc() || ptr != port_text.data() + port_text.size() || port < 1 || port > 65535)
+                continue;
+            host.port = port;
         }
         value = trim(value);
         if (value.empty()) continue;
-        p.host = std::string(value);
-        p.name = p.host;
-        return p;
+        host.host = std::string(value);
+        hosts[index] = std::move(host);
     }
-    return std::nullopt;
+    if (!hosts[0]) return std::nullopt;
+    ServerProfile profile;
+    profile.host = std::move(hosts[0]->host);
+    profile.port = hosts[0]->port;
+    profile.name = profile.host;
+    for (std::size_t i = 1; i < hosts.size() && hosts[i]; ++i)
+        profile.login_fallbacks.push_back(std::move(*hosts[i]));
+    return profile;
 }
 
 std::optional<ServerProfile> profile_from_eqhost_file(const std::filesystem::path& path) {

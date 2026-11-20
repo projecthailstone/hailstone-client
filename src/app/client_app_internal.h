@@ -105,8 +105,8 @@
 #include "game/zone_lines.h"
 #include "game/zone_names.h"
 #include "game/mechanics/touching_switch.h"
-#include "net/game_connection.h"
-#include "net/login.h"
+#include "net/connection/game_connection.h"
+#include "net/connection/login_client.h"
 #include "platform/child_processes.h"
 #include "platform/credentials.h"
 #include "platform/paths.h"
@@ -687,7 +687,7 @@ private:
     // Logs in with this saved server: its assets folder becomes the GameDir's overlay, and what was read from the
     // game files before login is read again when the layers change (reload_server_files).
     void apply_server_profile(const ServerProfile& profile);
-    // at_login false: the server's files came during the zone-in (net/server_files.h); the login music stays off.
+    // at_login false: the server's files came during the zone-in (game/server_file_sync.h); the login music stays off.
     void reload_server_files(bool at_login = true);
     // The server's [assets] rule (net::server_asset_only) on the overlay, from what its folder holds now; true when
     // what counts changed.

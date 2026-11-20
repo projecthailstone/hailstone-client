@@ -37,7 +37,7 @@
 #include "game/eq_names.h"
 #include "game/item_links.h"
 #include "game/spells.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "plugin/lua_keep.h"
 #include "platform/local_time.h"
 #include "ui/dev_screens.h"

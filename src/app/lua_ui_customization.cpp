@@ -17,7 +17,7 @@
 #include "game/appearance_data.h"
 #include "game/char_create_look.h"
 #include "game/player_customization.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 
 namespace hailstone::app {
 

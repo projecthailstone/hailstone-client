@@ -26,8 +26,9 @@
 #include "game/spell_display.h"
 #include "game/spells.h"
 #include "game/target_indicator.h"
-#include "net/game_connection.h"
-#include "net/spell_packets.h"
+#include "net/connection/game_connection.h"
+#include "net/messages/player_commands.h"
+#include "net/messages/spell.h"
 #include "platform/open_folder.h"
 
 namespace hailstone::app {

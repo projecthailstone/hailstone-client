@@ -20,9 +20,9 @@
 #include "game/coords.h"
 #include "game/inventory.h"
 #include "game/spells.h"
-#include "net/game_connection.h"
-#include "net/item_packets.h"
-#include "net/zone_packets.h"
+#include "net/connection/game_connection.h"
+#include "net/messages/item.h"
+#include "net/messages/zone.h"
 
 namespace hailstone::app {
 

@@ -4,6 +4,7 @@
 
 #include "app/client_app_internal.h"
 #include "app/lua_ui_windows.h"
+#include "net/messages/world.h"
 #include "core/env.h"
 #include "core/web_url.h"
 #include "platform/open_folder.h"

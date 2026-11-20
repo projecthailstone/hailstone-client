@@ -11,7 +11,7 @@
 #include "core/asset_folder_choice.h"
 #include "core/server_profile.h"
 #include "core/wipe.h"
-#include "net/login.h"
+#include "net/connection/login_client.h"
 
 namespace hailstone::app {
 

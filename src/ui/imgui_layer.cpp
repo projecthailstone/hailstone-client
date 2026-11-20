@@ -554,7 +554,17 @@ void keep_tab_from_windows() {
     // from a Tab meant for the game. Owned for the frame, the press is not ImGui's navigation's (it tests for no
     // owner), while ImGui::IsKeyPressed (any owner: a browser page's keys) still sees it. A field being typed in
     // leaves Tab alone, so it still moves to the next field.
-    if (GImGui->ActiveId == 0) ImGui::SetKeyOwner(ImGuiKey_Tab, ImHashStr("##GameTab"));
+    const ImGuiID game_tab = ImHashStr("##GameTab");
+    if (GImGui->ActiveId == 0) {
+        // Ownership is only for this frame. Holding it across frames would
+        // steal Tab after an edit field gains focus from a mouse click.
+        ImGui::SetKeyOwner(ImGuiKey_Tab, game_tab, ImGuiInputFlags_LockThisFrame);
+    } else if (ImGui::GetKeyOwner(ImGuiKey_Tab) == game_tab) {
+        // The keyboard owner is retained by ImGui until explicitly released. A
+        // text input may become active after the previous frame claimed Tab for
+        // the game; give it back before ImGui processes the next tab press.
+        ImGui::SetKeyOwner(ImGuiKey_Tab, ImGuiKeyOwner_NoOwner);
+    }
 }
 
 bool keyboard_for_ui(int requested) {

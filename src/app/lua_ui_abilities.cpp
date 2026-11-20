@@ -28,7 +28,7 @@
 #include "game/hotbuttons.h"
 #include "game/spell_gem.h"
 #include "game/mechanics/abilities.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 
 namespace hailstone::app {
 

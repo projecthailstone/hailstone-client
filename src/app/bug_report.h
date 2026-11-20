@@ -83,7 +83,7 @@ std::string scrub_settings(std::string_view text);
 // separator) written ~, and home's own name, as a folder name elsewhere (/run/media/<name>/), written <user>.
 std::string redact_private(std::string_view text, const std::vector<std::string>& accounts,
                            const std::filesystem::path& home);
-// `text` (a log) with the words of each chat line ("[info] chat: ...") taken out, the line itself kept.
+// `text` (a log) with the words of each chat line ("[info] [file:line, function] chat: ...") taken out, the line itself kept.
 std::string redact_chat(std::string_view text);
 // A crash report (platform/crash_log.cpp) with redact_chat() on its last log lines only: the stack written after
 // them ("\nstack:\n" and the frames, no level's tag) is never taken for a chat line's continuation.

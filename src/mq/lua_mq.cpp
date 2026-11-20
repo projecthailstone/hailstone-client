@@ -30,7 +30,7 @@
 #include "game/world_state.h"
 #include "mq/parse.h"
 #include "plugin/lua_keep.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "ui/lua/lua_host.h"
 
 namespace hailstone::mq {

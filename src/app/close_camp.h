@@ -7,7 +7,7 @@
 // next zone is entered, so closing the window still ends the client. A camp the player ended (standing, a second
 // /camp) is not started again.
 
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 
 namespace hailstone::app {
 

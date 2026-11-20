@@ -4,8 +4,11 @@
 #include <cstdint>
 #include <filesystem>
 #include <format>
+#include <source_location>
 #include <string>
 #include <string_view>
+#include <type_traits>
+#include <utility>
 
 namespace hailstone::log {
 
@@ -14,7 +17,16 @@ enum class Level { Debug, Info, Warn, Error };
 void set_level(Level level);
 // Whether a line at `level` is written at the level set now.
 bool enabled(Level level);
-void write(Level level, std::string_view message);
+// A non-C++ call site (Lua or a native plugin). Empty fields and a zero line are displayed as "unknown" / "?".
+// Names are views only for the duration of write_at(); the writer does not retain them.
+struct Location {
+    std::string_view file;
+    std::uint_least32_t line = 0;
+    std::string_view function;
+};
+void write_at(Level level, std::string_view message, Location site);
+// Direct C++ callers also capture their own location, not the logging implementation's location.
+void write(Level level, std::string_view message, std::source_location site = std::source_location::current());
 // Also writes every line to `path` from now on (the client's logs/hailstone.log), as well as to stdout and stderr.
 // The earlier runs' files are kept as <name>.1<ext> to <name>.3<ext> (hailstone.1.log is the last run's). A program
 // that runs while another holds `path` (a second client; <name>.lock beside it is the lock) leaves it alone and
@@ -38,21 +50,42 @@ std::size_t copy_recent_lines(char* out, std::size_t size);
 // backslash. Without a control character it is `message` itself (`scratch` is not touched, so
 // nothing is allocated); else the escaped text, in `scratch`.
 std::string_view escape_controls(std::string_view message, std::string& scratch);
+// Replace the username component of standard Unix/macOS/Windows home paths with
+// "redacted". A message without such a path is returned without copying it.
+// Called after escape_controls() and before any logging sink, including the
+// crash-report ring. `scratch` must not own `message`'s storage.
+std::string_view redact_home_paths(std::string_view message, std::string& scratch);
 
-// Debug lines are not formatted while the level leaves them out: the per-frame paths log a few (spawn appearances,
-// animations), and formatting them cost every frame.
-template <typename... Args> void debug(std::format_string<Args...> fmt, Args&&... args) {
+// std::format_string checks formatting arguments at compile time. Its wrapper also captures the call site's
+// std::source_location in its defaulted constructor argument, so existing log::info("{}", value) calls keep
+// their spelling and their call sites. Do not put source_location::current() inside info()/warn(): that would
+// report this header instead of the caller.
+template <typename... Args> struct LocatedFormat {
+    std::format_string<Args...> format;
+    std::source_location site;
+
+    template <std::size_t N>
+    consteval LocatedFormat(const char (&fmt)[N], std::source_location where = std::source_location::current())
+        : format(fmt), site(where) {}
+};
+
+// Debug messages are not formatted when disabled, including their format arguments.
+template <typename... Args>
+void debug(LocatedFormat<std::type_identity_t<Args>...> fmt, Args&&... args) {
     if (!enabled(Level::Debug)) return;
-    write(Level::Debug, std::format(fmt, std::forward<Args>(args)...));
+    write(Level::Debug, std::format(fmt.format, std::forward<Args>(args)...), fmt.site);
 }
-template <typename... Args> void info(std::format_string<Args...> fmt, Args&&... args) {
-    write(Level::Info, std::format(fmt, std::forward<Args>(args)...));
+template <typename... Args>
+void info(LocatedFormat<std::type_identity_t<Args>...> fmt, Args&&... args) {
+    write(Level::Info, std::format(fmt.format, std::forward<Args>(args)...), fmt.site);
 }
-template <typename... Args> void warn(std::format_string<Args...> fmt, Args&&... args) {
-    write(Level::Warn, std::format(fmt, std::forward<Args>(args)...));
+template <typename... Args>
+void warn(LocatedFormat<std::type_identity_t<Args>...> fmt, Args&&... args) {
+    write(Level::Warn, std::format(fmt.format, std::forward<Args>(args)...), fmt.site);
 }
-template <typename... Args> void error(std::format_string<Args...> fmt, Args&&... args) {
-    write(Level::Error, std::format(fmt, std::forward<Args>(args)...));
+template <typename... Args>
+void error(LocatedFormat<std::type_identity_t<Args>...> fmt, Args&&... args) {
+    write(Level::Error, std::format(fmt.format, std::forward<Args>(args)...), fmt.site);
 }
 
 } // namespace hailstone::log

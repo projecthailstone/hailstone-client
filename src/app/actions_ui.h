@@ -1,7 +1,7 @@
 #pragma once
 
 // Key bindings, hot buttons, skills and combat abilities: the glue between the original's rules
-// (game/keymap.h, game/hotbuttons.h, game/mechanics/abilities.h), the connection (net/ability_packets.h) and the
+// (game/keymap.h, game/hotbuttons.h, game/mechanics/abilities.h), the connection (net/protocol/rof2/packets/ability_packets.h) and the
 // developer windows drawn with Dear ImGui until the stock UI engine (M5): the hot bar (HotButtonWnd), the Actions
 // window (ActionsWnd: Main, Abilities, Combat and Socials pages, with every usable skill and its timer) and the key
 // binding window (the Keyboard page of the original's options window).

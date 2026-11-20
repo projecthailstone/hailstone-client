@@ -58,6 +58,18 @@ struct GameFolder {
     bool usable = true;  // it passed the check (a folder used before may be gone or changed since)
 };
 
+// Offered game protocols are explicit codec/transport pairs. Add an entry here
+// when both implementations are registered; an unknown saved choice is retained
+// and reported rather than silently replaced with RoF2.
+struct LoginProtocolChoice {
+    std::string_view name;
+    std::string_view codec;
+    std::string_view transport;
+};
+inline constexpr std::array<LoginProtocolChoice, 1> kLoginProtocols{{
+    {"RoF2", "rof2", "soe"},
+}};
+
 // What the updater (app/updater.h, docs/updater.md) has for the login screen. A Hailstone screen: the original had
 // a patcher before the client, not an update notice in it.
 struct UpdateNotice {
@@ -193,6 +205,12 @@ struct LoginView {
     std::vector<UiPack> ui_packs;
     std::string default_ui = "modern";
     std::string ui = "modern";
+    // The gameplay wire family and transport the picked server uses. The UI
+    // only offers known families, but unknown saved values remain round-tripped
+    // through the view until the player changes them.
+    std::string game_codec = "rof2";
+    std::string session_protocol = "soe";
+    bool hailstone_extensions = false;
     // A test login's server (--host/--port): no profile is picked or saved, and the profile controls are hidden.
     bool transient = false;
     // The game files every server's own files go over: the folder in use first, then the ones used before.

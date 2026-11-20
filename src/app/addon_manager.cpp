@@ -14,7 +14,7 @@
 #include "core/config.h"
 #include "core/log.h"
 #include "core/version.h"
-#include "net/server_files.h"
+#include "game/server_file_sync.h"
 #include "plugin/native_plugins.h"
 #include "plugin/policy.h"
 #include "platform/crash_log.h"

@@ -24,7 +24,7 @@
 #include "core/game_dir.h"
 #include "core/log.h"
 #include "game/coords.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 
 namespace hailstone::app {
 

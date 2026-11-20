@@ -10,7 +10,7 @@
 #include "core/log.h"
 #include "game/mechanics/anim_select.h"
 #include "game/world_state.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 
 namespace hailstone::app {
 

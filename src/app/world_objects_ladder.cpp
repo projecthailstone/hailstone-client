@@ -1,7 +1,7 @@
 #include "app/world_objects.h"
 
 #include "game/zone_ladders.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 
 namespace hailstone::app {
 

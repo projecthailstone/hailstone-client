@@ -21,7 +21,7 @@
 
 #include "game/inventory.h"
 #include "game/item_display.h"
-#include "net/item_packets.h"
+#include "net/messages/item.h"
 
 namespace hailstone { class GameDir; }
 namespace hailstone::render { class VkContext; }

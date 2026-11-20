@@ -90,6 +90,14 @@ bool enter_pressed() {
     return ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false);
 }
 
+std::string protocol_label(std::string_view game_codec, std::string_view session_protocol) {
+    for (const auto& choice : kLoginProtocols)
+        if (choice.codec == game_codec && choice.transport == session_protocol) return std::string(choice.name);
+    if (session_protocol.empty()) return std::string(game_codec);
+    if (game_codec.empty()) return std::string(session_protocol);
+    return std::string(game_codec) + " / " + std::string(session_protocol);
+}
+
 ImVec4 channel_color(ChatChannel c) {
     switch (c) {
     case ChatChannel::System: return {1.00f, 1.00f, 0.40f, 1.0f};
@@ -901,6 +909,23 @@ LoginAction login_screen(LoginView& view) {
             ImGui::SetTooltip("The look and layout of the game's windows on this server. Kept with the server.%s%s",
                 ui_pack && !ui_pack->available ? "\nUnavailable: " : "",
                 ui_pack && !ui_pack->available ? ui_pack->unavailable_reason.c_str() : "");
+
+        label("Protocol");
+        const std::string protocol_preview = protocol_label(view.game_codec, view.session_protocol);
+        if (ImGui::BeginCombo("##protocol", protocol_preview.c_str())) {
+            for (const auto& choice : kLoginProtocols) {
+                const bool selected =
+                    view.game_codec == choice.codec && view.session_protocol == choice.transport;
+                if (ImGui::Selectable(choice.name.data(), selected) && !selected) {
+                    view.game_codec = choice.codec;
+                    view.session_protocol = choice.transport;
+                    view.hailstone_extensions = false;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The gameplay packet codec and its session transport for this server.");
     }
     label("Username");
     // The server's saved accounts in a list beside the field: picking one fills its saved password.
@@ -1166,6 +1191,9 @@ void select_profile(LoginView& view, int index) {
     view.remember = p.remember;
     view.accounts = p.accounts;
     view.ui = p.ui.empty() ? view.default_ui : p.ui;
+    view.game_codec = p.game_codec;
+    view.session_protocol = p.session_protocol;
+    view.hailstone_extensions = p.hailstone_extensions;
     view.worlds = listed_worlds(p.id, view.servers_dir);
     for (const auto& a : view.accounts)
         for (const auto& c : a.characters)
@@ -1263,6 +1291,9 @@ void new_profile(LoginView& view) {
     view.password.clear();
     view.save_password = false;
     view.ui = view.default_ui;
+    view.game_codec = LoginView{}.game_codec;
+    view.session_protocol = LoginView{}.session_protocol;
+    view.hailstone_extensions = LoginView{}.hailstone_extensions;
 }
 
 bool select_profile_named(LoginView& view, std::string_view id_or_name) {
@@ -1288,6 +1319,9 @@ void begin_launcher_login_view(LoginView& view, const ServerProfile& profile) {
     view.host = profile.host;
     view.port = profile.port;
     view.ui = profile.ui;
+    view.game_codec = profile.game_codec;
+    view.session_protocol = profile.session_protocol;
+    view.hailstone_extensions = profile.hailstone_extensions;
     view.username.clear();
     core::wipe(view.password);
     view.remember = false;
@@ -1303,6 +1337,9 @@ void end_launcher_login_view(LoginView& view, std::string_view profile_id, const
         view.host = endpoint->host;
         view.port = std::clamp(endpoint->port, 1, 65535);
         if (!endpoint->ui.empty()) view.ui = endpoint->ui;
+        view.game_codec = endpoint->game_codec;
+        view.session_protocol = endpoint->session_protocol;
+        view.hailstone_extensions = endpoint->hailstone_extensions;
         return;
     }
     select_profile(view, view.profiles.empty() ? -1 : 0);
@@ -1318,9 +1355,13 @@ ServerProfile profile_from_view(const LoginView& view) {
         return std::string(s);
     };
     p.name = trim(view.name);
-    p.host = trim(view.host);
+    const auto primary_host = trim(view.host);
+    const auto primary_port = std::clamp(view.port, 1, 65535);
+    // Backups imported for the old primary must not leak into a different server edited in the UI.
+    if (p.host != primary_host || p.port != primary_port) p.login_fallbacks.clear();
+    p.host = primary_host;
     if (p.name.empty()) p.name = p.host;
-    p.port = std::clamp(view.port, 1, 65535);
+    p.port = primary_port;
     p.username = view.username;
     p.remember = view.remember;
     p.accounts = view.accounts;
@@ -1334,6 +1375,9 @@ ServerProfile profile_from_view(const LoginView& view) {
         a->save_password = view.save_password && can_save_passwords(view);
     }
     p.ui = view.ui;
+    p.game_codec = view.game_codec;
+    p.session_protocol = view.session_protocol;
+    p.hailstone_extensions = view.hailstone_extensions;
     if (view.transient) p.id.clear();
     else if (!picked) p.id = make_profile_id(p.name, view.servers_dir);
     return p;

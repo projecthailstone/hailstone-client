@@ -7,7 +7,7 @@
 #include "app/lua_ui.h"
 #include "app/addon_install.h"
 #include "core/asset_folder.h"
-#include "net/server_files.h"
+#include "game/server_file_sync.h"
 #include "ui/ui_ini.h"
 #include "platform/open_folder.h"
 #include "plugin/policy.h"
@@ -18,6 +18,23 @@
 namespace hailstone::app::client_internal {
 
 namespace {
+
+std::vector<net::LoginClient::Host> login_hosts(const ServerProfile& profile) {
+    std::vector<net::LoginClient::Host> hosts;
+    if (!profile.host.empty() && profile.port >= 1 && profile.port <= 65535)
+        hosts.push_back({profile.host, static_cast<std::uint16_t>(profile.port)});
+    for (const auto& fallback : profile.login_fallbacks) {
+        if (fallback.host.empty() || fallback.port < 1 || fallback.port > 65535) continue;
+        hosts.push_back({fallback.host, static_cast<std::uint16_t>(fallback.port)});
+    }
+    return hosts;
+}
+
+std::unique_ptr<net::LoginClient> make_login_client(const ServerProfile& profile) {
+    net::LoginClient::Options options;
+    options.session_protocol = profile.session_protocol;
+    return std::make_unique<net::LoginClient>(std::move(options));
+}
 
 // True when the folder holds a file at any depth (an overlay that changes nothing has none).
 bool has_files(const std::optional<std::filesystem::path>& dir) {
@@ -54,9 +71,8 @@ void ClientApp::start_token_login(bool named_server, const std::filesystem::path
     ui_selection_error_.clear(); // the launcher starts a new login context
     server_profile_ = std::move(profile);
     token_login_active_ = true;
-    login_ = std::make_unique<net::LoginClient>();
-    login_->start_token(server_profile_.host, static_cast<std::uint16_t>(server_profile_.port),
-                         opts_.login_launch.ticket);
+    login_ = make_login_client(server_profile_);
+    login_->start_token(login_hosts(server_profile_), opts_.login_launch.ticket);
     core::wipe(opts_.login_launch.ticket);
     auto_play_sent_ = false;
 }
@@ -76,8 +92,8 @@ void ClientApp::start_session_login() {
     login_view_.save_password = false;
     login_view_.busy = true;
     login_view_.status = {"Signing in with session...", false};
-    login_ = std::make_unique<net::LoginClient>();
-    login_->start_token(profile.host, static_cast<std::uint16_t>(profile.port), renewed.ticket);
+    login_ = make_login_client(profile);
+    login_->start_token(login_hosts(profile), renewed.ticket);
     apply_server_profile(profile);
     use_ui_pack(profile.ui);
     auto_play_sent_ = false;
@@ -101,9 +117,8 @@ void ClientApp::start_login() {
     login_view_.busy = true;
     apply_server_profile(profile);
     use_ui_pack(profile.ui);
-    login_ = std::make_unique<net::LoginClient>();
-    login_->start(profile.host, static_cast<std::uint16_t>(profile.port), login_view_.username,
-                  login_view_.password);
+    login_ = make_login_client(profile);
+    login_->start(login_hosts(profile), login_view_.username, login_view_.password);
     auto_play_sent_ = false;
 }
 
@@ -855,6 +870,15 @@ void ClientApp::start_game(const net::WorldTicket& ticket) {
     // The add-on policy is decided against the rules this world session's zone-in brings, never the cached ones.
     addon_admission_.reset();
     net::ConnectionOptions copts;
+    copts.world_protocol.game_codec = server_profile_.game_codec;
+    copts.zone_protocol.game_codec = server_profile_.game_codec;
+    copts.world_protocol.session_protocol = server_profile_.session_protocol;
+    copts.zone_protocol.session_protocol = server_profile_.session_protocol;
+    copts.world_protocol.session_config.protocol = server_profile_.session_protocol;
+    copts.zone_protocol.session_config.protocol = server_profile_.session_protocol;
+    copts.zone_protocol.extension_codecs =
+        server_profile_.hailstone_extensions ? std::vector<std::string>{"hailstone"}
+                                            : std::vector<std::string>{};
     if (automation_) {
         copts.hooks = &automation_->hooks();
         copts.plugins = automation_->extensions(); // the plugins' server extensions (sdk/hailstone_plugin.h, ABI 2)
@@ -865,10 +889,10 @@ void ClientApp::start_game(const net::WorldTicket& ticket) {
                          : server_profile_.id;
     copts.profile_id = files_profile_;
     copts.bank_snapshot_file = true; // the bank as last seen, in the character's bank.dat
-    // A saved server's client files come at the first zone-in, into its assets/ (net/server_files.h).
+    // A saved server's client files come at the first zone-in, into its assets/ (game/server_file_sync.h).
     if (!server_profile_.id.empty()) {
         copts.server_files_dir = profile_assets_dir(server_profile_.id, login_view_.servers_dir).parent_path();
-        // Bounds on what the server may make this write (net/server_files.h), in MB; 0 or less keeps the default.
+        // Bounds on what the server may make this write (game/server_file_sync.h), in MB; 0 or less keeps the default.
         auto mb = [&](std::string_view key, std::uint64_t fallback) {
             const int v = config_.get_int(key, 0);
             return v > 0 ? static_cast<std::uint64_t>(v) << 20 : fallback;

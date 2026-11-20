@@ -3,7 +3,7 @@
 // Developer merchant, trade, give and bank windows and the quantity dialog drawn with Dear ImGui until the
 // stock UI engine (M5): what CMerchantWnd, CTradeWnd and CGiveWnd show
 // (CMerchantWnd's child items and the
-// functions named in net/game_connection_commerce.cpp). Like
+// functions named in net/connection/game_connection_commerce.cpp). Like
 // ui/item_windows.h they draw from game state and return what the player
 // asked for; none of them does networking.
 
@@ -15,8 +15,8 @@
 
 #include "game/bank.h"
 #include "game/inventory.h"
-#include "net/commerce.h"
-#include "net/item_packets.h"
+#include "game/commerce_sessions.h"
+#include "net/messages/item.h"
 
 namespace hailstone::ui {
 

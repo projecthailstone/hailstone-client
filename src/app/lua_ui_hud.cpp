@@ -20,7 +20,7 @@
 #include "ui/ui_ini.h"
 #include "game/hot_button_menu.h"
 #include "game/hot_button_sets.h"
-#include "net/market_packets.h"
+#include "net/messages/market.h"
 #include "game/hotbuttons.h"
 #include "core/game_dir.h"
 #include "game/spell_gem.h"
@@ -29,7 +29,8 @@
 #include "game/spells.h"
 #include "game/world_state.h"
 #include "mq/lua_mq.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
+#include "net/messages/group.h"
 
 namespace hailstone::app {
 

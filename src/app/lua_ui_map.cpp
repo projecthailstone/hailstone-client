@@ -62,7 +62,7 @@
 #include "game/world_state.h"
 #include "game/zone_names.h"
 #include "game/zone_routes.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "plugin/lua_keep.h"
 #include "ui/dev_screens.h"
 #include "ui/lua/lua_host.h"

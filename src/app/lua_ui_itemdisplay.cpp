@@ -27,8 +27,8 @@
 #include "game/mechanics/character.h"
 #include "game/server_ext.h"
 #include "game/spells.h"
-#include "net/game_connection.h"
-#include "net/evolving_packets.h"
+#include "net/connection/game_connection.h"
+#include "net/messages/evolving.h"
 #include "ui/lua/lua_host.h"
 
 namespace hailstone::app {

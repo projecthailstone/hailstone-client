@@ -13,32 +13,32 @@ namespace hailstone::mq {
 namespace {
 
 // MQ's eCalcOp. Number and the parentheses take no part in precedence.
-enum class Op : std::uint8_t {
+enum class CalcOp : std::uint8_t {
     Number, Open, Close, Add, Subtract, Multiply, Divide, IntDivide, LogicalAnd, And, LogicalOr, Or, Xor, Equal,
     NotEqual, Greater, NotGreater, Less, NotLess, Modulus, Power, LogicalNot, Not, ShiftLeft, ShiftRight, Negate,
 };
 
-int precedence(Op op) {
+int precedence(CalcOp op) {
     switch (op) {
-    case Op::Number: case Op::Open: case Op::Close: return 0;
-    case Op::LogicalOr: return 1;
-    case Op::LogicalAnd: return 2;
-    case Op::Or: return 3;
-    case Op::Xor: return 4;
-    case Op::And: return 5;
-    case Op::Equal: case Op::NotEqual: return 6;
-    case Op::Greater: case Op::NotGreater: case Op::Less: case Op::NotLess: return 7;
-    case Op::ShiftLeft: case Op::ShiftRight: return 8;
-    case Op::Add: case Op::Subtract: return 9;
-    case Op::Multiply: case Op::Divide: case Op::IntDivide: case Op::Modulus: return 10;
-    case Op::Power: return 11;
-    case Op::LogicalNot: case Op::Not: case Op::Negate: return 12;
+    case CalcOp::Number: case CalcOp::Open: case CalcOp::Close: return 0;
+    case CalcOp::LogicalOr: return 1;
+    case CalcOp::LogicalAnd: return 2;
+    case CalcOp::Or: return 3;
+    case CalcOp::Xor: return 4;
+    case CalcOp::And: return 5;
+    case CalcOp::Equal: case CalcOp::NotEqual: return 6;
+    case CalcOp::Greater: case CalcOp::NotGreater: case CalcOp::Less: case CalcOp::NotLess: return 7;
+    case CalcOp::ShiftLeft: case CalcOp::ShiftRight: return 8;
+    case CalcOp::Add: case CalcOp::Subtract: return 9;
+    case CalcOp::Multiply: case CalcOp::Divide: case CalcOp::IntDivide: case CalcOp::Modulus: return 10;
+    case CalcOp::Power: return 11;
+    case CalcOp::LogicalNot: case CalcOp::Not: case CalcOp::Negate: return 12;
     }
     return 0;
 }
 
 struct Item {
-    Op op = Op::Number;
+    CalcOp op = CalcOp::Number;
     double value = 0;
 };
 
@@ -67,24 +67,24 @@ bool evaluate(const std::vector<Item>& list, double& result) {
         return true;
     };
     for (const Item& it : list) {
-        if (it.op == Op::Number) {
+        if (it.op == CalcOp::Number) {
             push(it.value);
             continue;
         }
-        if (it.op == Op::Open || it.op == Op::Close) continue; // an unclosed '(' left on the stack
-        if (it.op == Op::Negate) { top() = -top(); continue; }
-        if (it.op == Op::LogicalNot) { top() = to_int(top()) == 0 ? 1.0 : 0.0; continue; }
-        if (it.op == Op::Not) { top() = static_cast<double>(~to_int(top())); continue; }
-        if (it.op == Op::Divide && top() == 0.0) return false; // MQ checks before taking the operand
-        if (it.op == Op::IntDivide || it.op == Op::Modulus) {
+        if (it.op == CalcOp::Open || it.op == CalcOp::Close) continue; // an unclosed '(' left on the stack
+        if (it.op == CalcOp::Negate) { top() = -top(); continue; }
+        if (it.op == CalcOp::LogicalNot) { top() = to_int(top()) == 0 ? 1.0 : 0.0; continue; }
+        if (it.op == CalcOp::Not) { top() = static_cast<double>(~to_int(top())); continue; }
+        if (it.op == CalcOp::Divide && top() == 0.0) return false; // MQ checks before taking the operand
+        if (it.op == CalcOp::IntDivide || it.op == CalcOp::Modulus) {
             const std::int32_t right = to_int(top());
             if (right == 0) return false;
             if (!pop()) return false;
             const std::int32_t left = to_int(top());
             if (left == std::numeric_limits<std::int32_t>::min() && right == -1) // a divide fault in MQ
-                top() = it.op == Op::IntDivide ? static_cast<double>(left) : 0.0;
+                top() = it.op == CalcOp::IntDivide ? static_cast<double>(left) : 0.0;
             else
-                top() = static_cast<double>(it.op == Op::IntDivide ? left / right : left % right);
+                top() = static_cast<double>(it.op == CalcOp::IntDivide ? left / right : left % right);
             continue;
         }
         const double right = top();
@@ -93,25 +93,25 @@ bool evaluate(const std::vector<Item>& list, double& result) {
         const std::int32_t li = to_int(left), ri = to_int(right);
         const auto u = [](std::int32_t v) { return static_cast<std::uint32_t>(v); };
         switch (it.op) {
-        case Op::Add: left += right; break;
-        case Op::Subtract: left -= right; break;
-        case Op::Multiply: left *= right; break;
-        case Op::Divide: left /= right; break;
-        case Op::LogicalAnd: left = (left != 0.0 && right != 0.0) ? 1.0 : 0.0; break;
-        case Op::LogicalOr: left = (left != 0.0 || right != 0.0) ? 1.0 : 0.0; break;
-        case Op::Equal: left = left == right ? 1.0 : 0.0; break;
-        case Op::NotEqual: left = left != right ? 1.0 : 0.0; break;
-        case Op::Greater: left = left > right ? 1.0 : 0.0; break;
-        case Op::NotGreater: left = left <= right ? 1.0 : 0.0; break;
-        case Op::Less: left = left < right ? 1.0 : 0.0; break;
-        case Op::NotLess: left = left >= right ? 1.0 : 0.0; break;
+        case CalcOp::Add: left += right; break;
+        case CalcOp::Subtract: left -= right; break;
+        case CalcOp::Multiply: left *= right; break;
+        case CalcOp::Divide: left /= right; break;
+        case CalcOp::LogicalAnd: left = (left != 0.0 && right != 0.0) ? 1.0 : 0.0; break;
+        case CalcOp::LogicalOr: left = (left != 0.0 || right != 0.0) ? 1.0 : 0.0; break;
+        case CalcOp::Equal: left = left == right ? 1.0 : 0.0; break;
+        case CalcOp::NotEqual: left = left != right ? 1.0 : 0.0; break;
+        case CalcOp::Greater: left = left > right ? 1.0 : 0.0; break;
+        case CalcOp::NotGreater: left = left <= right ? 1.0 : 0.0; break;
+        case CalcOp::Less: left = left < right ? 1.0 : 0.0; break;
+        case CalcOp::NotLess: left = left >= right ? 1.0 : 0.0; break;
         // x86 takes a shift count modulo 32; a left shift wraps.
-        case Op::ShiftLeft: left = static_cast<double>(static_cast<std::int32_t>(u(li) << (u(ri) & 31u))); break;
-        case Op::ShiftRight: left = static_cast<double>(li >> (u(ri) & 31u)); break;
-        case Op::And: left = static_cast<double>(li & ri); break;
-        case Op::Or: left = static_cast<double>(li | ri); break;
-        case Op::Xor: left = static_cast<double>(li ^ ri); break;
-        case Op::Power: left = std::pow(left, right); break;
+        case CalcOp::ShiftLeft: left = static_cast<double>(static_cast<std::int32_t>(u(li) << (u(ri) & 31u))); break;
+        case CalcOp::ShiftRight: left = static_cast<double>(li >> (u(ri) & 31u)); break;
+        case CalcOp::And: left = static_cast<double>(li & ri); break;
+        case CalcOp::Or: left = static_cast<double>(li | ri); break;
+        case CalcOp::Xor: left = static_cast<double>(li ^ ri); break;
+        case CalcOp::Power: left = std::pow(left, right); break;
         default: break;
         }
     }
@@ -138,24 +138,24 @@ std::optional<double> calculate(std::string_view formula) {
     replace_all("FALSE", "0.000");
 
     std::vector<Item> out;
-    std::vector<Op> st(1, Op::Number); // slot 0: the top of an empty stack (MQ's zeroed array)
+    std::vector<CalcOp> st(1, CalcOp::Number); // slot 0: the top of an empty stack (MQ's zeroed array)
     std::size_t n = 0;
     std::string token;
     const auto finish = [&]() {
         if (token.empty()) return;
         double v = 0;
         float_from_chars(token.data(), token.data() + token.size(), v); // a failed read leaves 0, as MQ's does
-        out.push_back({Op::Number, v});
+        out.push_back({CalcOp::Number, v});
         token.clear();
     };
-    const auto push = [&](Op op) {
+    const auto push = [&](CalcOp op) {
         ++n;
         if (st.size() <= n) st.push_back(op);
         else st[n] = op;
     };
-    const auto new_op = [&](Op op) {
+    const auto new_op = [&](CalcOp op) {
         finish();
-        while (n > 0 && st[n] != Op::Open && precedence(st[n]) >= precedence(op)) out.push_back({st[n--], 0});
+        while (n > 0 && st[n] != CalcOp::Open && precedence(st[n]) >= precedence(op)) out.push_back({st[n--], 0});
         push(op);
     };
     const auto at = [&](std::size_t i) { return i < text.size() ? text[i] : '\0'; };
@@ -168,11 +168,11 @@ std::optional<double> calculate(std::string_view formula) {
         case ' ': continue; // (keeps was_paren)
         case '(':
             finish();
-            push(Op::Open);
+            push(CalcOp::Open);
             break;
         case ')':
             finish();
-            while (st[n] != Op::Open) {
+            while (st[n] != CalcOp::Open) {
                 if (n == 0) return std::nullopt; // no '(' to close
                 out.push_back({st[n--], 0});
             }
@@ -180,49 +180,49 @@ std::optional<double> calculate(std::string_view formula) {
             was_paren = true;
             continue;
         case '+':
-            if (next != '+') new_op(Op::Add);
+            if (next != '+') new_op(CalcOp::Add);
             break;
         case '-':
             if (next == '-') {
                 ++i;
-                new_op(Op::Add);
+                new_op(CalcOp::Add);
             } else {
-                new_op(!token.empty() || was_paren ? Op::Subtract : Op::Negate);
+                new_op(!token.empty() || was_paren ? CalcOp::Subtract : CalcOp::Negate);
             }
             break;
-        case '*': new_op(Op::Multiply); break;
-        case '\\': new_op(Op::IntDivide); break;
-        case '/': new_op(Op::Divide); break;
-        case '%': new_op(Op::Modulus); break;
-        case '~': new_op(Op::Not); break;
+        case '*': new_op(CalcOp::Multiply); break;
+        case '\\': new_op(CalcOp::IntDivide); break;
+        case '/': new_op(CalcOp::Divide); break;
+        case '%': new_op(CalcOp::Modulus); break;
+        case '~': new_op(CalcOp::Not); break;
         case '|':
             if (next == '|') ++i;
-            new_op(next == '|' ? Op::LogicalOr : Op::Or);
+            new_op(next == '|' ? CalcOp::LogicalOr : CalcOp::Or);
             break;
         case '&':
             if (next == '&') ++i;
-            new_op(next == '&' ? Op::LogicalAnd : Op::And);
+            new_op(next == '&' ? CalcOp::LogicalAnd : CalcOp::And);
             break;
         case '^':
             if (next == '^') ++i;
-            new_op(next == '^' ? Op::Xor : Op::Power);
+            new_op(next == '^' ? CalcOp::Xor : CalcOp::Power);
             break;
         case '!':
             if (next == '=') ++i;
-            new_op(next == '=' ? Op::NotEqual : Op::LogicalNot);
+            new_op(next == '=' ? CalcOp::NotEqual : CalcOp::LogicalNot);
             break;
         case '=':
             if (next != '=') return std::nullopt;
             ++i;
-            new_op(Op::Equal);
+            new_op(CalcOp::Equal);
             break;
         case '<':
             if (next == '=' || next == '<') ++i;
-            new_op(next == '=' ? Op::NotGreater : next == '<' ? Op::ShiftLeft : Op::Less);
+            new_op(next == '=' ? CalcOp::NotGreater : next == '<' ? CalcOp::ShiftLeft : CalcOp::Less);
             break;
         case '>':
             if (next == '=' || next == '>') ++i;
-            new_op(next == '=' ? Op::NotLess : next == '>' ? Op::ShiftRight : Op::Greater);
+            new_op(next == '=' ? CalcOp::NotLess : next == '>' ? CalcOp::ShiftRight : CalcOp::Greater);
             break;
         default:
             if ((c >= '0' && c <= '9') || c == '.') {

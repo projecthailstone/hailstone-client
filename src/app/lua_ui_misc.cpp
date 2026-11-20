@@ -22,8 +22,8 @@
 #include "game/world_state.h"
 #include "game/zone_names.h"
 #include "game/tracking.h"
-#include "net/game_connection.h"
-#include "net/pet_packets.h"
+#include "net/connection/game_connection.h"
+#include "net/messages/pet.h"
 #include "ui/ui_ini.h"
 
 namespace hailstone::app {

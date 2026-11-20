@@ -3,7 +3,7 @@
 #include <imgui.h>
 
 #include "core/log.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "game/server_ext.h"
 
 namespace hailstone::app {

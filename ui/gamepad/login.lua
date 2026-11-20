@@ -522,6 +522,21 @@ local function serverPage(v, x0, y, x1, w)
     openEdit({ field = "port", title = "Port", text = tostring(v.port), digits = true, back = "##port", submit = true })
   end
   y = y + 3 * (rh + gap)
+  local protocolName = v.gameCodec
+  local choices = {}
+  for _, choice in ipairs(v.protocols) do
+    local selected = choice.id == v.gameCodec and choice.transport == v.sessionProtocol
+    if selected then protocolName = choice.name end
+    choices[#choices + 1] = { label = choice.name, current = selected,
+      sub = "Game packet format  ·  " .. choice.transport,
+      fn = function() API.pregame.LoginSet("protocol", choice.id) end }
+  end
+  P.at(x0, y)
+  if P.field(F, "##protocol", "Protocol", protocolName, w, rh,
+        { chevron = true, disabled = busy }) then
+    openPick("Protocol", choices, "##protocol")
+  end
+  y = y + rh + gap
   P.at(x0, y)
   local files = picked and v.assetsDir or "A folder made when the server is saved"
   if P.field(F, "##files", "Server files", picked and fitStart(files, w - px(420)) or files, w, rh,

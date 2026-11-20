@@ -11,7 +11,7 @@
 #include "core/ascii_case.h"
 #include "game/conversation_journal.h"
 #include "game/zone_names.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "ui/ui_ini.h"
 
 namespace hailstone::app {

@@ -13,7 +13,7 @@
 #include <lua.hpp>
 
 #include "app/lua_ui_record.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "plugin/lua_keep.h"
 
 namespace hailstone::app {

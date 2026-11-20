@@ -4,7 +4,7 @@
 #include <cmath>
 
 #include "core/log.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 
 namespace hailstone::app {
 

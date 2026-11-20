@@ -26,7 +26,6 @@
 #include "core/log.h"
 #include "core/process_serial.h"
 #include "game/targeting.h"
-#include "net/item_packets.h"
 #include "core/sha256.h"
 #include "game/chat_text.h"
 #include "game/combat.h"
@@ -42,8 +41,7 @@
 #include "game/zone_names.h"
 #include "mq/parse.h"
 #include "mq/tlo.h"
-#include "net/game_connection.h"
-#include "net/social_packets.h"
+#include "net/connection/game_connection.h"
 #include "plugin/native_nameplates.h"
 #include "plugin/plugin_tcp.h"
 #include "plugin/ui_bridge.h"
@@ -685,11 +683,14 @@ const char* h_name(void* h) { return Loaded::of(h).name.c_str(); }
 
 void h_log(void* h, int level, const char* text) {
     std::string line = std::format("plugin {}: {}", Loaded::of(h).name, text ? text : "");
+    // The existing native plugin ABI passes a severity and text, not a source position. Report that missing
+    // metadata explicitly rather than incorrectly attributing a plugin's call to this host callback.
+    const log::Location site{"native plugin", 0, "?"};
     switch (level) {
-    case 0: log::debug("{}", line); break;
-    case 2: log::warn("{}", line); break;
-    case 3: log::error("{}", line); break;
-    default: log::info("{}", line); break;
+    case 0: log::write_at(log::Level::Debug, line, site); break;
+    case 2: log::write_at(log::Level::Warn, line, site); break;
+    case 3: log::write_at(log::Level::Error, line, site); break;
+    default: log::write_at(log::Level::Info, line, site); break;
     }
 }
 
@@ -1498,18 +1499,17 @@ int h_select_raid_member(void* h, std::uint32_t id, std::uint64_t incarnation) {
     c->set_target(id);
     return 1;
 }
-std::optional<net::ItemPacket> received_item(const void* data, std::size_t size) {
-    if (!data || size < 4 || size > 262144) return std::nullopt;
-    net::AppPacket packet; packet.data.resize(size); std::memcpy(packet.data.data(), data, size);
-    return net::decode_item_packet(packet);
+std::optional<net::Item> received_item(const net::GameConnection* connection, const void* data, std::size_t size) {
+    if (!connection || !data || size < 4 || size > 262144) return std::nullopt;
+    return connection->inspect_item_wire({static_cast<const std::byte*>(data), size});
 }
 int h_decode_item_packet(void* h, const void* data, std::size_t size, HailstoneItemSlot* slot, HailstoneItem* out) {
     auto& l = Loaded::of(h);
     if (!slot || !out || !readable(l, "decode_item_packet")) return 0;
-    const auto item = received_item(data, size);
-    if (!item || !item->item.id) return 0;
-    const auto& s = item->item.slot;
-    if (!give(out, item_struct(item->item))) return 0;
+    const auto item = received_item(connection_of(l), data, size);
+    if (!item || !item->id) return 0;
+    const auto& s = item->slot;
+    if (!give(out, item_struct(*item))) return 0;
     *slot = {s.type, s.slot, s.sub, s.aug};
     return 1;
 }
@@ -1517,9 +1517,10 @@ int h_inspect_item_packet(void* h, const void* data, std::size_t size) {
     auto& l = Loaded::of(h);
     if (!l.active || !l.can(kCapRead | kCapUi)) return 0;
     auto* c = connection_of(l);
-    const auto item = received_item(data, size);
-    if (!c || !c->in_zone() || !item || !item->item.id) return 0;
-    c->inspect_received_item(item->item); return 1;
+    if (!c || !c->in_zone()) return 0;
+    const auto item = received_item(c, data, size);
+    if (!item || !item->id) return 0;
+    c->inspect_received_item(*item); return 1;
 }
 int h_manual_follow(void* h, const char* action) {
     auto& l = Loaded::of(h);
@@ -2056,7 +2057,7 @@ int32_t h_get_xtarget_data_bulk(void* h, unsigned char* data, int32_t datamax)
         rec->id = static_cast<int32_t>(x.spawn_id);
         auto it = x.spawn_id ? world.spawns.find(x.spawn_id) : world.spawns.end();
         const bool in_zone = it != world.spawns.end();
-        // The aggro meter's entries 7..26 are the extended target slots (net/aggro_packets.h). Only with the slot's
+        // The aggro meter's entries 7..26 are the extended target slots (net/protocol/rof2/packets/aggro_packets.h). Only with the slot's
         // spawn in the zone, as the window shows its ETW_AggroPct label: EQEmu (Client::ProcessAggroMeter) updates
         // an entry only while its slot holds a mob it finds and never zeroes it when the slot empties, so a slot
         // emptied since would keep its last mob's percent. A slot past the 20th, which only a server with more

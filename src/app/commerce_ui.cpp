@@ -8,7 +8,7 @@
 #include "core/log.h"
 #include "game/merchant.h"
 #include "game/world_state.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 
 namespace hailstone::app {
 

@@ -1,6 +1,6 @@
 // The mercenary windows: MMTW_MerchantWnd (CMercenaryMerchantWnd), MMGW_ManageWnd (CMercenaryManageWnd) and
 // MIW_InfoWnd (the info window) over GameConnection's mercenary manager (game/mercenary.h,
-// net/game_connection_merc.cpp). What each child shows follows the original's: the merchant's
+// net/connection/game_connection_merc.cpp). What each child shows follows the original's: the merchant's
 // type combo and subtype list (CMercenaryMerchantWnd_FillMercTypeList @0x6ecbb0), the costs as cost / 10 platinum
 // and cost % 10 gold, the manage window's buttons by state (CMercenaryManageWnd_UpdateButtons @0x6e5770, the
 // suspend button @0x6e63b0), TimeLeftText and its tooltip, and the owned list (the fill at 0x6e6c70).
@@ -11,7 +11,7 @@
 
 #include "app/lua_ui_windows.h"
 #include "game/mercenary.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 
 namespace hailstone::app {
 

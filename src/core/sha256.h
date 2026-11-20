@@ -1,6 +1,6 @@
 #pragma once
 
-// SHA-256 (FIPS 180-4): the server's client files are listed and checked by it (net/server_files.h), and its own
+// SHA-256 (FIPS 180-4): the server's client files are listed and checked by it (game/server_file_sync.h), and its own
 // plugins and scripts known by it (plugin/policy.h).
 
 #include <array>

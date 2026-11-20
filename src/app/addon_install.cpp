@@ -21,7 +21,7 @@
 #include "core/log.h"
 #include "core/update_manifest.h"
 #include "core/zip_read.h"
-#include "net/server_files.h"
+#include "game/server_file_sync.h"
 #include "platform/durable_file.h"
 #include "plugin/native_plugins.h"
 #include "plugin/policy.h"

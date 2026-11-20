@@ -21,11 +21,7 @@
 #include "game/race_models.h"
 #include "game/tracking.h"
 #include "app/skill_race.h"
-#include "net/ability_packets.h"
-#include "net/game_connection.h"
-#include "net/notice_packets.h"
-#include "net/packet_io.h"
-#include "net/zone_packets.h"
+#include "net/connection/game_connection.h"
 #include "platform/paths.h"
 #include "platform/window.h"
 
@@ -458,10 +454,10 @@ void ActionsUi::use_skill(net::GameConnection& conn, const mech::Character* ch, 
         // UseSkill's 114..116 call the commands themselves (Send_OP_LDoNInspect, Send_OP_LDoNOpen, Cmd_reveal),
         // with their target and distance checks.
         using K = mech::SkillSend::Kind;
-        if (!s.raw && s.kind == K::LDoNInspect) conn.inspect_target();
-        else if (!s.raw && s.kind == K::LDoNOpen) conn.ldon_open();
-        else if (!s.raw && s.kind == K::Reveal) conn.reveal_target();
-        else if (auto p = net::encode_skill_send(s)) conn.send_zone_packet(*p);
+        if (s.kind == K::LDoNInspect) conn.inspect_target();
+        else if (s.kind == K::LDoNOpen) conn.ldon_open();
+        else if (s.kind == K::Reveal) conn.reveal_target();
+        else conn.send_zone_message(net::messages::outgoing(net::messages::GameOpcode::SkillAction, s));
     }
     if (r.stand_state) conn.set_stand_state(*r.stand_state); // unk_SetStandState
     conn.note_hide_state(state_.hidden, state_.sneaking);
@@ -739,22 +735,20 @@ void ActionsUi::update(net::GameConnection& conn, const mech::Character* ch, con
             changed();
         }
     }
-    // A cast's MakeMeVisible ended hiding or sneaking (net/game_connection_spells.cpp).
+    // A cast's MakeMeVisible ended hiding or sneaking (net/connection/game_connection_spells.cpp).
     auto cleared = conn.take_visibility_cleared();
     if (cleared.hide) state_.hidden = false;
     if (cleared.sneak) state_.sneaking = false;
-    while (auto p = conn.poll_ability_packet()) {
-        auto op = net::from_wire(p->opcode);
-        if (op == net::Op::SpawnAppearance) {
-            auto a = net::decode_spawn_appearance(*p);
+    while (auto event = conn.poll_ability_event()) {
+        if (event->opcode == net::messages::GameOpcode::SpawnAppearance) {
+            const auto* a = net::messages::message_get<net::SpawnAppearance>(*event);
             if (!a || a->spawn_id != conn.world().player_id) continue;
-            if (a->type == 15) state_.sneaking = a->parameter != 0; // Handle_OP_SpawnAppearance: sneak
+            if (a->type == 15) state_.sneaking = a->parameter != 0;
             if (a->type == 3 && a->parameter == 0) state_.hidden = false;
-        } else if (auto bind = op == net::Op::Bind_Wound ? net::decode_bind_wound(*p) : std::nullopt) {
-            // EQEmu's Client::BindWound answers (net/notice_packets.h). The original's Handle_OP_Bind_Wound is not
-            // decoded: once the bind ends the character stands up from the bind-wound kneel, and the lines are this
-            // client's.
-            std::uint16_t type = *bind;
+        } else if (event->opcode == net::messages::GameOpcode::Bind_Wound) {
+            const auto* bind = net::messages::message_get<net::BindWoundResult>(*event);
+            if (!bind) continue;
+            const auto type = bind->outcome;
             const char* line = type == 1 ? "You finish binding the wounds."
                                : type == 4 || type == 5 ? "Your bind wound target is gone."
                                : type == 7 ? "You have no bandages." : nullptr;
@@ -762,12 +756,11 @@ void ActionsUi::update(net::GameConnection& conn, const mech::Character* ch, con
                 conn.ui_message(line);
                 if (conn.player_status().stand_state == 105) conn.set_stand_state(100);
             }
-        } else if (op == net::Op::CancelSneakHide) {
-            // The server ended sneak and hide; newer clients answer with a 4-byte OP_Hide (Send_OP_Hide).
+        } else if (event->opcode == net::messages::GameOpcode::CancelSneakHide) {
             if (state_.activity == static_cast<std::int32_t>(mech::skill::kHide)) state_.activity = -1;
             state_.hidden = false;
             state_.sneaking = false;
-            conn.send_zone_packet(net::encode_hide_cancel());
+            conn.send_zone_message(net::messages::outgoing(net::messages::GameOpcode::Hide));
         }
     }
     run_socials(conn);
@@ -804,7 +797,7 @@ void ActionsUi::melee_attack(net::GameConnection& conn, const mech::Character* c
     for (const auto& m : r.messages) message(conn, m);
     for (int buff : r.removed_buffs) conn.clear_buff_locally(buff);
     for (const auto& s : r.sends) // DoRangedAttack's OP_CombatAbility (slot 11)
-        if (auto p = net::encode_skill_send(s)) conn.send_zone_packet(*p);
+        conn.send_zone_message(net::messages::outgoing(net::messages::GameOpcode::SkillAction, s));
     if (r.stop_auto_fire) conn.set_auto_fire(false);
     // The swing's animation: SendCombatAbilityAttack computes PlayerZoneClient_PlayAttackAnimation's choice and
     // drops it (@0x4fb627); the server's OP_Animation, which EQEmu sends to the attacker too, plays it.

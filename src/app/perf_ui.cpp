@@ -13,7 +13,7 @@
 #include "core/frame_sections.h"
 #include "core/log.h"
 #include "core/shared_file_cache.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "platform/process.h"
 #include "render/actor_renderer.h"
 #include "render/vk_context.h"

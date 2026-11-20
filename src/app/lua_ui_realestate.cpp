@@ -1,6 +1,6 @@
 // The real estate windows (CRealEstatePurchaseWnd, CRealEstateManageWnd, CRealEstateItemsWnd,
 // CRealEstateNeighborhoodWnd, CRealEstatePlotSearchWnd) over the connection's real estate state
-// (net/game_connection_real_estate.cpp, game/real_estate.h). What each shows and sends follows the original's
+// (net/connection/game_connection_real_estate.cpp, game/real_estate.h). What each shows and sends follows the original's
 // functions named below; the packs draw them
 // (ui/<pack>/realestate*.lua). Child ids are this client's, the windows being the packs' own.
 
@@ -14,7 +14,7 @@
 #include "core/saturate.h"
 #include "game/inventory.h"
 #include "game/quantity_dialog.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 
 namespace hailstone::app {
 
@@ -697,13 +697,13 @@ public:
             if (!busy) c.re_to_inventory(m.key, m.re, m.item);
             break;
         case 5:
-            if (!busy) c.re_item_op(net::kOpReMenu5, m.re, m.item, 0);
+            if (!busy) c.re_item_op(net::ReMenuAction::Menu5, m.re, m.item, 0);
             break;
         case 7: c.re_inspect(m.re, m.item); break;
-        case 8: c.re_item_op(net::kOpReMenu8, m.re, m.item, static_cast<std::uint32_t>(e.param)); break;
-        case 9: c.re_item_op(net::kOpReMenu9, m.re, m.item, static_cast<std::uint32_t>(e.param)); break;
+        case 8: c.re_item_op(net::ReMenuAction::Menu8, m.re, m.item, static_cast<std::uint32_t>(e.param)); break;
+        case 9: c.re_item_op(net::ReMenuAction::Menu9, m.re, m.item, static_cast<std::uint32_t>(e.param)); break;
         case 0xb: c.set_real_estate_window(GameConnection::ReWindow::Items, !c.real_estate_ui().items_open); break;
-        case 0x13: c.re_item_op(net::kOpReMenu13, m.re, m.item, static_cast<std::uint32_t>(e.param)); break;
+        case 0x13: c.re_item_op(net::ReMenuAction::Menu13, m.re, m.item, static_cast<std::uint32_t>(e.param)); break;
         // 2 (placement), 0xc / 0xd (the item's spawn as target), 0xe (window 0x4b) and 0x11 (dialog 0x67, eqstr
         // 0x14d9) are not built.
         default: break;

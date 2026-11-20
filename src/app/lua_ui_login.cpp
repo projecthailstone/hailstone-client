@@ -18,8 +18,8 @@
 #include "game/char_create_look.h"
 #include "game/eq_names.h"
 #include "game/zone_names.h"
-#include "net/game_connection.h"
-#include "net/world_packets.h"
+#include "net/connection/game_connection.h"
+#include "net/messages/world.h"
 #include "ui/dev_screens.h"
 
 namespace hailstone::app {

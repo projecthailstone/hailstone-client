@@ -23,8 +23,9 @@
 #include "game/server_ext.h"
 #include "game/tradeskill.h"
 #include "game/world_state.h"
-#include "net/game_connection.h"
-#include "net/trade_packets.h"
+#include "net/connection/game_connection.h"
+#include "net/messages/coin.h"
+#include "net/messages/trade.h"
 
 namespace hailstone::app {
 

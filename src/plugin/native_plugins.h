@@ -23,7 +23,7 @@
 #include <vector>
 
 #include "mq/tlo.h"
-#include "net/packet.h"
+#include "net/wire/app_packet.h"
 #include "core/sha256.h"
 #include "plugin/ability_bulk.h"
 #include "plugin/consent.h"

@@ -1,5 +1,5 @@
 // The marketplace: MarketplaceWnd (CMarketplaceWnd @0x6ddb90) over the catalog, rows and categories the connection
-// keeps (net/game_connection_marketplace.cpp) and the rules in game/marketplace.h. The children are the original's
+// keeps (net/connection/game_connection_marketplace.cpp) and the rules in game/marketplace.h. The children are the original's
 // ScreenIDs (MKPW_*). Beside the original's lists (MKPW_ItemList) the packs read these as lists:
 //   MKPW_CategoriesTree  the tree's rows: name, depth, "1" for a branch, "1" when open, the category id; only the rows
 //                        under open branches; the highlighted one selected. A click on column 1 (the arrow) opens or
@@ -16,7 +16,7 @@
 
 #include "app/lua_ui_windows.h"
 #include "game/marketplace.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 
 namespace hailstone::app {
 

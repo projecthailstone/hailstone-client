@@ -38,7 +38,7 @@
 #include "app/lua_ui_windows.h"
 #include "ui/lua/lua_host.h"
 #include "game/spell_display.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "plugin/lua_keep.h"
 #include "ui/ui_textures.h"
 

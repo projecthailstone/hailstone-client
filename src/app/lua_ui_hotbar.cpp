@@ -18,7 +18,7 @@
 #include "game/icon_selection.h"
 #include "game/keymap.h"
 #include "game/quantity_dialog.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "ui/ui_ini.h"
 
 namespace hailstone::app {
