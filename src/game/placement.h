@@ -13,7 +13,7 @@
 
 #include <glm/glm.hpp>
 
-#include "net/real_estate_packets.h"
+#include "net/messages/real_estate.h"
 
 namespace hailstone::game {
 
@@ -87,7 +87,7 @@ public:
     void set_code(std::uint32_t code) { code_ = code; }
 
     // ItemPlacement_OnLeftMouseUp → Send_Opcode_0x711a: the confirm when the code is 0, else none.
-    std::optional<net::AppPacket> confirm(const glm::vec3& box_a, const glm::vec3& box_b) const;
+    std::optional<net::RePlacementIntent> confirm(const glm::vec3& box_a, const glm::vec3& box_b) const;
 
 private:
     bool active_ = false;

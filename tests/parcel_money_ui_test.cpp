@@ -8,10 +8,10 @@
 
 #include "app/lua_ui.h"
 #include "mock_server/harness.h"
-#include "net/item_packets.h"
-#include "net/merchant_packets.h"
-#include "net/packet_io.h"
-#include "net/tribute_packets.h"
+#include "net/protocol/rof2/packets/item_packets.h"
+#include "net/protocol/rof2/packets/merchant_packets.h"
+#include "net/protocol/rof2/wire_io.h"
+#include "net/protocol/rof2/packets/tribute_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::test;
@@ -37,13 +37,13 @@ void open_parcel_merchant(net::GameConnection& conn) {
     open.player_id = w.player_id;
     open.rate = 1.0f;
     open.tab_display = 7;
-    conn.receive_zone_packet_for_test(net::encode(open));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::ShopRequest, open});
     REQUIRE(conn.merchant()->open);
     // The mock's profile has coin on the cursor: into the purse first (a coin button with coin held).
     for (int t = 0; t < 4; ++t)
         if (conn.cursor_coins()[static_cast<std::size_t>(3 - t)]) conn.inventory_money_button(t, -1, nullptr);
     REQUIRE(conn.cursor_coins() == std::array<std::uint32_t, 4>{});
-    conn.receive_zone_packet_for_test(net::encode_money_update(net::Coins{7, 3, 0, 0}));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::MoneyUpdate, net::Coins{7, 3, 0, 0}});
     REQUIRE(conn.coins().platinum == 7);
 }
 
@@ -95,7 +95,7 @@ TEST_CASE("Parcels page: an inventory coin button picks money to send, lets the 
     conn.merchant_select(net::ItemSlot::possessions(23));
     REQUIRE(conn.merchant()->selected);
     lua.run("hs.SetTabPage('MerchantWnd', 'MW_MerchantSubwindows', 2)");
-    const auto moves_before = MockEqServer::count(rig.server.zone_log, net::Op::MoveCoin);
+    const auto moves_before = MockEqServer::count(rig.server.zone_log, net::rof2::Op::MoveCoin);
 
     // Platinum: the item goes, the button is outlined, the dialog asks how much (all 7 to start).
     CHECK(lua.flag("return hs.ClickChild('InventoryWindow', 'IW_Money0', 'left')"));
@@ -144,7 +144,7 @@ TEST_CASE("Parcels page: an inventory coin button picks money to send, lets the 
     done(3);
     CHECK(conn.cursor_coins()[3] == 3);
     CHECK(conn.coins().platinum == 4);
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::Op::MoveCoin) > moves_before; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::rof2::Op::MoveCoin) > moves_before; }));
     ImGui::DestroyContext(ctx);
 }
 
@@ -207,11 +207,10 @@ TEST_CASE("tribute coin questions close with the personal or guild master sessio
         master.is_npc = true;
         master.class_id = guild ? 64 : 63;
         world.spawns[kMerchant] = master;
-        conn.receive_zone_packet_for_test(net::encode_money_update(net::Coins{7, 0, 0, 0}));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::MoneyUpdate, net::Coins{7, 0, 0, 0}});
         auto open = [&] {
-            auto packet = net::encode(net::StartTribute{world.player_id, kMerchant, 1});
-            if (guild) packet.opcode = net::to_wire(net::Op::OpenGuildTributeMaster);
-            conn.receive_zone_packet_for_test(packet);
+            conn.receive_zone_message_for_test({guild ? net::messages::GameOpcode::OpenGuildTributeMaster
+                : net::messages::GameOpcode::OpenTributeMaster, net::StartTribute{world.player_id, kMerchant, 1}});
             REQUIRE((guild ? conn.guild_tribute().master_id : conn.tribute().master_id) == kMerchant);
         };
         open();

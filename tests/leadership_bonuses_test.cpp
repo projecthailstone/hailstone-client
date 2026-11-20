@@ -6,8 +6,8 @@
 #include "game/mechanics/shown_stats.h"
 #include "game/mechanics/tables.h"
 #include "mock_server/harness.h"
-#include "net/group_packets.h"
-#include "net/social_packets.h"
+#include "net/messages/group.h"
+#include "net/messages/social.h"
 
 using namespace hailstone;
 
@@ -24,7 +24,7 @@ TEST_CASE("leadership bonuses: active leader ranks reach character sheets and ex
             m.name = i == 0 ? "Gennro" : "Friend" + std::to_string(i);
             u.members.push_back(m);
         }
-        c.receive_zone_packet_for_test(net::encode(u));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::GroupUpdateB, u});
     };
     group(3);
     net::GroupLeadershipUpdate g;
@@ -32,7 +32,7 @@ TEST_CASE("leadership bonuses: active leader ranks reach character sheets and ex
     g.ranks[10] = 2;
     g.ranks[11] = 3;
     g.ranks[12] = 1;
-    c.receive_zone_packet_for_test(net::encode(g));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::GroupLeadershipAAUpdate, g});
     CHECK(c.leadership().ranks[11] == 0); // the member's own purchases are not the source
     auto live = c.live_state();
     CHECK(live.leadership.hp == 100);
@@ -63,7 +63,7 @@ TEST_CASE("leadership bonuses: active leader ranks reach character sheets and ex
     r.general.action = net::kRaidAddMember;
     for (int i = 0; i < 18; ++i) {
         r.general.player_name = i == 0 ? "Gennro" : "Raider" + std::to_string(i);
-        c.receive_zone_packet_for_test(net::encode_raid_update(r));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::RaidUpdate, r});
     }
     r = {};
     r.general.action = net::kRaidSetLeader;
@@ -72,7 +72,7 @@ TEST_CASE("leadership bonuses: active leader ranks reach character sheets and ex
     r.leadership[25] = 1;
     r.leadership[26] = 2;
     r.leadership[27] = 3;
-    c.receive_zone_packet_for_test(net::encode_raid_update(r));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::RaidUpdate, r});
     const auto both = c.live_state().leadership;
     CHECK(both.hp == 160);
     CHECK(both.mana == 90);
@@ -84,7 +84,7 @@ TEST_CASE("leadership bonuses: active leader ranks reach character sheets and ex
     CHECK(c.live_state().leadership.offense == 37);
     r = {};
     r.general.action = net::kRaidDisband;
-    c.receive_zone_packet_for_test(net::encode_raid_update(r));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::RaidUpdate, r});
     CHECK(c.live_state().leadership.hp == 0);
     CHECK(c.live_state().leadership.offense == 0);
 

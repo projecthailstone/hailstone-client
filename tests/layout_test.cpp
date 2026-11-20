@@ -316,7 +316,10 @@ TEST_CASE("Layout: a world or character name from the server cannot write lines 
     CHECK(back->accounts[0].characters[1].level == 10);
     IniFile ini;
     REQUIRE(ini.load(profile_ini(p.id, servers)));
-    CHECK(ini.sections() == std::vector<std::string>{"Server", "Account:player"});
+    // The protocol selection is persisted alongside the server and account.
+    CHECK(ini.sections() == std::vector<std::string>{"Server", "Protocol", "Account:player"});
+    CHECK(ini.get_string("Protocol", "game_codec") == p.game_codec);
+    CHECK(ini.get_string("Protocol", "session_protocol") == p.session_protocol);
 }
 
 TEST_CASE("IniFile: keys and section names stay on their own line") {

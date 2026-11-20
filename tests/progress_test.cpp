@@ -16,12 +16,12 @@
 #include "game/spells.h"
 #include "game/training.h"
 #include "mock_server/harness.h"
-#include "net/aa_packets.h"
-#include "net/ability_packets.h"
-#include "net/opcodes.h"
-#include "net/task_packets.h"
-#include "net/training_packets.h"
-#include "net/zone_packets.h"
+#include "net/protocol/rof2/packets/aa_packets.h"
+#include "net/protocol/rof2/packets/ability_packets.h"
+#include "net/protocol/rof2/opcode_map.h"
+#include "net/protocol/rof2/packets/task_packets.h"
+#include "net/protocol/rof2/packets/training_packets.h"
+#include "net/protocol/rof2/packets/zone_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::net;
@@ -34,10 +34,10 @@ std::vector<std::uint8_t> bytes_of(const AppPacket& p) {
     return out;
 }
 
-AppPacket packet(Op op, const std::vector<std::uint8_t>& b) {
+AppPacket packet(rof2::Op op, const std::vector<std::uint8_t>& b) {
     std::vector<std::byte> d;
     for (auto v : b) d.push_back(std::byte{v});
-    return AppPacket(to_wire(op), std::move(d));
+    return AppPacket(rof2::to_wire(op), std::move(d));
 }
 
 struct Buf {
@@ -79,35 +79,35 @@ Buf aa_rank_bytes() {
 } // namespace
 
 TEST_CASE("progress: opcodes are the RoF2 ones") {
-    CHECK(to_wire(Op::SendAATable) == 0x66b5);
-    CHECK(to_wire(Op::RespondAA) == 0x7a27);
-    CHECK(to_wire(Op::UpdateAA) == 0x66f0);
-    CHECK(to_wire(Op::AAExpUpdate) == 0x7d14);
-    CHECK(to_wire(Op::AAAction) == 0x424e);
-    CHECK(to_wire(Op::ClearAA) == 0x0f50);
-    CHECK(to_wire(Op::GMTraining) == 0x1966);
-    CHECK(to_wire(Op::GMTrainSkill) == 0x2a85);
-    CHECK(to_wire(Op::GMEndTraining) == 0x4d6b);
-    CHECK(to_wire(Op::GMTrainSkillConfirm) == 0x4b64);
-    CHECK(to_wire(Op::TradeSkillCombine) == 0x579a);
-    CHECK(to_wire(Op::TaskDescription) == 0x3714);
-    CHECK(to_wire(Op::TaskActivity) == 0x08d3);
-    CHECK(to_wire(Op::CompletedTasks) == 0x4eba);
-    CHECK(to_wire(Op::TaskActivityComplete) == 0x5e19);
-    CHECK(to_wire(Op::AcceptNewTask) == 0x0a23);
-    CHECK(to_wire(Op::CancelTask) == 0x39f0);
-    CHECK(to_wire(Op::TaskHistoryRequest) == 0x5f1c);
-    CHECK(to_wire(Op::TaskHistoryReply) == 0x3d05);
-    CHECK(to_wire(Op::TaskSelectWindow) == 0x705b);
-    CHECK(to_wire(Op::SharedTaskSelectWindow) == 0x48a2);
-    CHECK(to_wire(Op::SharedTaskAcceptNew) == 0x6646);
-    CHECK(to_wire(Op::TaskRequestTimer) == 0x7a48);
-    CHECK(to_wire(Op::TaskTimers) == 0x2b0f);
+    CHECK(rof2::to_wire(rof2::Op::SendAATable) == 0x66b5);
+    CHECK(rof2::to_wire(rof2::Op::RespondAA) == 0x7a27);
+    CHECK(rof2::to_wire(rof2::Op::UpdateAA) == 0x66f0);
+    CHECK(rof2::to_wire(rof2::Op::AAExpUpdate) == 0x7d14);
+    CHECK(rof2::to_wire(rof2::Op::AAAction) == 0x424e);
+    CHECK(rof2::to_wire(rof2::Op::ClearAA) == 0x0f50);
+    CHECK(rof2::to_wire(rof2::Op::GMTraining) == 0x1966);
+    CHECK(rof2::to_wire(rof2::Op::GMTrainSkill) == 0x2a85);
+    CHECK(rof2::to_wire(rof2::Op::GMEndTraining) == 0x4d6b);
+    CHECK(rof2::to_wire(rof2::Op::GMTrainSkillConfirm) == 0x4b64);
+    CHECK(rof2::to_wire(rof2::Op::TradeSkillCombine) == 0x579a);
+    CHECK(rof2::to_wire(rof2::Op::TaskDescription) == 0x3714);
+    CHECK(rof2::to_wire(rof2::Op::TaskActivity) == 0x08d3);
+    CHECK(rof2::to_wire(rof2::Op::CompletedTasks) == 0x4eba);
+    CHECK(rof2::to_wire(rof2::Op::TaskActivityComplete) == 0x5e19);
+    CHECK(rof2::to_wire(rof2::Op::AcceptNewTask) == 0x0a23);
+    CHECK(rof2::to_wire(rof2::Op::CancelTask) == 0x39f0);
+    CHECK(rof2::to_wire(rof2::Op::TaskHistoryRequest) == 0x5f1c);
+    CHECK(rof2::to_wire(rof2::Op::TaskHistoryReply) == 0x3d05);
+    CHECK(rof2::to_wire(rof2::Op::TaskSelectWindow) == 0x705b);
+    CHECK(rof2::to_wire(rof2::Op::SharedTaskSelectWindow) == 0x48a2);
+    CHECK(rof2::to_wire(rof2::Op::SharedTaskAcceptNew) == 0x6646);
+    CHECK(rof2::to_wire(rof2::Op::TaskRequestTimer) == 0x7a48);
+    CHECK(rof2::to_wire(rof2::Op::TaskTimers) == 0x2b0f);
 }
 
 TEST_CASE("aa: OP_SendAATable decodes EQEmu's encoding and re-encodes the same bytes") {
     Buf w = aa_rank_bytes();
-    auto a = decode_send_aa_table(packet(Op::SendAATable, w.b));
+    auto a = decode_send_aa_table(packet(rof2::Op::SendAATable, w.b));
     REQUIRE(a);
     CHECK(a->id == 5100);
     CHECK(a->unknown04 == 1);
@@ -141,7 +141,7 @@ TEST_CASE("aa: OP_SendAATable decodes EQEmu's encoding and re-encodes the same b
     CHECK(bytes_of(encode_send_aa_table(*a)) == w.b);
     // A short packet fails cleanly.
     w.b.resize(w.b.size() - 3);
-    CHECK_FALSE(decode_send_aa_table(packet(Op::SendAATable, w.b)));
+    CHECK_FALSE(decode_send_aa_table(packet(rof2::Op::SendAATable, w.b)));
 }
 
 TEST_CASE("aa: OP_RespondAA, OP_AAExpUpdate and the server's OP_AAAction") {
@@ -177,7 +177,7 @@ TEST_CASE("aa: OP_RespondAA, OP_AAExpUpdate and the server's OP_AAAction") {
     // AltAdvStats_Struct: u32 experience, u16 unspent, u16, u8 percentage, 3 bytes.
     Buf e;
     e.u32(165).u8(7).u8(0).u8(0).u8(0).u8(25).u8(0).u8(0).u8(0);
-    auto x = decode_aa_exp_update(packet(Op::AAExpUpdate, e.b));
+    auto x = decode_aa_exp_update(packet(rof2::Op::AAExpUpdate, e.b));
     REQUIRE(x);
     CHECK(x->exp == 165);
     CHECK(x->points == 7);
@@ -187,7 +187,7 @@ TEST_CASE("aa: OP_RespondAA, OP_AAExpUpdate and the server's OP_AAAction") {
     // UseAA_Struct {begin, ability (the timer), end}.
     Buf t;
     t.u32(1000).u32(42).u32(1600);
-    auto timer = decode_aa_timer(packet(Op::AAAction, t.b));
+    auto timer = decode_aa_timer(packet(rof2::Op::AAAction, t.b));
     REQUIRE(timer);
     CHECK(timer->begin == 1000);
     CHECK(timer->timer == 42);
@@ -202,8 +202,8 @@ TEST_CASE("aa: OP_ExpUpdate leaves AA experience alone; OP_AAExpUpdate sets the 
 
     // On every kill EQEmu's Client::SetEXP sends OP_AAExpUpdate, then OP_ExpUpdate with 0 in the second dword.
     // Handle_OP_ExpUpdate @0x4b7060 sets only PcBase.Exp, so the AA gauge keeps its value.
-    conn.receive_zone_packet_for_test(encode(AAExpUpdate{165, 9, 100}));
-    conn.receive_zone_packet_for_test(encode(ExpUpdate{40, 0}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::AAExpUpdate, AAExpUpdate{165, 9, 100}});
+    conn.receive_zone_message_for_test({messages::GameOpcode::ExpUpdate, ExpUpdate{40, 0}});
     CHECK(conn.player_status().exp == 40);
     CHECK(conn.player_status().aa_exp == 165);
     CHECK(conn.alt_adv().points == 9);
@@ -372,21 +372,21 @@ TEST_CASE("aa: buy all ranks on a stock server buys one rank after another") {
         game::AltAbility a = rank(id, 10, r, prev, next);
         a.classes = 1u << 1; // the mock's warrior
         a.level_req = 1;
-        conn.receive_zone_packet_for_test(encode_send_aa_table(a));
+        conn.receive_zone_message_for_test({messages::GameOpcode::SendAATable, a});
     }
-    conn.receive_zone_packet_for_test(encode(AAExpUpdate{0, 10, 0}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::AAExpUpdate, AAExpUpdate{0, 10, 0}});
     auto trains = [&] {
         std::vector<std::uint32_t> out;
         for (const AppPacket& p : rig.server.zone_log)
-            if (p.opcode == to_wire(Op::AAAction))
+            if (p.opcode == rof2::to_wire(rof2::Op::AAAction))
                 if (auto a = decode_aa_action(p); a && a->action == kAATrain) out.push_back(a->ability);
         return out;
     };
     auto bought = [&](std::uint32_t id, std::uint32_t points) {
         RespondAA r;
         r.owned = {{id, 1, 0}};
-        conn.receive_zone_packet_for_test(encode(r));
-        conn.receive_zone_packet_for_test(encode(AAExpUpdate{0, points, 0}));
+        conn.receive_zone_message_for_test({messages::GameOpcode::RespondAA, r});
+        conn.receive_zone_message_for_test({messages::GameOpcode::AAExpUpdate, AAExpUpdate{0, points, 0}});
     };
 
     REQUIRE(conn.aa_train(100, true));
@@ -400,15 +400,15 @@ TEST_CASE("aa: buy all ranks on a stock server buys one rank after another") {
     rig.run_for(std::chrono::milliseconds(50));
     CHECK(trains().size() == 3);
     for (const AppPacket& p : rig.server.zone_log)
-        if (p.opcode == to_wire(Op::AAAction)) CHECK(decode_aa_action(p)->action != kAATrainAll);
+        if (p.opcode == rof2::to_wire(rof2::Op::AAAction)) CHECK(decode_aa_action(p)->action != kAATrainAll);
 
     // An update without the rank owned (experience from a kill) leaves the chain waiting for it.
     RespondAA none;
-    conn.receive_zone_packet_for_test(encode(none));
-    conn.receive_zone_packet_for_test(encode(AAExpUpdate{0, 10, 0}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::RespondAA, none});
+    conn.receive_zone_message_for_test({messages::GameOpcode::AAExpUpdate, AAExpUpdate{0, 10, 0}});
     REQUIRE(conn.aa_train(100, true));
     REQUIRE(rig.until([&] { return trains().size() == 4; }));
-    conn.receive_zone_packet_for_test(encode(AAExpUpdate{0, 10, 50}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::AAExpUpdate, AAExpUpdate{0, 10, 50}});
     rig.run_for(std::chrono::milliseconds(50));
     CHECK(trains().size() == 4);
     bought(100, 8);
@@ -491,7 +491,7 @@ TEST_CASE("training: OP_GMTraining both ways, OP_GMTrainSkill, OP_GMEndTraining,
     for (int i = 0; i < 32; ++i) w.u8(0xc9);
     w.u8(0x76).u8(0x75).u8(0x3f);
     REQUIRE(w.b.size() == 448);
-    auto g = decode_gm_training(packet(Op::GMTraining, w.b));
+    auto g = decode_gm_training(packet(rof2::Op::GMTraining, w.b));
     REQUIRE(g);
     CHECK(g->trainer_id == 300);
     CHECK(g->skills[0] == 50);
@@ -592,7 +592,7 @@ TEST_CASE("training: rows, cost, checkLang and the train checks") {
 TEST_CASE("skills: OP_SkillUpdate's announce byte") {
     Buf w;
     w.u32(5).u32(23).u8(1).u8(80).u8(136).u8(54); // EQEmu's observed trailer
-    auto u = decode_skill_update(packet(Op::SkillUpdate, w.b));
+    auto u = decode_skill_update(packet(rof2::Op::SkillUpdate, w.b));
     REQUIRE(u);
     CHECK(u->skill == 5);
     CHECK(u->value == 23);
@@ -612,7 +612,7 @@ TEST_CASE("tasks: OP_TaskDescription in the RoF2 encoding") {
     w.str("Some coin");
     w.str("");
     w.u32(0).u8(0); // trailer
-    auto t = decode_task_description(packet(Op::TaskDescription, w.b));
+    auto t = decode_task_description(packet(rof2::Op::TaskDescription, w.b));
     REQUIRE(t);
     CHECK(t->sequence == 1);
     CHECK(t->task_id == 77);
@@ -635,7 +635,7 @@ TEST_CASE("tasks: OP_TaskActivity long and short forms") {
     w.i32(2).u8(0).i32(0).str("a large rat");     // kill, not optional
     w.lstr("").i32(5).lstr("-1").lstr("0").str("1"); // items, goal, skills, spells, zones
     w.i32(0).str("").i32(3).u8(1).str("1");       // dz switch, description, done, 1, zones
-    auto a = decode_task_activity(packet(Op::TaskActivity, w.b));
+    auto a = decode_task_activity(packet(rof2::Op::TaskActivity, w.b));
     REQUIRE(a);
     CHECK(a->task_id == 77);
     CHECK_FALSE(a->element.hidden);
@@ -651,7 +651,7 @@ TEST_CASE("tasks: OP_TaskActivity long and short forms") {
     Buf s;
     s.u32(1).u32(2).u32(77).u32(1).u32(1).u32(0xffffffffu).u8(1);
     REQUIRE(s.b.size() == 25);
-    auto h = decode_task_activity(packet(Op::TaskActivity, s.b));
+    auto h = decode_task_activity(packet(rof2::Op::TaskActivity, s.b));
     REQUIRE(h);
     CHECK(h->element.hidden);
     CHECK(h->element.activity_id == 1);
@@ -680,7 +680,7 @@ TEST_CASE("tasks: OP_TaskActivity long and short forms") {
 TEST_CASE("tasks: completed list, select window, history, completion, cancel and the client's requests") {
     Buf c;
     c.u32(2).u32(10).str("First").u32(1700000000).u32(11).str("Second").u32(1700000100);
-    auto done = decode_completed_tasks(packet(Op::CompletedTasks, c.b));
+    auto done = decode_completed_tasks(packet(rof2::Op::CompletedTasks, c.b));
     REQUIRE(done);
     REQUIRE(done->size() == 2);
     CHECK((*done)[1].title == "Second");
@@ -690,7 +690,7 @@ TEST_CASE("tasks: completed list, select window, history, completion, cancel and
     s.u32(1).u32(2).u32(345);                                     // count, type, giver
     s.u32(77).f32(1.0f).u32(0).u32(2).str("Rat Trouble").str("Rats!").u8(0); // selector
     s.u32(1).i32(0).i32(2).i32(0).str("a large rat").lstr("").i32(5).lstr("-1").lstr("0").str("").str("").str("");
-    auto o = decode_task_select(packet(Op::TaskSelectWindow, s.b));
+    auto o = decode_task_select(packet(rof2::Op::TaskSelectWindow, s.b));
     REQUIRE(o);
     CHECK_FALSE(o->shared);
     CHECK(o->giver_id == 345);
@@ -699,14 +699,14 @@ TEST_CASE("tasks: completed list, select window, history, completion, cancel and
     CHECK(o->offers[0].duration_code == 2);
     REQUIRE(o->offers[0].elements.size() == 1);
     CHECK(o->offers[0].elements[0].goal_count == 5);
-    CHECK(bytes_of(encode_task_select(*o, Op::TaskSelectWindow)) == s.b);
-    auto shared = decode_task_select(encode_task_select(*o, Op::SharedTaskSelectWindow));
+    CHECK(bytes_of(encode_task_select(*o, rof2::Op::TaskSelectWindow)) == s.b);
+    auto shared = decode_task_select(encode_task_select(*o, rof2::Op::SharedTaskSelectWindow));
     REQUIRE(shared);
     CHECK(shared->shared);
 
     Buf h;
     h.u32(0).u32(1).u32(2).str("a large rat").lstr("").u32(5).lstr("-1").lstr("-1").str("1").u32(0).str("").u8(0x31).str("1");
-    auto hist = decode_task_history(packet(Op::TaskHistoryReply, h.b));
+    auto hist = decode_task_history(packet(rof2::Op::TaskHistoryReply, h.b));
     REQUIRE(hist);
     REQUIRE(hist->elements.size() == 1);
     CHECK(hist->elements[0].target_name == "a large rat");
@@ -715,7 +715,7 @@ TEST_CASE("tasks: completed list, select window, history, completion, cancel and
 
     Buf a;
     a.u32(1).u32(2).u32(77).u32(0).u32(1).u32(0);
-    auto ac = decode_task_activity_complete(packet(Op::TaskActivityComplete, a.b));
+    auto ac = decode_task_activity_complete(packet(rof2::Op::TaskActivityComplete, a.b));
     REQUIRE(ac);
     CHECK(ac->completed == 1);
     CHECK(ac->stage_complete == 0);
@@ -724,7 +724,7 @@ TEST_CASE("tasks: completed list, select window, history, completion, cancel and
     Buf cancel;
     cancel.u32(1).u32(2);
     CHECK(bytes_of(encode_cancel_task(1, 2)) == cancel.b);
-    auto dc = decode_cancel_task(packet(Op::CancelTask, cancel.b));
+    auto dc = decode_cancel_task(packet(rof2::Op::CancelTask, cancel.b));
     REQUIRE(dc);
     CHECK(dc->sequence == 1);
     CHECK(dc->type == 2);
@@ -740,7 +740,7 @@ TEST_CASE("tasks: completed list, select window, history, completion, cancel and
     CHECK(bytes_of(encode_task_history_request(3)) == hr.b);
     Buf timer;
     timer.u32(15000);
-    CHECK(decode_task_request_timer(packet(Op::TaskRequestTimer, timer.b)) == 15000u);
+    CHECK(decode_task_request_timer(packet(rof2::Op::TaskRequestTimer, timer.b)) == 15000u);
 }
 
 TEST_CASE("tasks: GetElementDescription's templates") {

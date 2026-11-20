@@ -5,10 +5,10 @@
 #include "manual_clock.h"
 #include "mock_server/harness.h"
 #include "mq_test_world.h"
-#include "net/reward_packets.h"
-#include "net/task_packets.h"
+#include "net/protocol/rof2/packets/reward_packets.h"
+#include "net/protocol/rof2/packets/task_packets.h"
 #include "plugin/hooks.h"
-#include "reward_test_packets.h"
+#include "rof2/reward_test_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::net;
@@ -16,6 +16,70 @@ using namespace hailstone::test;
 namespace fixture = hailstone::test::reward_fixture;
 
 namespace {
+// Direct semantic fixtures for GameConnection behavior. The separate fixture:: functions remain
+// wire-only inputs for the loopback codec tests below.
+RewardSet reward_set(std::uint32_t pending = 42, std::uint32_t set_id = 700,
+                     std::uint32_t option_id = 12, std::uint32_t item_id = 1000) {
+    RewardSet set;
+    set.pending_id = pending;
+    set.set_id = set_id;
+    set.title = "Fixture choices";
+    set.multiplier = 1.0f;
+    RewardOption shared;
+    shared.wire_id = 1;
+    shared.common = true;
+    shared.label = "Common";
+    RewardEntry text;
+    text.type = RewardEntryType::Text;
+    text.entry_id = 10;
+    text.description = "Shared grant";
+    shared.entries.push_back(std::move(text));
+    RewardOption choice;
+    choice.wire_id = option_id;
+    choice.label = "Choose item";
+    RewardEntry reward;
+    reward.type = RewardEntryType::Item;
+    reward.entry_id = 20;
+    reward.description = "Fixture reward";
+    reward.items.push_back(RewardItem{item_id, 2, true, 77, "Synthetic reward"});
+    choice.entries.push_back(std::move(reward));
+    set.options.push_back(std::move(shared));
+    set.options.push_back(std::move(choice));
+    return set;
+}
+RewardPacket semantic_collection(RewardLane lane = RewardLane::Pending,
+                                 std::uint32_t pending = 42, std::uint32_t set_id = 700,
+                                 std::uint32_t option = 12, std::uint32_t item = 1000) {
+    RewardPacket packet;
+    packet.lane = lane;
+    packet.replace_collection = lane == RewardLane::Preview;
+    packet.sets.push_back(reward_set(pending, set_id, option, item));
+    return packet;
+}
+RewardPacket semantic_bulk(RewardLane lane) {
+    RewardPacket packet;
+    packet.lane = lane;
+    packet.replace_collection = true;
+    packet.sets.push_back(reward_set());
+    packet.sets.push_back(reward_set(43, 701, 13, 1001));
+    return packet;
+}
+RewardPacket semantic_clear(RewardLane lane, bool bulk) {
+    RewardPacket packet;
+    packet.lane = lane;
+    packet.replace_collection = bulk || lane == RewardLane::Preview;
+    return packet;
+}
+RewardPacket semantic_claim(bool success) {
+    RewardPacket packet;
+    packet.kind = RewardPacket::Kind::Claim;
+    packet.claim = RewardClaimReply{42, 700, 12, success};
+    return packet;
+}
+messages::GameMessage reward_message(RewardPacket packet) {
+    return {packet.lane == RewardLane::Pending ? messages::GameOpcode::AchievementReward
+                                              : messages::GameOpcode::RewardSelection, std::move(packet)};
+}
 std::uint32_t action(const AppPacket& packet) {
     if (packet.data.size() < 4) return 0xffffffffu;
     ByteReader r(packet.data); return r.le<std::uint32_t>();
@@ -26,9 +90,9 @@ std::size_t requests(const Rig& rig, std::uint16_t opcode, std::uint32_t kind) {
 }
 void barrier(Rig& rig) {
     const auto count = [&] { return std::count_if(rig.server.zone_log.begin(), rig.server.zone_log.end(),
-        [](const AppPacket& packet) { return packet.opcode == 0x7f01; }); };
+        [](const AppPacket& packet) { return packet.opcode == rof2::to_wire(rof2::Op::RandomReq); }); };
     const auto before = count();
-    rig.conn.send_zone_packet(AppPacket(0x7f01));
+    rig.conn.send_zone_message(messages::outgoing(messages::GameOpcode::RandomReq, RandomRollIntent{1, 1}));
     REQUIRE(rig.until([&] { return count() > before; }));
 }
 void collection(Rig& rig, RewardLane lane = RewardLane::Pending, std::uint32_t option = 12,
@@ -104,13 +168,13 @@ TEST_CASE("reward connection: stock requests, both lanes and serialized inspecti
 
 TEST_CASE("reward connection: malformed replacement, stale confirmation and uncertain claim cannot replay") {
     ManualClock clock;
-    auto options = quick_options(); options.session.clock = clock.source();
+    auto options = quick_options(); options.world_protocol.session_config.clock = clock.source(); options.zone_protocol.session_config.clock = clock.source();
     Rig rig(MockConfig::standard(), options);
     REQUIRE(rig.to_zone());
     collection(rig);
     const auto old = rig.conn.rewards().lane(RewardLane::Pending);
     auto malformed = fixture::bulk(); malformed.data.pop_back();
-    rig.conn.receive_zone_packet_for_test(malformed);
+    CHECK_FALSE(decode_reward_packet(malformed));
     CHECK(rig.conn.rewards().lane(RewardLane::Pending).revision == old.revision);
     collection(rig, RewardLane::Pending, 71);
     CHECK_FALSE(rig.conn.reward_claim(old.revision, old.tabs[0].token, 12));
@@ -150,8 +214,8 @@ TEST_CASE("reward connection: outgoing hooks cannot send a retired confirmation 
                 if (action(packet) != 3) return plugin::Flow::Continue;
                 if (mode == 0) return plugin::Flow::Drop;
                 if (mode == 1) rig.conn.close_reward_selection(RewardLane::Pending);
-                if (mode == 2) rig.conn.receive_zone_packet_for_test(fixture::collection());
-                if (mode == 3) rig.conn.receive_zone_packet_for_test(fixture::claim(false));
+                if (mode == 2) rig.conn.receive_zone_message_for_test(reward_message(semantic_collection()));
+                if (mode == 3) rig.conn.receive_zone_message_for_test(reward_message(semantic_claim(false)));
                 return plugin::Flow::Continue;
             });
         CHECK_FALSE(claim(rig));
@@ -173,7 +237,7 @@ TEST_CASE("reward connection: task preview requires received reward flag and zon
     game::TaskOffers offers;
     game::TaskOffer offer; offer.task_id = 999; offer.title = "Synthetic task"; offer.reward_preview = true;
     offers.offers.push_back(offer);
-    rig.conn.receive_zone_packet_for_test(encode_task_select(offers, Op::TaskSelectWindow));
+    rig.conn.receive_zone_message_for_test({messages::GameOpcode::TaskSelectWindow, offers});
     REQUIRE(rig.conn.preview_task_reward(999));
     REQUIRE(rig.until([&] { return requests(rig, 0x6471, 4) == 1; }));
     const auto request = std::find_if(rig.server.zone_log.begin(), rig.server.zone_log.end(),
@@ -204,7 +268,7 @@ TEST_CASE("reward connection: outgoing explicit-open hook close retires even an 
         game::TaskOffers offers;
         game::TaskOffer offer; offer.task_id = 999; offer.reward_preview = true;
         offers.offers.push_back(offer);
-        rig.conn.receive_zone_packet_for_test(encode_task_select(offers, Op::TaskSelectWindow));
+        rig.conn.receive_zone_message_for_test({messages::GameOpcode::TaskSelectWindow, offers});
         REQUIRE_FALSE(rig.conn.rewards().lane(lane).shown);
         const auto owner = hooks.new_owner("reward open test");
         const auto kind = lane == RewardLane::Pending ? 6u : 4u;
@@ -225,25 +289,24 @@ TEST_CASE("reward connection: outgoing explicit-open hook close retires even an 
 TEST_CASE("reward connection: native single and bulk collection actions preserve the correct lane identities") {
     Rig rig;
     REQUIRE(rig.to_zone());
-    rig.conn.receive_zone_packet_for_test(fixture::bulk(false));
+    rig.conn.receive_zone_message_for_test(reward_message(semantic_bulk(RewardLane::Pending)));
     const auto old = rig.conn.rewards().lane(RewardLane::Pending);
     REQUIRE(old.tabs.size() == 2);
-    rig.conn.receive_zone_packet_for_test(fixture::single(RewardLane::Pending, 44, 702, 14));
+    rig.conn.receive_zone_message_for_test(reward_message(semantic_collection(RewardLane::Pending, 44, 702, 14)));
     REQUIRE(rig.conn.rewards().lane(RewardLane::Pending).tabs.size() == 3);
-    rig.conn.receive_zone_packet_for_test(fixture::single(RewardLane::Pending, 43, 999, 71));
+    rig.conn.receive_zone_message_for_test(reward_message(semantic_collection(RewardLane::Pending, 43, 999, 71)));
     const auto current = rig.conn.rewards().lane(RewardLane::Pending);
     REQUIRE(current.tabs.size() == 3);
     CHECK(current.tabs[0].token == old.tabs[0].token);
     CHECK_FALSE(rig.conn.reward_claim(current.revision, old.tabs[1].token, 13));
-    rig.conn.receive_zone_packet_for_test(fixture::clear(RewardLane::Pending, false));
+    rig.conn.receive_zone_message_for_test(reward_message(semantic_clear(RewardLane::Pending, false)));
     CHECK(rig.conn.rewards().lane(RewardLane::Pending).revision == current.revision);
-    auto bulk_preview = fixture::bulk(false); bulk_preview.opcode = 0x6471;
-    rig.conn.receive_zone_packet_for_test(bulk_preview);
+    rig.conn.receive_zone_message_for_test(reward_message(semantic_bulk(RewardLane::Preview)));
     REQUIRE(rig.conn.rewards().lane(RewardLane::Preview).tabs.size() == 2);
-    rig.conn.receive_zone_packet_for_test(fixture::single(RewardLane::Preview, 44, 702, 14));
+    rig.conn.receive_zone_message_for_test(reward_message(semantic_collection(RewardLane::Preview, 44, 702, 14)));
     CHECK(rig.conn.rewards().lane(RewardLane::Preview).tabs.size() == 1);
     for (const auto lane : {RewardLane::Pending, RewardLane::Preview}) {
-        rig.conn.receive_zone_packet_for_test(fixture::clear(lane, true));
+        rig.conn.receive_zone_message_for_test(reward_message(semantic_clear(lane, true)));
         CHECK(rig.conn.rewards().lane(lane).tabs.empty());
     }
 }
@@ -257,14 +320,14 @@ TEST_CASE("reward connection: preview handoff rechecks the received task and pre
         game::TaskOffers offers;
         game::TaskOffer offer; offer.task_id = 999; offer.reward_preview = true;
         offers.offers.push_back(offer);
-        rig.conn.receive_zone_packet_for_test(encode_task_select(offers, Op::TaskSelectWindow));
+        rig.conn.receive_zone_message_for_test({messages::GameOpcode::TaskSelectWindow, offers});
         const auto owner = hooks.new_owner("reward preview task test");
         hooks.on_packet(owner, plugin::Stream::Zone, plugin::Direction::Out, 0x6471,
             [&](AppPacket& packet) {
                 if (action(packet) == 4) {
                     if (remove) offers.offers.clear();
                     else offers.offers[0].reward_preview = false;
-                    rig.conn.receive_zone_packet_for_test(encode_task_select(offers, Op::TaskSelectWindow));
+                    rig.conn.receive_zone_message_for_test({messages::GameOpcode::TaskSelectWindow, offers});
                 }
                 return plugin::Flow::Continue;
             });

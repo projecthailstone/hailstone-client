@@ -11,7 +11,8 @@
 #include "game/world_state.h"
 #include "mock_server/harness.h"
 #include "mq_test_world.h"
-#include "net/spell_packets.h"
+#include "net/messages/zone.h"
+#include "net/messages/spell.h"
 
 using namespace hailstone;
 
@@ -52,20 +53,18 @@ struct EyeRig : test::Rig {
         next_tick = net::GameConnection::now_ms() + 7000;
     }
     void buff(bool fade = false) {
-        net::BuffPacket packet;
-        packet.entity_id = conn.world().player_id;
-        packet.slot = 2;
-        packet.fade = fade ? 1u : 0u;
-        packet.buff.effect_type = 2;
-        packet.buff.spell_id = 6700;
-        packet.buff.level = 60;
-        packet.buff.duration = 10;
-        conn.receive_zone_packet_for_test(net::encode(packet));
+        net::messages::BuffChange change;
+        change.entity_id = conn.world().player_id;
+        change.slot = 2;
+        change.fade = fade ? 1u : 0u;
+        change.buff.effect_type = 2;
+        change.buff.spell_id = 6700;
+        change.buff.level = 60;
+        change.buff.duration = 10;
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::Buff, change});
     }
     void spawn(net::Spawn eye) {
-        auto packet = net::encode(eye);
-        packet.opcode = net::to_wire(net::Op::NewSpawn);
-        conn.receive_zone_packet_for_test(packet);
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::NewSpawn, std::move(eye)});
     }
     void tick() {
         conn.passage_of_time_for_test(next_tick);
@@ -144,9 +143,9 @@ TEST_CASE("An Eye buff controls and reports the Eye while preserving the player'
         }
     CHECK(moved_eye);
     CHECK(c.world().player()->position == body);
-    REQUIRE(test::MockEqServer::count(rig.server.zone_log, net::Op::AckPacket) > 0);
+    REQUIRE(test::MockEqServer::count(rig.server.zone_log, net::rof2::Op::AckPacket) > 0);
     for (const auto& packet : rig.server.zone_log)
-        if (packet.opcode == net::to_wire(net::Op::AckPacket)) {
+        if (packet.opcode == net::rof2::to_wire(net::rof2::Op::AckPacket)) {
             REQUIRE(packet.data.size() == 4);
             ByteReader reader(packet.data);
             CHECK(reader.le<std::uint32_t>() == 987);
@@ -156,10 +155,10 @@ TEST_CASE("An Eye buff controls and reports the Eye while preserving the player'
     CHECK(c.controlled_id() == 0);
     CHECK(c.world().view_id == 0);
     CHECK(c.world().player()->position == body);
-    REQUIRE(rig.until([&] { return test::MockEqServer::count(rig.server.zone_log, net::Op::AckPacket) >= 2; }));
+    REQUIRE(rig.until([&] { return test::MockEqServer::count(rig.server.zone_log, net::rof2::Op::AckPacket) >= 2; }));
     const net::AppPacket* restored = nullptr;
     for (const auto& packet : rig.server.zone_log)
-        if (packet.opcode == net::to_wire(net::Op::AckPacket)) restored = &packet;
+        if (packet.opcode == net::rof2::to_wire(net::rof2::Op::AckPacket)) restored = &packet;
     REQUIRE(restored);
     ByteReader restored_view(restored->data);
     CHECK(restored_view.le<std::uint32_t>() == 0);
@@ -173,7 +172,9 @@ TEST_CASE("An Eye's view, control and physics incarnation retire at a zone hand-
     rig.buff();
     rig.tick();
     REQUIRE(c.eye_id() == 987);
-    c.receive_world_packet_for_test(net::encode(net::ZoneServerInfo{"127.0.0.1", 9000}));
+    net::ZoneChange accepted_zone;
+    accepted_zone.success = 1;
+    c.receive_zone_message_for_test({net::messages::GameOpcode::ZoneChange, accepted_zone});
     CHECK(c.eye_id() == 0);
     CHECK(c.controlled_id() == 0);
     CHECK(c.world().view_id == 0);
@@ -189,7 +190,7 @@ TEST_CASE("Eye depop, reused spawn IDs and death retire control and the summon b
     rig.buff();
     rig.tick();
     REQUIRE(c.eye_id() == 987);
-    c.receive_zone_packet_for_test(net::encode_delete_spawn(987));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::DeleteSpawn, net::SpawnDespawn{987, false}});
     CHECK(c.eye_id() == 0);
     CHECK(c.spell_state().buffs[2].empty());
     eye.name = "a_rat000";
@@ -204,7 +205,7 @@ TEST_CASE("Eye depop, reused spawn IDs and death retire control and the summon b
     net::Death death;
     death.spawn_id = 987;
     death.corpse_id = 987;
-    c.receive_zone_packet_for_test(net::encode(death));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::Death, death});
     CHECK(c.eye_id() == 0);
     CHECK_FALSE(c.player_status().dead);
     CHECK(c.spell_state().buffs[2].empty());
@@ -214,7 +215,7 @@ TEST_CASE("Eye depop, reused spawn IDs and death retire control and the summon b
     REQUIRE(c.eye_id() == 987);
     death.spawn_id = c.world().player_id;
     death.corpse_id = death.spawn_id;
-    c.receive_zone_packet_for_test(net::encode(death));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::Death, death});
     CHECK(c.eye_id() == 0);
     CHECK(c.player_status().dead);
 }
@@ -278,5 +279,5 @@ TEST_CASE("A held Eye stays held when a same-named Eye appears after control is 
     rig.tick();
     CHECK(c.eye_id() == 987);
     CHECK_FALSE(c.spell_state().buffs[2].empty());
-    CHECK(test::MockEqServer::count(rig.server.zone_log, net::Op::BuffRemoveRequest) == 0);
+    CHECK(test::MockEqServer::count(rig.server.zone_log, net::rof2::Op::BuffRemoveRequest) == 0);
 }

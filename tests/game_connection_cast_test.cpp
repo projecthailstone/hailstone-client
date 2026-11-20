@@ -10,8 +10,8 @@
 #include "game/spells.h"
 #include "mock_server/harness.h"
 #include "mq_test_world.h"
-#include "net/item_packets.h"
-#include "net/spell_packets.h"
+#include "net/protocol/rof2/packets/item_packets.h"
+#include "net/protocol/rof2/packets/spell_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::net;
@@ -56,7 +56,7 @@ TEST_CASE("CastSpell over the live adapter: SPA 129 range focus from a worn item
     REQUIRE(world.spawns.count(kTarget) == 1);
     REQUIRE(world.spawns.at(kTarget).is_npc);
 
-    const auto casts = [&] { return MockEqServer::count(rig.server.zone_log, Op::CastSpell); };
+    const auto casts = [&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::CastSpell); };
     // Places the target `distance` units from the player along one axis and clicks gem 1 (CastSpell runs at once).
     auto cast_at = [&](float distance) {
         auto& sp = A::spells(conn);
@@ -97,7 +97,7 @@ TEST_CASE("CastSpell over the live adapter: SPA 129 range focus from a worn item
     REQUIRE(rig.until([&] { return casts() == 1; }));
     const AppPacket* sent = nullptr;
     for (const auto& p : rig.server.zone_log)
-        if (from_wire(p.opcode) == Op::CastSpell) sent = &p;
+        if (rof2::from_wire(p.opcode) == rof2::Op::CastSpell) sent = &p;
     REQUIRE(sent);
     auto packet = decode_cast_spell(*sent);
     REQUIRE(packet);

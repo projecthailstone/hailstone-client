@@ -22,9 +22,11 @@
 #include "game/lua_social.h"
 #include "game/pet_buttons.h"
 #include "game/spells.h"
-#include "net/game_connection.h"
-#include "net/pet_packets.h"
-#include "net/spell_packets.h"
+#include "net/connection/game_connection.h"
+#include "net/messages/pet.h"
+#include "net/messages/spell.h"
+#include "net/protocol/rof2/packets/pet_packets.h"
+#include "net/protocol/rof2/packets/spell_packets.h"
 #include "scratch_dir.h"
 #include "ui/dev_screens.h"
 #include "ui/lua/lua_host.h"
@@ -155,16 +157,16 @@ TEST_CASE("Lua slot reads: hs.HotButtonInfo, hs.GemInfo and hs.BuffSlot's overla
         api.begin_frame(); // the pet window links itself to the connection (its toggle states) on its first frame
 
         // a gem memorized (gem 1), and the buffs: a permanent one with hits in slot 2, an empty slot before it
-        conn.receive_zone_packet_for_test(net::encode(net::MemorizeSpell{1, 201, net::kMemMemorize, 0}));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::MemorizeSpell, net::messages::MemorizationEvent{1, 201, net::kMemMemorize, 0}});
         REQUIRE(conn.spell_state().gems[1].spell == 201);
-        net::BuffPacket bp;
+        net::messages::BuffChange bp;
         bp.entity_id = 7;
         bp.buff.effect_type = 2;
         bp.buff.spell_id = 300;
         bp.buff.duration = -2;
         bp.buff.num_hits = 2;
         bp.slot = 2;
-        conn.receive_zone_packet_for_test(net::encode(bp));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::Buff, bp});
         REQUIRE(conn.spell_state().buffs[2].spell == 300);
 
         // bar 1: a social, a pet command (lower case: the pet word is matched without case), the gem's button, an
@@ -179,7 +181,7 @@ TEST_CASE("Lua slot reads: hs.HotButtonInfo, hs.GemInfo and hs.BuffSlot's overla
         store.current(0, 1) = follow;
         store.current(0, 2) = {game::HotButtonType::SpellGem, 1};
         store.current(0, 4) = {game::HotButtonType::MenuButton, 4, -1, -1, "0000000000000000", 0, "Sit"};
-        conn.receive_zone_packet_for_test(net::encode(net::PetCommandState{3, 1})); // follow on
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::PetCommandState, net::PetButtonState{3, true}}); // follow on
         api.begin_frame();
         REQUIRE(run(L, "return hs.HotButtonChecked('HotButtonWnd', 'HB_Button2')") == "true");
 
@@ -274,8 +276,8 @@ TEST_CASE("Lua slot reads: both packs' hot bars, spell gems and buff trays draw 
                 }
             };
             frames(1);
-            conn.receive_zone_packet_for_test(net::encode(net::MemorizeSpell{1, 201, net::kMemMemorize, 0}));
-            net::BuffPacket bp;
+            conn.receive_zone_message_for_test({net::messages::GameOpcode::MemorizeSpell, net::messages::MemorizationEvent{1, 201, net::kMemMemorize, 0}});
+            net::messages::BuffChange bp;
             bp.entity_id = 7;
             bp.buff.effect_type = 2;
             bp.buff.spell_id = 300;
@@ -283,12 +285,12 @@ TEST_CASE("Lua slot reads: both packs' hot bars, spell gems and buff trays draw 
             bp.buff.num_hits = 2;
             for (std::uint32_t slot : {2u, 5u, 43u}) { // two buffs (a gap between) and a song
                 bp.slot = slot;
-                conn.receive_zone_packet_for_test(net::encode(bp));
+                conn.receive_zone_message_for_test({net::messages::GameOpcode::Buff, bp});
             }
             bp.buff.spell_id = 200; // and one running out: its time left shows
             bp.buff.duration = 3;
             bp.slot = 7;
-            conn.receive_zone_packet_for_test(net::encode(bp));
+            conn.receive_zone_message_for_test({net::messages::GameOpcode::Buff, bp});
             store.social(0).name = "A long social name";
             store.social(0).color = 5;
             for (int bar : {0, 1}) {
@@ -307,7 +309,7 @@ TEST_CASE("Lua slot reads: both packs' hot bars, spell gems and buff trays draw 
             CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
             // the social renamed, the gem forgotten: the records kept from frame to frame are read again
             store.social(0).name = "Hi";
-            conn.receive_zone_packet_for_test(net::encode(net::MemorizeSpell{1, 201, net::kMemForget, 0}));
+            conn.receive_zone_message_for_test({net::messages::GameOpcode::MemorizeSpell, net::messages::MemorizationEvent{1, 201, net::kMemForget, 0}});
             frames(2);
             CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
         }

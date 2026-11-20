@@ -11,7 +11,7 @@
 
 #include "game/bank_snapshot.h"
 #include "mock_server/harness.h"
-#include "net/item_packets.h"
+#include "net/protocol/rof2/packets/item_packets.h"
 #include "scratch_dir.h"
 
 using namespace hailstone;

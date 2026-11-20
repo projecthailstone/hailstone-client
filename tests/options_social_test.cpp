@@ -1,10 +1,11 @@
 // The Options window's social options acting as the original's COptionsWnd::GeneralPageWndNotification @0x702640
-// and DisplayPageWndNotification @0x7090f0 do (game/client_options.h, net/game_connection_social.cpp): the
+// and DisplayPageWndNotification @0x7090f0 do (game/client_options.h, net/connection/game_connection_social.cpp): the
 // anonymity rules of /anonymous and /roleplay, how loadOptions reads the confirmation keys, and, against the mock
 // EQEmu, the spawn appearances, the guild invitation declined at once and the raid invitation's confirmation.
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <fstream>
 
 #include "core/ini_file.h"
@@ -12,8 +13,10 @@
 #include "game/client_options.h"
 #include "game/social.h"
 #include "mock_server/harness.h"
-#include "net/social_packets.h"
-#include "net/zone_packets.h"
+#include "net/protocol/rof2/packets/social_packets.h"
+#include "net/protocol/extensions/hailstone/guild_packets.h"
+#include "net/protocol/extensions/hailstone/settings_packets.h"
+#include "net/protocol/rof2/packets/zone_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::net;
@@ -93,7 +96,7 @@ namespace {
 std::vector<SpawnAppearance> appearances(const MockEqServer& server) {
     std::vector<SpawnAppearance> out;
     for (const auto& p : server.zone_log)
-        if (from_wire(p.opcode) == Op::SpawnAppearance)
+        if (rof2::from_wire(p.opcode) == rof2::Op::SpawnAppearance)
             if (auto a = decode_spawn_appearance(p)) out.push_back(*a);
     return out;
 }
@@ -171,9 +174,9 @@ TEST_CASE("mock server: GuildInvites off declines another guild's invitation; Ra
     invite.guild_id = 5;
     invite.rank = 8;
     server.zone.send_reliable(encode_guild_invite(invite));
-    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, Op::GuildInviteAccept) == 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, rof2::Op::GuildInviteAccept) == 1; }));
     for (const auto& p : server.zone_log)
-        if (from_wire(p.opcode) == Op::GuildInviteAccept) {
+        if (rof2::from_wire(p.opcode) == rof2::Op::GuildInviteAccept) {
             auto a = decode_guild_invite_accept(p);
             REQUIRE(a);
             CHECK(a->inviter == "Recruiter");
@@ -193,9 +196,9 @@ TEST_CASE("mock server: GuildInvites off declines another guild's invitation; Ra
     CHECK(conn.confirmation()->id == kConfirmRaidInvite);
     CHECK(conn.raid().inviter == "Boss");
     conn.answer_confirmation(true);
-    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, Op::RaidInvite) == 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, rof2::Op::RaidInvite) == 1; }));
     for (const auto& p : server.zone_log)
-        if (from_wire(p.opcode) == Op::RaidInvite) {
+        if (rof2::from_wire(p.opcode) == rof2::Op::RaidInvite) {
             auto g = decode_raid_update(p);
             REQUIRE(g);
             CHECK(g->general.action == kRaidAccept);
@@ -225,12 +228,20 @@ TEST_CASE("mock server: world-wide guild invitations through server/'s script (O
     ConnectionOptions options = quick_options();
     options.profile_id = "test-server";
     options.servers_dir = servers.path();
+    options.zone_protocol.extension_codecs.push_back("hailstone");
     Rig rig(MockConfig::standard(), options);
     auto& conn = rig.conn;
     auto& server = rig.server;
     REQUIRE(rig.to_zone());
 
-    // The hello after the zone-in; until the script answers, invitations stay stock.
+    // A Hailstone-enabled server replies to the explicitly configured
+    // settings probe before the client may send the guild capability hello.
+    REQUIRE(rig.until([&] {
+        return std::any_of(server.zone_log.begin(), server.zone_log.end(), [](const auto& p) {
+            return p.opcode == kOpHailstoneSettingsRequest;
+        });
+    }));
+    server.zone.send_reliable(encode(HailstoneSettings{}));
     REQUIRE(rig.until([&] { return !hailstone_guild_sent(server).empty(); }));
     CHECK(hailstone_guild_sent(server)[0].action == HailstoneGuildAction::Hello);
     CHECK_FALSE(conn.guild_world_invites());
@@ -244,12 +255,12 @@ TEST_CASE("mock server: world-wide guild invitations through server/'s script (O
     perm[0x50] = std::byte{1};
     perm[0x54] = std::byte{7};
     perm[0x58] = std::byte{1};
-    server.zone.send_reliable(AppPacket(to_wire(Op::GuildUpdate), perm));
+    server.zone.send_reliable(AppPacket(rof2::to_wire(rof2::Op::GuildUpdate), perm));
     REQUIRE(rig.until([&] { return conn.guild().permissions.has(1, 7); }));
 
     // Without the script's answer an absent player gets the stock OP_GuildInvite (the server says "must be in zone").
     conn.send_command("/guildinvite Faraway");
-    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, Op::GuildInvite) == 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, rof2::Op::GuildInvite) == 1; }));
 
     // With it, OP_HailstoneGuild action 1 {whom, our guild, rank 8}.
     server.zone.send_reliable(encode_hailstone_guild({HailstoneGuildAction::Hello, "", 0, kHailstoneGuildWorldInvites}, true));
@@ -261,7 +272,7 @@ TEST_CASE("mock server: world-wide guild invitations through server/'s script (O
     CHECK(inv.name == "Faraway");
     CHECK(inv.guild_id == 5);
     CHECK(inv.value == 8);
-    CHECK(MockEqServer::count(server.zone_log, Op::GuildInvite) == 1);
+    CHECK(MockEqServer::count(server.zone_log, rof2::Op::GuildInvite) == 1);
 
     // An invitation from another zone: the stock question, answered with OP_HailstoneGuild action 2 (not
     // OP_GuildInviteAccept).
@@ -277,7 +288,7 @@ TEST_CASE("mock server: world-wide guild invitations through server/'s script (O
     CHECK(ans.name == "Recruiter");
     CHECK(ans.guild_id == 9);
     CHECK(ans.value == 8);
-    CHECK(MockEqServer::count(server.zone_log, Op::GuildInviteAccept) == 0);
+    CHECK(MockEqServer::count(server.zone_log, rof2::Op::GuildInviteAccept) == 0);
     CHECK(conn.guild().inviter.empty());
 
     // Options/GuildInvites off: declined at once with 0xb, the same way.

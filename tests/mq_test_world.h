@@ -10,6 +10,7 @@
 #include <fstream>
 #include <memory>
 #include <functional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -17,12 +18,16 @@
 #include "core/game_dir.h"
 #include "game/coords.h"
 #include "game/mechanics/tables.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
+#include "mock_server/harness.h"
 #include "scratch_dir.h"
 
 namespace hailstone::net {
 
 struct GameConnectionTestAccess {
+    // Exercise the canonical retirement performed on an accepted zone transfer,
+    // without fabricating a World ZoneServerInfo packet in an invalid state.
+    static void retire_zone_observations(GameConnection& c) { c.retire_zone_observations(); }
     // Synthetic eligibility only; callers still provide their own connection state/player actor.
     static void tracking_skill_fixture(GameConnection& c) {
         if (!c.profile_) c.profile_.emplace();
@@ -72,7 +77,6 @@ struct GameConnectionTestAccess {
     static std::optional<NewZone>& new_zone(GameConnection& c) { return c.new_zone_; }
     static std::vector<ZonePoint>& zone_points(GameConnection& c) { return c.zone_points_; }
     static std::vector<game::Door>& doors(GameConnection& c) { return c.doors_; }
-    static void handle_zone(GameConnection& c, const AppPacket& p) { c.handle_zone(p); }
     static game::AltAdvState& alt_adv(GameConnection& c) { return c.alt_adv_; }
     static void update_usable_gems(GameConnection& c) { c.update_usable_gems(); }
     static void memorize_tick(GameConnection& c, std::int64_t now) { c.memorize_tick(now); }
@@ -128,10 +132,22 @@ struct World {
     std::filesystem::path dir;
     std::unique_ptr<GameDir> game;
     std::unique_ptr<net::GameConnection> conn;
+    std::unique_ptr<test::MockEqServer> mock;
 
-    explicit World(const std::string& name, net::ConnectionOptions options = {}) {
+    explicit World(const std::string& name, net::ConnectionOptions options = {}, bool connected = false) {
         dir = test::unique_temp_path(name); // scratch_dir.h: concurrent test runs share the temp folder
         std::filesystem::create_directories(dir);
+        // The direct MQ fixture intentionally has no race overrides. Keep a
+        // valid, non-record racedata file so defaults are used without claiming
+        // the real EverQuest installation is missing.
+        std::ofstream(dir / "racedata.txt") << "# No race overrides in the MQ test fixture\n";
+        // The MQ fixture has no trained caps or class-level bonuses. Provide
+        // valid zero-valued tables, rather than triggering missing-asset warnings
+        // whenever a test reads the training projection. Real game-file lookup
+        // and missing-file diagnostics are unchanged.
+        std::filesystem::create_directories(dir / "Resources");
+        std::ofstream(dir / "Resources/SkillCaps.txt") << "1^1^1^0^0\n";
+        std::ofstream(dir / "Resources/BaseData.txt") << "1^1^0^0^0^0^0^0^0^0\n";
         {
             std::ofstream f(dir / "spells_us.txt");
             f << spell_line({{0, "200"}, {1, "Minor Healing"}, {9, "100"}, {13, "1500"}, {17, "0"}, {19, "10"},
@@ -162,6 +178,17 @@ struct World {
         game = std::make_unique<GameDir>(dir);
         options.servers_dir = dir / "servers"; // the character's files stay in the scratch folder
         conn = std::make_unique<net::GameConnection>(*game, options);
+        if (connected) {
+            mock = std::make_unique<test::MockEqServer>();
+            auto step = [&] { conn->update(); mock->poll(); };
+            conn->start(mock->ticket());
+            if (!test::pump(step, [&] { return conn->state() == net::ConnectionState::CharacterSelect; }))
+                throw std::runtime_error("MQ test: mock world connection did not reach character select");
+            conn->enter_world("Gennro");
+            if (!test::pump(step, [&] { return conn->state() == net::ConnectionState::InZone &&
+                                           conn->player_status().max_hp != 0; }))
+                throw std::runtime_error("MQ test: mock zone connection did not finish entering");
+        }
         using A = net::GameConnectionTestAccess;
         A::state(*conn) = net::ConnectionState::InZone;
         A::character(*conn) = "Tester";
@@ -180,6 +207,7 @@ struct World {
         ps.max_endurance = 100;
         ps.level = 50;
         auto& w = A::world(*conn);
+        if (connected) w.spawns.clear(); // The local MQ scenario supplies its own actors and player identity.
         w.zone_short_name = "qeynos2";
         w.zone_long_name = "North Qeynos";
         w.player_id = 1;
@@ -189,6 +217,10 @@ struct World {
         add(12, "Groupie", false, 48, game::server_to_world({0, -20, 0}));
         add(13, "a_rat02", true, 3, game::server_to_world({200, 0, 0}));
         w.spawns[13].is_corpse = true;
+        // The connected mock character was at its own zone-in coordinates.
+        // This scenario replaces that actor at the origin: align the local
+        // motion snapshot too, because interaction reach uses position_.
+        conn->set_player_motion({0, 0, 0}, 0, {}, false);
         w.target_id = 10;
         auto& sp = A::spells(*conn);
         sp.gems[0].spell = 200;

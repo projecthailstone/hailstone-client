@@ -1,4 +1,4 @@
-// Fellowship window behavior over packets from an in-process server.
+// Fellowship window behavior with server-owned semantic state and real outgoing request packets.
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -17,7 +17,9 @@
 #include "core/game_dir.h"
 #include "manual_clock.h"
 #include "mock_server/harness.h"
-#include "net/fellowship_packets.h"
+#include "net/messages/fellowship.h"
+#include "net/messages/message.h"
+#include "net/protocol/rof2/packets/fellowship_packets.h"
 #include "plugin/hooks.h"
 #include "scratch_dir.h"
 #include "ui/dev_screens.h"
@@ -27,41 +29,22 @@ using namespace hailstone;
 
 namespace {
 
-net::AppPacket roster(const std::vector<net::FellowshipMember>& members, std::uint32_t id = 71,
-                      const std::string& motd = "Received message", bool camp = false,
-                      std::uint32_t expiry = 2000000000) {
-    const auto slots = std::max(net::kNativeFellowshipMembers, members.size());
-    ByteWriter w;
-    w.le<std::uint32_t>(5);
-    w.le(id);
-    w.fixed_string("Fixture fellowship", 64);
-    w.fixed_string(motd, 1024);
-    w.le(static_cast<std::uint32_t>(members.size()));
-    for (const auto& member : members) {
-        w.le(member.character_id);
-        w.fixed_string(member.name, 64);
-        w.le(member.zone_id);
-        w.le(member.level);
-        w.le(member.class_);
-        w.le(member.last_seen);
-    }
-    w.zeros((slots - members.size()) * 84);
-    w.le<std::uint32_t>(1);
-    w.zeros(slots * 32);
-    for (const auto& member : members) w.le<std::uint8_t>(member.sharing ? 1 : 0);
-    w.zeros(slots - members.size());
-    for (const auto& member : members) w.le<std::uint8_t>(member.capped ? 1 : 0);
-    w.zeros(slots - members.size());
-    for (const auto& member : members) w.le<std::uint8_t>(member.offline ? 1 : 0);
-    w.zeros(slots - members.size());
-    w.f32(20);
-    w.f32(10);
-    w.f32(30);
-    w.le<std::uint32_t>(camp ? 2 : 0);
-    w.le(expiry);
-    w.zeros(8);
-    w.le<std::uint32_t>(camp ? 1 : 0);
-    return net::AppPacket(net::kOpFellowshipRoster, w.take());
+std::uint32_t wire_fellowship_action(net::FellowshipAction action) {
+    // The RoF2 packet starts with a one-based action code; semantic actions are zero-based.
+    return static_cast<std::uint32_t>(action) + 1u;
+}
+
+net::messages::GameMessage roster(const std::vector<net::FellowshipMember>& members, std::uint32_t id = 71,
+                                  const std::string& motd = "Received message", bool camp = false,
+                                  std::uint32_t expiry = 2000000000) {
+    net::FellowshipState state;
+    state.id = id;
+    state.name = "Fixture fellowship";
+    state.motd = motd;
+    state.members = members;
+    for (auto& member : state.members) member.offline = member.offline || member.zone_id == 0;
+    if (camp && !members.empty()) state.camp = net::FellowshipCamp{10, 20, 30, 2, expiry, true};
+    return {net::messages::GameOpcode::FellowshipRoster, std::move(state)};
 }
 
 std::vector<net::FellowshipMember> members(std::size_t count) {
@@ -116,7 +99,7 @@ TEST_CASE("fellowship window: 64 members remain selectable by identity after sor
     test::Rig rig(test::MockConfig::standard(), options);
     REQUIRE(rig.to_zone());
     auto list = members(64);
-    rig.conn.receive_zone_packet_for_test(roster(list));
+    rig.conn.receive_zone_message_for_test(roster(list));
     Window ui(rig);
     REQUIRE(ui.window);
     CHECK(ui.window->title(ui.host) == "Fellowship (64 members)");
@@ -135,16 +118,16 @@ TEST_CASE("fellowship window: 64 members remain selectable by identity after sor
     REQUIRE(ui.host.confirm);
     CHECK(ui.host.confirm->text.find("Member63") != std::string::npos);
     std::reverse(list.begin() + 1, list.end());
-    rig.conn.receive_zone_packet_for_test(roster(list));
+    rig.conn.receive_zone_message_for_test(roster(list));
     ui.answer(true);
     REQUIRE(sent.size() == 1);
     ByteReader request(sent.back().data);
-    CHECK(request.le<std::uint32_t>() == static_cast<std::uint32_t>(net::FellowshipAction::Remove));
+    CHECK(request.le<std::uint32_t>() == wire_fellowship_action(net::FellowshipAction::Remove));
     CHECK(request.le<std::uint32_t>() == 1064u);
     CHECK(rig.conn.fellowship().members.size() == 64); // waits for the server's answer
 
     list.erase(std::find_if(list.begin(), list.end(), [](const auto& m) { return m.character_id == 1064; }));
-    rig.conn.receive_zone_packet_for_test(roster(list));
+    rig.conn.receive_zone_message_for_test(roster(list));
     CHECK(ui.child("RemoveMemberButton").enabled == false);
     REQUIRE(ui.click("RemoveMemberButton"));
     CHECK_FALSE(ui.host.confirm);
@@ -155,23 +138,18 @@ TEST_CASE("fellowship window: MOTD drafts, self sharing and confirmations follow
     test::Rig rig;
     REQUIRE(rig.to_zone());
     auto list = members(3);
-    rig.conn.receive_zone_packet_for_test(roster(list));
-    ByteWriter vitality;
-    vitality.le<std::uint64_t>(5000000000);
-    vitality.le<std::uint64_t>(9000000000);
-    vitality.le<std::uint32_t>(15);
-    vitality.le<std::uint32_t>(0);
-    vitality.le<std::uint32_t>(50);
-    rig.conn.receive_zone_packet_for_test(net::AppPacket(net::kOpFellowshipVitality, vitality.take()));
+    rig.conn.receive_zone_message_for_test(roster(list));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::FellowshipVitality,
+                                            net::FellowshipVitality{5000000000ull, 9000000000ull, 15, 50}});
     Window ui(rig);
     REQUIRE(ui.window);
     CHECK(ui.child("MOTDInput").text == "Received message");
     CHECK(ui.child("FellowshipVitality").text == "XP vitality: 5000000000 / 9000000000    AA vitality: 15 / 50");
     REQUIRE(ui.window->set_text(ui.host, "MOTDInput", std::string(1400, 'x')));
     CHECK(ui.child("MOTDInput").text == std::string(1023, 'x'));
-    rig.conn.receive_zone_packet_for_test(roster(list));
+    rig.conn.receive_zone_message_for_test(roster(list));
     CHECK(ui.child("MOTDInput").text == std::string(1023, 'x'));
-    rig.conn.receive_zone_packet_for_test(roster(list, 71, "Server replacement"));
+    rig.conn.receive_zone_message_for_test(roster(list, 71, "Server replacement"));
     CHECK(ui.child("MOTDInput").text == "Server replacement");
     REQUIRE(ui.click("EndFellowshipButton"));
     REQUIRE(ui.host.confirm);
@@ -179,7 +157,7 @@ TEST_CASE("fellowship window: MOTD drafts, self sharing and confirmations follow
     CHECK(rig.conn.fellowship().active());
 
     std::swap(list[0], list[1]);
-    rig.conn.receive_zone_packet_for_test(roster(list));
+    rig.conn.receive_zone_message_for_test(roster(list));
     CHECK(ui.child("EndFellowshipButton").enabled == false);
     CHECK(ui.child("MOTDInput").enabled == false);
     CHECK_FALSE(ui.window->set_text(ui.host, "MOTDInput", "Forbidden"));
@@ -188,15 +166,15 @@ TEST_CASE("fellowship window: MOTD drafts, self sharing and confirmations follow
     CHECK(ui.child("ToggleExpSharingButton").enabled == true);
     CHECK(ui.child("RemoveMemberButton").enabled == false);
     list[1].capped = true;
-    rig.conn.receive_zone_packet_for_test(roster(list));
+    rig.conn.receive_zone_message_for_test(roster(list));
     CHECK(ui.child("ToggleExpSharingButton").enabled == false);
     list[1].sharing = true;
-    rig.conn.receive_zone_packet_for_test(roster(list));
+    rig.conn.receive_zone_message_for_test(roster(list));
     CHECK(ui.child("ToggleExpSharingButton").enabled == true);
 
     REQUIRE(ui.click("LeaveFellowshipButton"));
     REQUIRE(ui.host.confirm);
-    rig.conn.receive_zone_packet_for_test(roster({}, 71));
+    rig.conn.receive_zone_message_for_test(roster({}, 71));
     CHECK(ui.child("CreateFellowshipButton").enabled == true);
     CHECK(ui.child("LeaveFellowshipButton").enabled == false);
     ui.answer(true); // an old confirmation cannot affect a departed fellowship
@@ -214,18 +192,9 @@ TEST_CASE("fellowship window: campsite availability and selected kit control cre
     test::Rig rig(test::MockConfig::standard(), options);
     REQUIRE(rig.to_zone());
     const auto list = members(3);
-    rig.conn.receive_zone_packet_for_test(roster(list));
-    ByteWriter w;
-    w.le<std::uint32_t>(2);
-    w.le<std::uint8_t>(0);
-    w.le<std::uint32_t>(16);
-    w.le<std::uint32_t>(0);
-    w.fixed_string("Unavailable", 12);
-    w.le<std::uint8_t>(1);
-    w.le<std::uint32_t>(17);
-    w.le<std::uint32_t>(0);
-    w.fixed_string("Available", 10);
-    rig.conn.receive_zone_packet_for_test(net::AppPacket(net::kOpCampsiteKitList, w.take()));
+    rig.conn.receive_zone_message_for_test(roster(list));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::FellowshipKitList,
+        std::vector<net::FellowshipKit>{{false, 16, 0, "Unavailable"}, {true, 17, 0, "Available"}}});
     Window ui(rig);
     REQUIRE(ui.window);
     CHECK(ui.child("CreateCampsite").enabled == false);
@@ -240,10 +209,10 @@ TEST_CASE("fellowship window: campsite availability and selected kit control cre
     REQUIRE(ui.click("CreateCampsite"));
     REQUIRE(sent.size() == 1);
     ByteReader request(sent.back().data);
-    CHECK(request.le<std::uint32_t>() == static_cast<std::uint32_t>(net::FellowshipAction::CreateCamp));
+    CHECK(request.le<std::uint32_t>() == wire_fellowship_action(net::FellowshipAction::CreateCamp));
     request.skip(0x428 - 4);
     CHECK(request.le<std::uint32_t>() == 17u);
-    rig.conn.receive_zone_packet_for_test(roster(list, 71, "Received message", true));
+    rig.conn.receive_zone_message_for_test(roster(list, 71, "Received message", true));
     CHECK(ui.child("CreateCampsite").enabled == false);
     CHECK(ui.child("DestroyCampsite").enabled == true);
     CHECK(ui.child("CampsiteViewer").text == "Location: 20.0, 10.0, 30.0");
@@ -252,13 +221,13 @@ TEST_CASE("fellowship window: campsite availability and selected kit control cre
     ui.answer(true);
     REQUIRE(sent.size() == 2);
     ByteReader destroy(sent.back().data);
-    CHECK(destroy.le<std::uint32_t>() == static_cast<std::uint32_t>(net::FellowshipAction::DestroyCamp));
+    CHECK(destroy.le<std::uint32_t>() == wire_fellowship_action(net::FellowshipAction::DestroyCamp));
 }
 
 TEST_CASE("fellowship window: camp expiry counts down without changing server-owned camp state") {
     test::ManualClock clock;
     auto options = test::quick_options();
-    options.session.clock = clock.source();
+    options.world_protocol.session_config.clock = clock.source(); options.zone_protocol.session_config.clock = clock.source();
     test::Rig rig(test::MockConfig::standard(), options);
     REQUIRE(rig.to_zone());
     clock.hold();
@@ -269,7 +238,7 @@ TEST_CASE("fellowship window: camp expiry counts down without changing server-ow
         return std::int64_t{2000000000} + std::chrono::duration_cast<std::chrono::seconds>(source() - began).count();
     };
     const auto list = members(3);
-    rig.conn.receive_zone_packet_for_test(roster(list, 71, "Camp timer", true, 2000003661));
+    rig.conn.receive_zone_message_for_test(roster(list, 71, "Camp timer", true, 2000003661));
     CHECK(ui.child("CampsiteTime").text == "Time remaining: 1:01:01");
     clock.advance(std::chrono::seconds(61));
     CHECK(ui.child("CampsiteTime").text == "Time remaining: 1:00:00");
@@ -277,9 +246,9 @@ TEST_CASE("fellowship window: camp expiry counts down without changing server-ow
     CHECK(ui.child("CampsiteTime").text == "Awaiting campsite update");
     CHECK(rig.conn.fellowship().camp.active);
     CHECK(ui.child("DestroyCampsite").enabled == true);
-    rig.conn.receive_zone_packet_for_test(roster(list, 71, "Camp timer", true, 0));
+    rig.conn.receive_zone_message_for_test(roster(list, 71, "Camp timer", true, 0));
     CHECK(ui.child("CampsiteTime").text == "Remaining time unavailable");
-    rig.conn.receive_zone_packet_for_test(roster(list));
+    rig.conn.receive_zone_message_for_test(roster(list));
     CHECK(ui.child("CampsiteTime").text == "");
 }
 
@@ -294,12 +263,10 @@ TEST_CASE("fellowship window: campsite references retain DBString type-zero STML
     }
     rig.game.set_overlay(scratch.path());
     rig.conn.reload_game_files();
-    rig.conn.receive_zone_packet_for_test(roster(members(3)));
+    rig.conn.receive_zone_message_for_test(roster(members(3)));
     const auto send_kit = [&](bool available, std::uint32_t reference) {
-        ByteWriter w;
-        w.le<std::uint32_t>(1); w.le<std::uint8_t>(available ? 1 : 0);
-        w.le<std::uint32_t>(17); w.le(reference); w.fixed_string("Fixture <camp>", 15);
-        rig.conn.receive_zone_packet_for_test(net::AppPacket(net::kOpCampsiteKitList, w.take()));
+        rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::FellowshipKitList,
+            std::vector<net::FellowshipKit>{{available, 17, reference, "Fixture <camp>"}}});
     };
     send_kit(true, 900001);
     Window ui(rig);
@@ -324,7 +291,7 @@ TEST_CASE("fellowship window: installed category identifiers produce native quer
     auto options = test::quick_options(); options.hooks = &hooks;
     test::Rig rig(test::MockConfig::standard(), options);
     REQUIRE(rig.to_zone());
-    rig.conn.receive_zone_packet_for_test(roster(members(3)));
+    rig.conn.receive_zone_message_for_test(roster(members(3)));
     test::ScratchDir scratch("fellowship_category_ui");
     const auto catalog = scratch.path() / "Resources" / "campsitecategories.txt";
     std::filesystem::create_directories(catalog.parent_path());
@@ -372,7 +339,7 @@ TEST_CASE("fellowship UI packs: a full roster draws with vitality at normal and 
         CAPTURE(page);
         test::Rig rig;
         REQUIRE(rig.to_zone());
-        rig.conn.receive_zone_packet_for_test(roster(members(64), 71, "Render fixture", true, 2000003600));
+        rig.conn.receive_zone_message_for_test(roster(members(64), 71, "Render fixture", true, 2000003600));
         test::ScratchDir scratch("fellowship_ui_pack");
         const auto settings = scratch.path() / "ui.txt";
         {
@@ -385,10 +352,8 @@ TEST_CASE("fellowship UI packs: a full roster draws with vitality at normal and 
         }
         rig.game.set_overlay(scratch.path());
         rig.conn.reload_game_files();
-        ByteWriter kit;
-        kit.le<std::uint32_t>(1); kit.le<std::uint8_t>(1);
-        kit.le<std::uint32_t>(17); kit.le<std::uint32_t>(900001); kit.fixed_string("Fixture <camp>", 15);
-        rig.conn.receive_zone_packet_for_test(net::AppPacket(net::kOpCampsiteKitList, kit.take()));
+        rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::FellowshipKitList,
+            std::vector<net::FellowshipKit>{{true, 17, 900001, "Fixture <camp>"}}});
         const auto scripts = std::filesystem::path(__FILE__).parent_path().parent_path() / "ui" / pack;
         std::unique_ptr<ImGuiContext, void(*)(ImGuiContext*)> context(ImGui::CreateContext(), ImGui::DestroyContext);
         ImGui::GetIO().IniFilename = nullptr;

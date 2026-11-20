@@ -15,6 +15,8 @@
 //    OP_GroupDisbandYou 12001 and drops the group, colour 0x111.
 // Members are opaque handles (-1 none); GroupCalls carries the virtual calls.
 
+#include "core/wrap_math.h"
+#include "net/messages/opcode.h"
 #include <array>
 #include <cstdint>
 #include <functional>
@@ -23,6 +25,12 @@
 #include <vector>
 
 namespace hailstone::game {
+
+// Inspect-buff display time uses the original client's wrapped 32-bit arithmetic.
+// A large tick count must wrap before the signed division, not be widened.
+constexpr std::int32_t inspect_buff_minutes(std::int32_t ticks) {
+    return core::wrapped_div((static_cast<std::uint32_t>(ticks) * 3u + 15u) * 2u, 60);
+}
 
 inline constexpr std::uint32_t kGroupChatColor = 0x111;
 inline constexpr std::uint32_t kStrJoinedGroup = 1399, kStrLeftGroup = 12005, kStrYouAreLeader = 5040,
@@ -62,7 +70,7 @@ GroupLine group_message_line(std::uint32_t code, bool about_me);
 
 // HandleWorldMessage_Group's packet (GroupGeneric / GroupJoin, 148 bytes).
 struct GroupWorldPacket {
-    std::uint32_t opcode = 0;
+    net::messages::GameOpcode opcode = net::messages::GameOpcode::Unknown;
     std::string name;          // +0
     std::string name2;         // +0x40
     std::int8_t merc = 0;      // +0x80
@@ -133,7 +141,7 @@ struct GroupInviteState {
     std::string pending_inviter;           // __Inviter (0xe63528)
 };
 struct GroupInviteInput {
-    std::uint32_t opcode = kOpGroupInvite; // 0x6110 or 0x32c2
+    bool first_invite_opcode = true; // 0x6110 or 0x32c2
     std::string inviter;                   // packet +0x40
     std::string my_name;                   // the local player's name
     std::uint32_t word_148 = 0;            // packet +0x94 (read as is; past EQEmu's 148 bytes: 0 here)

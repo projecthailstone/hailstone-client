@@ -2,7 +2,7 @@
 
 // The server end of one SOE ("daybreak") session on loopback UDP, for the offline integration tests. It is the
 // peer of net::Session: it answers the SessionRequest, decodes datagrams with the client's own codec
-// (net/session_codec.h), acknowledges what it receives the way EQEmu does (docs/protocol/session.md, "Receiving":
+// (net/session/soe/framing.h), acknowledges what it receives the way EQEmu does (docs/protocol/session.md, "Receiving":
 // a cumulative Ack for an in-order packet, an OutOfOrderAck for an early one, the cumulative Ack again for a
 // duplicate), and sends reliable and unreliable application packets.
 //
@@ -19,8 +19,8 @@
 #include <set>
 #include <vector>
 
-#include "net/packet.h"
-#include "net/session_codec.h"
+#include "net/wire/app_packet.h"
+#include "net/session/soe/framing.h"
 #include "platform/udp_socket.h"
 
 namespace hailstone::test {

@@ -5,7 +5,7 @@
 // the duel in three globals (0xddf7e4 the player we challenged or accepted,
 // 0xddf7e8 the player who challenged us, 0xddf7ec the duel is on), the inspect
 // result in CInspectWnd and the bandolier in PcProfile +0x6d7c (20 × 0x140).
-// GameConnection (net/game_connection_player.cpp) drives them.
+// GameConnection (net/connection/game_connection_player.cpp) drives them.
 
 #include <algorithm>
 #include <array>

@@ -6,7 +6,7 @@
 // history (OP_TaskHistoryReply @0x480ac0), the offers of a task giver
 // (OP_TaskSelectWindow / OP_SharedTaskSelectWindow, CTaskSelectWnd_ReadTaskSelectPacket
 // @0x76bda0) and the element descriptions (CTaskManager::GetElementDescription
-// @0x4800c0). Pure state; the packets are handled in net/game_connection_progress.cpp.
+// @0x4800c0). Pure state; the packets are handled in net/connection/game_connection_progress.cpp.
 
 #include <cstdint>
 #include <functional>

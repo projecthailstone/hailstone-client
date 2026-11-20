@@ -20,9 +20,9 @@
 #include <string>
 
 #include "game/item_links.h"
-#include "net/game_connection.h"
-#include "net/item_packets.h"
-#include "net/opcodes.h"
+#include "net/connection/game_connection.h"
+#include "net/protocol/rof2/packets/item_packets.h"
+#include "net/protocol/rof2/opcode_map.h"
 #include "ui/item_windows.h"
 
 namespace hailstone::probe {
@@ -44,16 +44,16 @@ public:
 
     // Every zone packet (ConnectionOptions::zone_packet_tap).
     void tap(const net::AppPacket& p) {
-        net::Op op = net::from_wire(p.opcode);
-        if (op == net::Op::CharInventory && !dump_file_.empty() && !dumped_) {
+        net::rof2::Op op = net::rof2::from_wire(p.opcode);
+        if (op == net::rof2::Op::CharInventory && !dump_file_.empty() && !dumped_) {
             std::ofstream f(dump_file_, std::ios::binary);
             f.write(reinterpret_cast<const char*>(p.data.data()), static_cast<std::streamsize>(p.data.size()));
             std::printf("  ITEMS: wrote OP_CharInventory (%zu bytes) to %s\n", p.data.size(), dump_file_.c_str());
             dumped_ = true;
         }
         bool watching = phase_ != Phase::Idle;
-        if (watching && (op == net::Op::ItemPacket || op == net::Op::DeleteItem || op == net::Op::MoveItem ||
-                         op == net::Op::DeleteCharge)) {
+        if (watching && (op == net::rof2::Op::ItemPacket || op == net::rof2::Op::DeleteItem || op == net::rof2::Op::MoveItem ||
+                         op == net::rof2::Op::DeleteCharge)) {
             // A correction touches a slot the test uses (other item packets,
             // such as personal-loot deliveries, are not).
             auto mine = [&](const net::ItemSlot& s) {
@@ -63,14 +63,14 @@ public:
                         (destroy_slot_ && s.slot == *destroy_slot_));
             };
             bool touches = true;
-            if (op == net::Op::ItemPacket) {
+            if (op == net::rof2::Op::ItemPacket) {
                 if (auto ip = net::decode_item_packet(p)) touches = mine(ip->item.slot);
             } else if (auto m = net::decode_move_item(p)) {
                 touches = mine(m->from) || mine(m->to);
             }
             if (touches) ++corrections_;
-            std::printf("  ITEMS: server %s (%zu bytes)%s", net::op_name(op), p.data.size(), touches ? "" : " (not a test slot)");
-            if (auto ip = op == net::Op::ItemPacket ? net::decode_item_packet(p) : std::nullopt)
+            std::printf("  ITEMS: server %s (%zu bytes)%s", net::rof2::op_name(op), p.data.size(), touches ? "" : " (not a test slot)");
+            if (auto ip = op == net::rof2::Op::ItemPacket ? net::decode_item_packet(p) : std::nullopt)
                 std::printf(": type %#x %s at %d/%d/%d", ip->type, ip->item.name.c_str(), ip->item.slot.type,
                             ip->item.slot.slot, ip->item.slot.sub);
             else if (auto m = net::decode_move_item(p))
@@ -78,9 +78,9 @@ public:
                             m->to.slot, m->to.sub, static_cast<int>(m->count));
             std::printf("\n");
         }
-        if (op == net::Op::LootItem || op == net::Op::MoneyOnCorpse || op == net::Op::LootComplete ||
-            op == net::Op::LootRequest || op == net::Op::ItemLinkResponse)
-            std::printf("  ITEMS: got %s (%zu bytes)\n", net::op_name(op), p.data.size());
+        if (op == net::rof2::Op::LootItem || op == net::rof2::Op::MoneyOnCorpse || op == net::rof2::Op::LootComplete ||
+            op == net::rof2::Op::LootRequest || op == net::rof2::Op::ItemLinkResponse)
+            std::printf("  ITEMS: got %s (%zu bytes)\n", net::rof2::op_name(op), p.data.size());
     }
 
     // A chat line (raw, with links): prints it readable and remembers links.

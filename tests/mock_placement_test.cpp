@@ -1,9 +1,9 @@
-// Item placement and placed objects' menus against the mock server (net/game_connection_real_estate.cpp).
+// Item placement and placed objects' menus against the mock server (net/connection/game_connection_real_estate.cpp).
 
 #include <doctest/doctest.h>
 
 #include "mock_server/harness.h"
-#include "net/real_estate_packets.h"
+#include "net/protocol/rof2/packets/real_estate_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::net;

@@ -11,8 +11,8 @@
 #include "game/animation_types.h"
 #include "game/spells.h"
 #include "mock_server/harness.h"
-#include "net/spell_packets.h"
-#include "net/zone_packets.h"
+#include "net/messages/spell.h"
+#include "net/protocol/rof2/packets/zone_packets.h"
 
 using namespace hailstone;
 
@@ -32,14 +32,14 @@ std::string spell_line(int id, int skill) {
     return out + "\n";
 }
 
-net::AppPacket landing(std::uint32_t spell, std::uint16_t source, std::uint16_t target, std::uint8_t flag) {
-    net::Action a;
-    a.source = source;
-    a.target = target;
-    a.type = 231;
-    a.spell_id = spell;
-    a.effect_flag = flag;
-    return net::encode(a);
+net::messages::SpellAction landing(std::uint32_t spell, std::uint16_t source, std::uint16_t target, std::uint8_t flag) {
+    net::messages::SpellAction action;
+    action.source = source;
+    action.target = target;
+    action.type = 231;
+    action.spell_id = spell;
+    action.effect_flag = flag;
+    return action;
 }
 
 int cast_stages(const std::vector<net::SpellEffectCue>& cues, std::uint32_t caster, bool proc) {
@@ -64,8 +64,8 @@ TEST_CASE("A proc's landing plays the cast stage at its source; a cast's landing
     (void)conn.take_spell_effect_cues();
 
     SUBCASE("a weapon proc: one cast stage at the source for the landing's two OP_Actions, then the impacts") {
-        conn.receive_zone_packet_for_test(landing(kNuke, me, mob, 0));
-        conn.receive_zone_packet_for_test(landing(kNuke, me, mob, 4));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::Action, landing(kNuke, me, mob, 0)});
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::Action, landing(kNuke, me, mob, 4)});
         auto cues = conn.take_spell_effect_cues();
         REQUIRE(cues.size() == 3);
         CHECK(cues[0].stage == 0);
@@ -76,24 +76,21 @@ TEST_CASE("A proc's landing plays the cast stage at its source; a cast's landing
         CHECK(cues[2].stage == 2);
     }
     SUBCASE("a proc landing on a second target with it shares the cast stage") {
-        conn.receive_zone_packet_for_test(landing(kNuke, mob, me, 0));
-        conn.receive_zone_packet_for_test(landing(kNuke, mob, mob + 1, 0));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::Action, landing(kNuke, mob, me, 0)});
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::Action, landing(kNuke, mob, mob + 1, 0)});
         CHECK(cast_stages(conn.take_spell_effect_cues(), mob, true) == 1);
     }
     SUBCASE("a cast (or a buff's proc, which EQEmu begins with OP_BeginCast) has its cast stage already") {
-        net::BeginCast b;
-        b.caster_id = mob;
-        b.spell_id = kNuke;
-        b.cast_time = 2000;
-        conn.receive_zone_packet_for_test(net::encode(b));
-        conn.receive_zone_packet_for_test(landing(kNuke, mob, me, 0));
-        conn.receive_zone_packet_for_test(landing(kNuke, mob, me, 4));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::BeginCast,
+            net::messages::CastStarted{kNuke, mob, 2000}});
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::Action, landing(kNuke, mob, me, 0)});
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::Action, landing(kNuke, mob, me, 4)});
         auto cues = conn.take_spell_effect_cues();
         CHECK(cast_stages(cues, mob, false) == 1);
         CHECK(cast_stages(cues, mob, true) == 0);
     }
     SUBCASE("a bard song's pulse") {
-        conn.receive_zone_packet_for_test(landing(kSong, mob, me, 0));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::Action, landing(kSong, mob, me, 0)});
         CHECK(cast_stages(conn.take_spell_effect_cues(), mob, true) == 0);
     }
 }
@@ -117,7 +114,7 @@ TEST_CASE("A proc's cast animation: the spell's own, else the heal or nuke cast 
     const auto me = static_cast<std::uint16_t>(conn.world().player_id);
     auto sent_animation = [&]() -> std::optional<net::Animation> {
         for (const auto& p : rig.server.zone_log)
-            if (p.opcode == net::to_wire(net::Op::Animation))
+            if (p.opcode == net::rof2::to_wire(net::rof2::Op::Animation))
                 if (auto a = net::decode_animation(p)) return a;
         return std::nullopt;
     };
@@ -126,7 +123,7 @@ TEST_CASE("A proc's cast animation: the spell's own, else the heal or nuke cast 
     SUBCASE("off") { fallback = false; }
     conn.set_cast_animation_fallback(fallback);
     rig.server.zone_log.clear();
-    conn.receive_zone_packet_for_test(landing(kNuke, me, 900, 0));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::Action, landing(kNuke, me, 900, 0)});
     const std::uint8_t expected = fallback ? 44 : 0;
     CHECK(conn.world().spawns.at(me).action == expected);
     REQUIRE(rig.until([&] { return sent_animation().has_value(); }));
@@ -146,17 +143,17 @@ TEST_CASE("One spell's landings on several targets send the local player's OP_An
     auto sent = [&] {
         std::size_t n = 0;
         for (const auto& p : rig.server.zone_log)
-            if (p.opcode == net::to_wire(net::Op::Animation)) ++n;
+            if (p.opcode == net::rof2::to_wire(net::rof2::Op::Animation)) ++n;
         return n;
     };
     rig.server.zone_log.clear();
     // A group song's pulse: one landing (two OP_Actions) per target.
     for (std::uint16_t target : {kFirst, kSecond, kThird}) {
-        conn.receive_zone_packet_for_test(landing(kSong, me, target, 0));
-        conn.receive_zone_packet_for_test(landing(kSong, me, target, 4));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::Action, landing(kSong, me, target, 0)});
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::Action, landing(kSong, me, target, 4)});
     }
     // Another spell landing at once sends its own.
-    conn.receive_zone_packet_for_test(landing(kNuke, me, kFirst, 0));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::Action, landing(kNuke, me, kFirst, 0)});
     REQUIRE(rig.until([&] { return sent() >= 2; }));
     rig.run_for(std::chrono::milliseconds(50));
     CHECK(sent() == 2);

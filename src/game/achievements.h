@@ -9,7 +9,7 @@
 #include <tuple>
 #include <vector>
 
-#include "net/achievement_packets.h"
+#include "net/messages/achievement.h"
 
 namespace hailstone::game {
 

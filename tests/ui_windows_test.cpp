@@ -26,7 +26,6 @@
 #include "app/lua_ui.h"
 #include "app/lua_ui_hotbar.h"
 #include "app/lua_ui_windows.h"
-#include "core/byte_io.h"
 #include "core/ini_file.h"
 #include "core/process_serial.h"
 #include "game/bazaar.h"
@@ -35,14 +34,19 @@
 #include "game_files.h"
 #include "mock_server/harness.h"
 #include "mq_test_world.h"
-#include "net/game_connection.h"
-#include "net/group_packets.h"
-#include "net/market_packets.h"
-#include "net/notice_packets.h"
-#include "net/opcodes.h"
-#include "net/pet_packets.h"
-#include "net/social_packets.h"
-#include "net/zone_packets.h"
+#include "net/connection/game_connection.h"
+#include "net/messages/group.h"
+#include "net/messages/market.h"
+#include "net/messages/zone.h"
+#include "net/messages/zone_offer.h"
+#include "net/protocol/rof2/packets/player_packets.h"
+#include "net/protocol/rof2/packets/group_packets.h"
+#include "net/protocol/rof2/packets/market_packets.h"
+#include "net/protocol/rof2/packets/notice_packets.h"
+#include "net/protocol/rof2/opcode_map.h"
+#include "net/protocol/rof2/packets/pet_packets.h"
+#include "net/protocol/rof2/packets/social_packets.h"
+#include "net/protocol/rof2/packets/zone_packets.h"
 #include "manual_clock.h"
 #include "scratch_dir.h"
 #include "ui/lua/lua_host.h"
@@ -52,50 +56,19 @@ namespace fs = std::filesystem;
 
 namespace {
 
-void put_u32(std::vector<std::byte>& b, std::uint32_t v) {
-    for (int i = 0; i < 4; ++i) b.push_back(static_cast<std::byte>((v >> (8 * i)) & 0xff));
-}
-void put_f32(std::vector<std::byte>& b, float f) {
-    std::uint32_t v;
-    std::memcpy(&v, &f, 4);
-    put_u32(b, v);
-}
-
-// OP_RespawnWindow as EQEmu's SendRespawnBinds writes it.
-net::AppPacket respawn_packet(std::uint8_t validity = 1) {
-    std::vector<std::byte> b;
-    put_u32(b, 0);     // the default option
-    put_u32(b, 60000); // time remaining
-    put_u32(b, 0);     // delay
-    put_u32(b, 2);
-    auto option = [&](std::uint32_t id, std::uint32_t zone, const char* name, std::uint8_t availability) {
-        put_u32(b, id);
-        put_u32(b, zone);
-        for (int i = 0; i < 4; ++i) put_f32(b, 0.0f);
-        for (const char* c = name; *c; ++c) b.push_back(static_cast<std::byte>(*c));
-        b.push_back(std::byte{0});
-        b.push_back(static_cast<std::byte>(availability));
+// Incoming respawn state is a gameplay message; wire-encoding belongs to codec tests.
+net::RespawnWindow respawn_window(std::uint8_t validity = 1) {
+    net::RespawnWindow window;
+    window.time_remaining_ms = 60000;
+    window.options = {
+        net::RespawnOption{0, 2, 0, 0, 0, 0, "Bind Location", 0},
+        net::RespawnOption{1, 2, 0, 0, 0, 0, "Resurrect", validity},
     };
-    option(0, 2, "Bind Location", 0);
-    option(1, 2, "Resurrect", validity);
-    return net::AppPacket(net::to_wire(net::Op::RespawnWindow), std::move(b));
+    return window;
 }
 
-net::AppPacket respawn_rez_offer(std::uint32_t spell = 100) {
-    ByteWriter w;
-    w.le<std::uint32_t>(0);
-    w.le<std::uint16_t>(2);
-    w.le<std::uint16_t>(0);
-    for (int i = 0; i < 3; ++i) w.f32(0);
-    w.le<std::uint32_t>(0);
-    w.fixed_string("Gennro", 64);
-    w.le<std::uint32_t>(0);
-    w.fixed_string("Healer", 64);
-    w.le(spell);
-    w.fixed_string("Gennro's corpse", 64);
-    w.le<std::uint32_t>(0);
-    w.zeros(8);
-    return net::AppPacket(net::to_wire(net::Op::RezzRequest), w.take());
+net::ZoneOffer resurrection_offer(std::uint32_t spell = 100) {
+    return net::ZoneOffer{net::ZoneOfferKind::Resurrection, spell, 2, 0, "Healer"};
 }
 
 struct Harness {
@@ -226,7 +199,7 @@ TEST_CASE("Group role menus: self, member rows, permissions and confirmed role c
     merc.slot = 2;
     merc.merc = 1;
     group.members.push_back(merc);
-    t.conn.receive_zone_packet_for_test(net::encode(group));
+    t.conn.receive_zone_message_for_test({net::messages::GameOpcode::GroupUpdateB, group});
 
     // There is no roster button or background role menu. A member's name is the entry point.
     CHECK_FALSE(t.api->child_shown("GroupWindow", "Hailstone_RolesButton").has_value());
@@ -278,7 +251,7 @@ TEST_CASE("Group role menus: self, member rows, permissions and confirmed role c
     group.leader = "Member";
     group.members[1].main_assist = 0;
     group.members[1].puller = 1;
-    t.conn.receive_zone_packet_for_test(net::encode(group));
+    t.conn.receive_zone_message_for_test({net::messages::GameOpcode::GroupUpdateB, group});
     REQUIRE(t.api->click_child("GroupWindow", "Gauge1", "right"));
     CHECK_FALSE(t.host.menus[0].rows[2].check);
     CHECK(t.host.menus[0].rows[3].check);
@@ -322,7 +295,7 @@ TEST_CASE("Raid member menus: clicked identities, grouped and ungrouped rows, an
             update.general.action = add ? net::kRaidAddMember : net::kRaidRemoveMember;
             update.general.player_name = name;
             update.general.parameter = group;
-            conn.receive_zone_packet_for_test(net::encode_raid_update(update));
+            conn.receive_zone_message_for_test({net::messages::GameOpcode::RaidUpdate, update});
         };
         member("Gennro", 0);
         for (int i = 1; i <= 17; ++i) member("Member" + std::to_string(i), static_cast<std::uint32_t>(i / 6));
@@ -334,7 +307,7 @@ TEST_CASE("Raid member menus: clicked identities, grouped and ungrouped rows, an
             update.leadership[19] = 1;
             update.leadership[20] = marker_rank;
             update.leadership[28] = 1;
-            conn.receive_zone_packet_for_test(net::encode_raid_update(update));
+            conn.receive_zone_message_for_test({net::messages::GameOpcode::RaidUpdate, update});
         };
         authority("Gennro");
         auto open = [&](const std::string& list, const std::string& name) {
@@ -355,7 +328,7 @@ TEST_CASE("Raid member menus: clicked identities, grouped and ungrouped rows, an
         auto delegates = [&] {
             std::vector<net::DelegateAbility> result;
             for (const auto& packet : rig.server.zone_log)
-                if (packet.opcode == net::to_wire(net::Op::RaidDelegateAbility))
+                if (packet.opcode == net::rof2::to_wire(net::rof2::Op::RaidDelegateAbility))
                     if (auto decoded = net::decode_delegate_ability(packet)) result.push_back(*decoded);
             return result;
         };
@@ -385,7 +358,7 @@ TEST_CASE("Raid member menus: clicked identities, grouped and ungrouped rows, an
         // A server update that already achieved a checkbox's captured intent must not toggle it back off.
         open("RAID_PlayerList", "Member2");
         auto pending_assist = action("Main Assist").act;
-        conn.receive_zone_packet_for_test(net::encode(net::DelegateAbility{3, 1, 0, 0, "Member2"}, net::Op::RaidDelegateAbility));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::RaidDelegateAbility, net::DelegateAbility{3, 1, 0, 0, "Member2"}});
         pending_assist();
         open("RAID_PlayerList", "Member2");
         CHECK(action("Main Assist").check);
@@ -440,7 +413,7 @@ TEST_CASE("Raid member menus: clicked identities, grouped and ungrouped rows, an
         authority("Gennro");
 
         // Raid IDs may be zero on both sides of a disband/reform. Old callbacks must still expire.
-        conn.receive_zone_packet_for_test(net::encode(net::DelegateAbility{3, 1, 1, 0, "Member2"}, net::Op::RaidDelegateAbility));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::RaidDelegateAbility, net::DelegateAbility{3, 1, 1, 0, "Member2"}});
         open("RAID_PlayerList", "Member2");
         auto before_reform = action("Main Assist");
         REQUIRE(before_reform.enabled);
@@ -451,10 +424,10 @@ TEST_CASE("Raid member menus: clicked identities, grouped and ungrouped rows, an
         REQUIRE(conn.raid().id == 0);
         net::RaidUpdate lifecycle;
         lifecycle.general.action = net::kRaidDisband;
-        conn.receive_zone_packet_for_test(net::encode_raid_update(lifecycle));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::RaidUpdate, lifecycle});
         lifecycle.general.action = net::kRaidCreate;
         lifecycle.general.leader_name = "Gennro";
-        conn.receive_zone_packet_for_test(net::encode_raid_update(lifecycle));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::RaidUpdate, lifecycle});
         member("Gennro", 0);
         for (int i = 1; i <= 17; ++i) member("Member" + std::to_string(i), static_cast<std::uint32_t>(i / 6));
         member("Ungrouped", 0xffffffffu);
@@ -518,7 +491,7 @@ TEST_CASE("Group role icons: player and member flags follow confirmed assignment
     member.name = "Member";
     member.slot = 1;
     group.members.push_back(member);
-    t.conn.receive_zone_packet_for_test(net::encode(group));
+    t.conn.receive_zone_message_for_test({net::messages::GameOpcode::GroupUpdateB, group});
 
     for (std::size_t i = 0; i < roles.size(); ++i) {
         CHECK(t.api->child_shown("PlayerWindow", roles[i]).value_or(false));
@@ -532,13 +505,13 @@ TEST_CASE("Group role icons: player and member flags follow confirmed assignment
         change.member = "Member";
         change.role = role;
         change.on = 1;
-        t.conn.receive_zone_packet_for_test(net::encode_group_role(change));
+        t.conn.receive_zone_message_for_test({net::messages::GameOpcode::GroupRoles, change});
         const auto index = static_cast<std::size_t>(role - 1);
         CHECK_FALSE(t.api->child_shown("PlayerWindow", roles[index]).value_or(true));
         CHECK(t.api->child_shown("GroupWindow", std::string(roles[index]) + "1").value_or(false));
     }
 
-    t.conn.receive_zone_packet_for_test(net::encode_group_generic(net::Op::GroupDisbandYou, {"Leader", "Member"}));
+    t.conn.receive_zone_message_for_test({net::messages::GameOpcode::GroupDisbandYou, net::GroupGeneric{"Leader", "Member"}});
     for (const char* role : roles) {
         CHECK_FALSE(t.api->child_shown("PlayerWindow", role).value_or(true));
         CHECK_FALSE(t.api->child_shown("GroupWindow", std::string(role) + "1").value_or(true));
@@ -619,7 +592,7 @@ TEST_CASE("Group role UI packs: icons beside fitted names and name right clicks 
         member.name = "MemberWithAnExtremelyLongNameForRoleLayout";
         member.slot = 1;
         group.members.push_back(member);
-        t.conn.receive_zone_packet_for_test(net::encode(group));
+        t.conn.receive_zone_message_for_test({net::messages::GameOpcode::GroupUpdateB, group});
         t.api->show("PlayerWindow", true);
         t.api->show("GroupWindow", true);
         const auto frames = [&](int count) {
@@ -630,7 +603,9 @@ TEST_CASE("Group role UI packs: icons beside fitted names and name right clicks 
                 ImGui::NewFrame();
                 lua.frame();
                 ImGui::Render();
-                CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+                const auto load = lua.load_status();
+                for (const auto& error : load.errors) INFO(error);
+                CHECK(load.error_count == 0);
             }
         };
         const auto record = [&](const char* table, const std::string& window, int fields) {
@@ -693,7 +668,7 @@ TEST_CASE("Group role UI packs: icons beside fitted names and name right clicks 
 
         group.members[0].main_tank = group.members[0].main_assist = group.members[0].puller = 0;
         group.members[1].main_tank = group.members[1].main_assist = group.members[1].puller = 1;
-        t.conn.receive_zone_packet_for_test(net::encode(group));
+        t.conn.receive_zone_message_for_test({net::messages::GameOpcode::GroupUpdateB, group});
         frames(2);
         const auto group_name = check_icons(pack == "modern" ? "Group" : "HUD Group");
         right_click(group_name, member.name);
@@ -744,7 +719,9 @@ struct RolePackRig {
             if (before) before();
             lua->frame();
             ImGui::Render();
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            const auto load = lua->load_status();
+            for (const auto& error : load.errors) INFO(error);
+            CHECK(load.error_count == 0);
         }
     }
     std::string run(const std::string& code) { return lua->run_for_test("", code); }
@@ -761,7 +738,7 @@ struct RolePackRig {
         member.name = "Member";
         member.slot = 1;
         g.members.push_back(member);
-        t.conn.receive_zone_packet_for_test(net::encode(g));
+        t.conn.receive_zone_message_for_test({net::messages::GameOpcode::GroupUpdateB, g});
     }
 };
 
@@ -974,7 +951,7 @@ TEST_CASE("Group role menus: a server update while open preserves the displayed 
     auto sent_roles = [&] {
         std::vector<net::GroupRole> roles;
         for (const auto& packet : rig.server.zone_log)
-            if (packet.opcode == net::to_wire(net::Op::GroupRoles))
+            if (packet.opcode == net::rof2::to_wire(net::rof2::Op::GroupRoles))
                 if (auto role = net::decode_group_role(packet)) roles.push_back(*role);
         return roles;
     };
@@ -1031,7 +1008,7 @@ TEST_CASE("OP_Bandolier: the right button held on a set's slot") {
 TEST_CASE("Respawn window: the options, the default row and Select") {
     test::ManualClock clock;
     auto options = test::quick_options();
-    options.session.clock = clock.source();
+    options.world_protocol.session_config.clock = clock.source(); options.zone_protocol.session_config.clock = clock.source();
     test::Rig rig(test::MockConfig::standard(), std::move(options));
     REQUIRE(rig.to_zone());
     clock.hold();
@@ -1039,7 +1016,7 @@ TEST_CASE("Respawn window: the options, the default row and Select") {
     t.host.conn = &rig.conn;
     auto& c = rig.conn;
     CHECK_FALSE(t.api->shown("RespawnWnd"));
-    c.receive_zone_packet_for_test(respawn_packet());
+    c.receive_zone_message_for_test({net::messages::GameOpcode::RespawnWindow, respawn_window()});
     REQUIRE(t.api->shown("RespawnWnd"));
     CHECK(c.respawn_window()->options.size() == 2);
     auto markers = t.api->list_texts("RespawnWnd", "OptionsList");
@@ -1053,7 +1030,7 @@ TEST_CASE("Respawn window: the options, the default row and Select") {
     CHECK(t.api->click_child("RespawnWnd", "SelectButton"));
     CHECK_FALSE(c.respawn_chosen());
     // A server refresh makes the same row available without inventing a kind from the validity flag.
-    c.receive_zone_packet_for_test(respawn_packet(0));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::RespawnWindow, respawn_window(0)});
     markers = t.api->list_texts("RespawnWnd", "OptionsList");
     REQUIRE(markers.size() == 2);
     CHECK(markers[1].empty());
@@ -1068,32 +1045,33 @@ TEST_CASE("Respawn window: the options, the default row and Select") {
 TEST_CASE("Respawn window: a new session restores the server default without an intervening UI frame") {
     test::ManualClock clock;
     auto options = test::quick_options();
-    options.session.clock = clock.source();
+    options.world_protocol.session_config.clock = clock.source(); options.zone_protocol.session_config.clock = clock.source();
     test::Rig rig(test::MockConfig::standard(), std::move(options));
     REQUIRE(rig.to_zone());
     clock.hold();
     Harness t(rig.game);
     t.host.conn = &rig.conn;
     auto& c = rig.conn;
-    c.receive_zone_packet_for_test(respawn_packet());
+    c.receive_zone_message_for_test({net::messages::GameOpcode::RespawnWindow, respawn_window()});
     REQUIRE(c.respawn_window());
     const auto first_session = c.respawn_session();
     CHECK(t.api->click_list("RespawnWnd", "OptionsList", 1, 0));
     clock.advance(std::chrono::milliseconds(1));
     CHECK(t.api->child_state("RespawnWnd", "SelectButton") == false); // unavailable choice inspected
 
-    net::ZonePlayerToBind bind;
-    bind.zone_id = 2;
-    bind.zone_name = "Bind destination";
-    c.receive_zone_packet_for_test(net::encode(bind));
+    net::BindZoneTransition bind;
+    bind.destination.zone = 2;
+    bind.destination.zone_name = "Bind destination";
+    bind.original_length = 53;
+    c.receive_zone_message_for_test({net::messages::GameOpcode::ZonePlayerToBind, bind});
     REQUIRE_FALSE(c.respawn_window());
-    c.receive_zone_packet_for_test(net::encode(test::make_spawn("Gennro", 60, 0, 1, 0, 0, 0)));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::ZoneEntry, test::make_spawn("Gennro", 60, 0, 1, 0, 0, 0)});
     net::Death death;
     death.spawn_id = death.corpse_id = 60;
     death.damage = 5000;
-    c.receive_zone_packet_for_test(net::encode(death));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::Death, death});
     // Both packets arrive before the UI can observe the closed window and run its per-frame cleanup.
-    c.receive_zone_packet_for_test(respawn_packet());
+    c.receive_zone_message_for_test({net::messages::GameOpcode::RespawnWindow, respawn_window()});
     REQUIRE(c.respawn_window());
     CHECK(c.respawn_session() != first_session);
     clock.advance(std::chrono::milliseconds(1));
@@ -1105,7 +1083,7 @@ TEST_CASE("Respawn window: a new session restores the server default without an 
 TEST_CASE("Respawn window: an accepted resurrection enables its line and leaves the selection") {
     test::ManualClock clock;
     auto options = test::quick_options();
-    options.session.clock = clock.source();
+    options.world_protocol.session_config.clock = clock.source(); options.zone_protocol.session_config.clock = clock.source();
     test::Rig rig(test::MockConfig::standard(), std::move(options));
     REQUIRE(rig.to_zone());
     clock.hold();
@@ -1141,11 +1119,11 @@ TEST_CASE("Respawn window: an accepted resurrection enables its line and leaves 
         death.spawn_id = death.corpse_id = id;
         death.killer_id = 101;
         death.damage = 5000;
-        c.receive_zone_packet_for_test(net::encode(death));
-        c.receive_zone_packet_for_test(respawn_packet());
+        c.receive_zone_message_for_test({net::messages::GameOpcode::Death, death});
+        c.receive_zone_message_for_test({net::messages::GameOpcode::RespawnWindow, respawn_window()});
     };
     auto approve = [&] {
-        c.receive_zone_packet_for_test(respawn_rez_offer());
+        c.receive_zone_message_for_test({net::messages::GameOpcode::RezzRequest, resurrection_offer()});
         REQUIRE(c.confirmation());
         c.answer_confirmation(true);
         CHECK_FALSE(c.respawn_chosen());
@@ -1162,9 +1140,9 @@ TEST_CASE("Respawn window: an accepted resurrection enables its line and leaves 
         CHECK(row(1) == "r");   // the marker stays; the line is enabled
         clock.advance(std::chrono::milliseconds(10));
         rig.run_for(std::chrono::milliseconds(10));
-        CHECK(test::MockEqServer::count(rig.server.zone_log, net::Op::RespawnWindow) == 0);
-        CHECK(test::MockEqServer::count(rig.server.zone_log, net::Op::RezzAnswer) == 0);
-        c.receive_zone_packet_for_test(respawn_rez_offer(101));
+        CHECK(test::MockEqServer::count(rig.server.zone_log, net::rof2::Op::RespawnWindow) == 0);
+        CHECK(test::MockEqServer::count(rig.server.zone_log, net::rof2::Op::RezzAnswer) == 0);
+        c.receive_zone_message_for_test({net::messages::GameOpcode::RezzRequest, resurrection_offer(101)});
         CHECK(row(1) == "r:disabled"); // a replacement offer needs its own consent
         c.answer_confirmation(true);
         CHECK(selected() == 0);
@@ -1177,11 +1155,14 @@ TEST_CASE("Respawn window: an accepted resurrection enables its line and leaves 
         CHECK(t.api->child_state("RespawnWnd", "SelectButton") == false);
         CHECK(t.api->child_state("RespawnWnd", "OptionsList") == false);
 
-        net::ZonePlayerToBind bind;
-        bind.zone_id = 2;
-        bind.zone_name = "Bind destination";
-        c.receive_zone_packet_for_test(net::encode(bind));
-        c.receive_zone_packet_for_test(net::encode(test::make_spawn("Gennro", 60, 0, 1, 0, 0, 0)));
+        // The semantic zone-to-bind message carries a decoded destination,
+        // not a bare wire-layout ZonePlayerToBind structure.
+        net::BindZoneTransition bind;
+        bind.destination.zone = 2;
+        bind.destination.zone_name = "Bind destination";
+        bind.original_length = 53;
+        c.receive_zone_message_for_test({net::messages::GameOpcode::ZonePlayerToBind, bind});
+        c.receive_zone_message_for_test({net::messages::GameOpcode::ZoneEntry, test::make_spawn("Gennro", 60, 0, 1, 0, 0, 0)});
         die(60);
         CHECK(selected() == 0); // a new window starts from the server's selection
     }
@@ -1194,7 +1175,7 @@ TEST_CASE("Respawn window: an accepted resurrection enables its line and leaves 
         approve();
         CHECK(t.api->click_list("RespawnWnd", "OptionsList", 1, 0));
         CHECK(selected() == 1);
-        c.receive_zone_packet_for_test(respawn_rez_offer(101));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::RezzRequest, resurrection_offer(101)});
         CHECK(selected() == 1);
         CHECK(t.api->child_state("RespawnWnd", "SelectButton") == false);
         CHECK_FALSE(c.respawn_option_available(1));
@@ -1605,14 +1586,11 @@ TEST_CASE("Bazaar purchase window: the voucher cost by To Me (BZC_TokenLabel) fr
     e.trader_id = 789, e.serial = "0000000000004321", e.cost = 900, e.quantity = 1, e.item_id = 5023, e.icon = 592;
     e.name = "Fine Steel Sword";
     r.results.push_back(e);
-    t.conn.receive_zone_packet_for_test(net::encode(r));
+    t.conn.receive_zone_message_for_test({net::messages::GameOpcode::BazaarSearch, net::BazaarSearchUpdate{r, r.zone_id}});
     CHECK(t.conn.bazaar_search_state().voucher_cost == 151);
-    // SendBazaarDeliveryCosts as RoF2 gets it (action 0, u32 vouchers, float parcel rate, u32): the u16 is 2.
-    std::vector<std::byte> cost(16);
-    float rate = 0.1f;
-    cost[4] = std::byte{2};
-    std::memcpy(cost.data() + 8, &rate, 4);
-    t.conn.receive_zone_packet_for_test(net::AppPacket(net::to_wire(net::Op::BazaarSearch), cost));
+    // A delivery-cost notice updates voucher count without adding another item list.
+    t.conn.receive_zone_message_for_test({net::messages::GameOpcode::BazaarSearch,
+        net::BazaarSearchUpdate{net::BazaarResults{}, 2}});
     CHECK(t.conn.bazaar_search_state().voucher_cost == 2);
     REQUIRE(t.conn.bazaar_search_state().results.size() == 1);
 
@@ -1639,8 +1617,8 @@ TEST_CASE("Bazaar search: the row's own Buy button, Find Trader and Hide Traders
     near_t.zone_id = 0, near_t.trader_id = 789, near_t.entity_id = 41, near_t.name = "Nearby";
     net::BazaarTrader far_t;
     far_t.zone_id = 151, far_t.trader_id = 790, far_t.entity_id = 42, far_t.name = "Faraway";
-    t.conn.receive_zone_packet_for_test(net::encode_bazaar_add_trader(near_t));
-    t.conn.receive_zone_packet_for_test(net::encode_bazaar_add_trader(far_t));
+    t.conn.receive_zone_message_for_test({net::messages::GameOpcode::TraderShop, net::TraderShopMessage{.action = net::kBazaarAddTrader, .trader = near_t}});
+    t.conn.receive_zone_message_for_test({net::messages::GameOpcode::TraderShop, net::TraderShopMessage{.action = net::kBazaarAddTrader, .trader = far_t}});
     net::BazaarResults r;
     net::BazaarResult e;
     e.trader_id = 789, e.serial = "0000000000004321", e.cost = 900, e.quantity = 1, e.item_id = 5023, e.icon = 592;
@@ -1648,7 +1626,7 @@ TEST_CASE("Bazaar search: the row's own Buy button, Find Trader and Hide Traders
     r.results.push_back(e);
     e.trader_id = 790, e.serial = "0000000000004322", e.name = "Rusty Sword";
     r.results.push_back(e);
-    t.conn.receive_zone_packet_for_test(net::encode(r));
+    t.conn.receive_zone_message_for_test({net::messages::GameOpcode::BazaarSearch, net::BazaarSearchUpdate{r, r.zone_id}});
     REQUIRE(t.conn.bazaar_search_state().results.size() == 2);
     t.api->show(W, true);
 

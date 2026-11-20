@@ -1,4 +1,4 @@
-// The original's client, help and report commands (net/game_connection_client.cpp, app/client_app_info.cpp,
+// The original's client, help and report commands (net/connection/game_connection_client.cpp, app/client_app_info.cpp,
 // game/output_file.h): the packets, /outputfile's files, and against the mock EQEmu /report, /guidehelp, /uptime,
 // /veteranReward, /acompare, /help and /autojoin.
 
@@ -10,7 +10,7 @@
 #include "game/inventory.h"
 #include "game/output_file.h"
 #include "mock_server/harness.h"
-#include "net/player_packets.h"
+#include "net/protocol/rof2/packets/player_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::net;
@@ -25,7 +25,7 @@ TEST_CASE("OP_Feedback, OP_Report and /uptime's answer as the original lays them
     f.heading = 128;
     f.text = "nice zone";
     AppPacket p = encode(f);
-    CHECK(from_wire(p.opcode) == Op::Feedback);
+    CHECK(rof2::from_wire(p.opcode) == rof2::Op::Feedback);
     REQUIRE(p.data.size() == kFeedbackSize);
     CHECK(static_cast<char>(p.data[0]) == 'G');
     CHECK(static_cast<char>(p.data[0x78]) == 'n'); // the text at +0x78
@@ -40,7 +40,7 @@ TEST_CASE("OP_Feedback, OP_Report and /uptime's answer as the original lays them
 
     // The report: the text and its NUL, cut at 0x2004 characters.
     AppPacket r = encode_report(std::string(0x3000, 'a'));
-    CHECK(from_wire(r.opcode) == Op::Report);
+    CHECK(rof2::from_wire(r.opcode) == rof2::Op::Report);
     CHECK(r.data.size() == 0x2005);
 
     // "%02d:%02d:%02d:%02d": days, hours, minutes, seconds.
@@ -164,9 +164,9 @@ TEST_CASE("mock server: /report once per zone-in, /guidehelp, /uptime, /veteranR
     // /report: no player: 12943; the report; a second one: 12945.
     conn.send_command("/report");
     conn.send_command("/report Badguy");
-    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, Op::Report) == 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, rof2::Op::Report) == 1; }));
     for (const auto& p : server.zone_log)
-        if (from_wire(p.opcode) == Op::Report) {
+        if (rof2::from_wire(p.opcode) == rof2::Op::Report) {
             std::string text(reinterpret_cast<const char*>(p.data.data()), p.data.size());
             CHECK(text == std::string("Badguy|Gennro|line one\n\n===================================\n") + '\0');
         }
@@ -179,7 +179,7 @@ TEST_CASE("mock server: /report once per zone-in, /guidehelp, /uptime, /veteranR
     // /guidehelp: OP_Petition with the text and 3560.
     conn.send_command("/guidehelp");
     conn.send_command("/guidehelp a quest is stuck");
-    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, Op::Petition) == 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, rof2::Op::Petition) == 1; }));
     lines = rig.chat();
     CHECK(has_line(lines, "[3555]"));
     CHECK(has_line(lines, "[3560] a quest is stuck"));
@@ -236,7 +236,7 @@ TEST_CASE("mock server: /report once per zone-in, /guidehelp, /uptime, /veteranR
     CHECK(conn.feedback_open());
     conn.send_feedback("hello");
     CHECK_FALSE(conn.feedback_open());
-    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, Op::Feedback) == 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, rof2::Op::Feedback) == 1; }));
     conn.send_command("/paperdoll");
     conn.send_command("/vreport");
     CHECK(rig.chat().empty());

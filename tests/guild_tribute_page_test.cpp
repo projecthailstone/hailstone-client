@@ -16,11 +16,11 @@
 #include "mock_server/harness.h"
 #include "mock_server/profile_builder.h"
 #include "mq_test_world.h"
-#include "net/packet_io.h"
-#include "net/social_packets.h"
-#include "net/tribute_packets.h"
-#include "net/world_packets.h"
-#include "net/zone_packets.h"
+#include "net/protocol/rof2/wire_io.h"
+#include "net/protocol/rof2/packets/social_packets.h"
+#include "net/protocol/rof2/packets/tribute_packets.h"
+#include "net/protocol/rof2/packets/world_packets.h"
+#include "net/protocol/rof2/packets/zone_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::test;
@@ -108,7 +108,7 @@ TEST_CASE("mock server: the guild window's Tribute page lists the members' tribu
         CHECK(run(L, "return hs.ClickChild('GuildManagementWnd', 'TributeOptOutButton', 'left')") == "true");
         auto sent = [&] {
             return std::find_if(server.zone_log.begin(), server.zone_log.end(),
-                                [](const net::AppPacket& p) { return net::is_op(p, net::Op::GuildOptInOut); });
+                                [](const net::AppPacket& p) { return net::is_op(p, net::rof2::Op::GuildOptInOut); });
         };
         REQUIRE(until([&] { return sent() != server.zone_log.end(); }));
         const net::AppPacket& req = *sent();
@@ -187,7 +187,7 @@ TEST_CASE("guild tribute benefits require the received permission at the window 
     master.class_id = 64;
     conn.world_for_test().spawns[77] = master;
     auto open = net::encode(net::StartTribute{server.config.own_spawn_id, 77, 1});
-    open.opcode = net::to_wire(net::Op::OpenGuildTributeMaster);
+    open.opcode = net::rof2::to_wire(net::rof2::Op::OpenGuildTributeMaster);
     server.zone.send_reliable(open);
     REQUIRE(rig.until([&] {
         return conn.guild().rank == 5 && conn.guild_tribute().abilities.size() == 2 && conn.guild_tribute().master_id == 77;
@@ -210,12 +210,12 @@ TEST_CASE("guild tribute benefits require the received permission at the window 
     auto enabled = [&](const char* child) {
         return run(L, std::string("return (hs.ChildState('TributeMasterWnd', '") + child + "'))");
     };
-    auto count = [&](net::Op op) { return MockEqServer::count(server.zone_log, op); };
+    auto count = [&](net::rof2::Op op) { return MockEqServer::count(server.zone_log, op); };
     auto no_changes = [&] {
         rig.run_for(30ms);
-        CHECK(count(net::Op::GuildSaveActiveTributes) == 0);
-        CHECK(count(net::Op::GuildModifyBenefits) == 0);
-        CHECK(count(net::Op::GuildTributeToggleReq) == 0);
+        CHECK(count(net::rof2::Op::GuildSaveActiveTributes) == 0);
+        CHECK(count(net::rof2::Op::GuildModifyBenefits) == 0);
+        CHECK(count(net::rof2::Op::GuildTributeToggleReq) == 0);
     };
     CHECK(enabled("TMW_LockButton") == "false");
     CHECK(enabled("TMW_StatusButton") == "false");
@@ -255,11 +255,11 @@ TEST_CASE("guild tribute benefits require the received permission at the window 
     click("TMW_LockButton");
     click("TMW_StatusButton");
     REQUIRE(rig.until([&] {
-        return count(net::Op::GuildSaveActiveTributes) == 1 && count(net::Op::GuildModifyBenefits) == 1 &&
-               count(net::Op::GuildTributeToggleReq) == 1;
+        return count(net::rof2::Op::GuildSaveActiveTributes) == 1 && count(net::rof2::Op::GuildModifyBenefits) == 1 &&
+               count(net::rof2::Op::GuildTributeToggleReq) == 1;
     }));
     auto saved = std::find_if(server.zone_log.begin(), server.zone_log.end(),
-                              [](const net::AppPacket& p) { return net::is_op(p, net::Op::GuildSaveActiveTributes); });
+                              [](const net::AppPacket& p) { return net::is_op(p, net::rof2::Op::GuildSaveActiveTributes); });
     REQUIRE(saved != server.zone_log.end());
     REQUIRE(saved->data.size() == 48);
     ByteReader r(saved->data);
@@ -284,9 +284,9 @@ TEST_CASE("guild tribute benefits require the received permission at the window 
     conn.guild_tribute_toggle(false);
     CHECK(run(L, "return (hs.WindowText('TributeMasterWnd', 'TMW_LockButton'))") == "Modify Benefits");
     rig.run_for(30ms);
-    CHECK(count(net::Op::GuildSaveActiveTributes) == 1);
-    CHECK(count(net::Op::GuildModifyBenefits) == 1);
-    CHECK(count(net::Op::GuildTributeToggleReq) == 1);
+    CHECK(count(net::rof2::Op::GuildSaveActiveTributes) == 1);
+    CHECK(count(net::rof2::Op::GuildModifyBenefits) == 1);
+    CHECK(count(net::rof2::Op::GuildTributeToggleReq) == 1);
 
     // A normal frame also retires an unsaved edit when permission disappears.
     server.zone.send_reliable(net::encode_guild_rank_permission(5, 23, true));
@@ -308,8 +308,8 @@ TEST_CASE("guild tribute benefits require the received permission at the window 
     CHECK(run(L, "return (hs.ChildState('TributeBenefitWnd', 'GuildActivateButton'))") == "false");
     CHECK(run(L, "return (hs.ChildState('TributeBenefitWnd', 'OptOutButton'))") == "false");
     rig.run_for(30ms);
-    CHECK(count(net::Op::GuildSaveActiveTributes) == 1);
-    CHECK(count(net::Op::GuildTributeToggleReq) == 1);
+    CHECK(count(net::rof2::Op::GuildSaveActiveTributes) == 1);
+    CHECK(count(net::rof2::Op::GuildTributeToggleReq) == 1);
 }
 
 TEST_CASE("guild tribute participation permits self changes but requires permission for other members") {
@@ -343,18 +343,18 @@ TEST_CASE("guild tribute participation permits self changes but requires permiss
     conn.guild_tribute_opt_out("Alice");
     CHECK(run(L, "return hs.ClickChild('GuildManagementWnd', 'TributeOptOutButton', 'left')") == "true");
     rig.run_for(30ms);
-    CHECK(MockEqServer::count(server.zone_log, net::Op::GuildOptInOut) == 0);
+    CHECK(MockEqServer::count(server.zone_log, net::rof2::Op::GuildOptInOut) == 0);
 
     conn.guild_tribute_opt_out("gennro");
     conn.guild_tribute_opt(true);
-    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, net::Op::GuildOptInOut) == 2; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, net::rof2::Op::GuildOptInOut) == 2; }));
     server.zone.send_reliable(net::encode_guild_rank_permission(5, 22, true));
     REQUIRE(rig.until([&] { return conn.guild().permissions.has(5, 22); }));
     CHECK(run(L, "return (hs.ChildState('GuildManagementWnd', 'TributeOptOutButton'))") == "true");
     CHECK(run(L, "return hs.ClickChild('GuildManagementWnd', 'TributeOptOutButton', 'left')") == "true");
-    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, net::Op::GuildOptInOut) == 3; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, net::rof2::Op::GuildOptInOut) == 3; }));
     auto sent = std::find_if(server.zone_log.rbegin(), server.zone_log.rend(),
-                             [](const net::AppPacket& p) { return net::is_op(p, net::Op::GuildOptInOut); });
+                             [](const net::AppPacket& p) { return net::is_op(p, net::rof2::Op::GuildOptInOut); });
     REQUIRE(sent != server.zone_log.rend());
     ByteReader r(sent->data);
     CHECK(r.le<std::uint32_t>() == 3);
@@ -365,7 +365,7 @@ TEST_CASE("guild tribute participation permits self changes but requires permiss
     conn.guild_tribute_opt_out("Alice");
     CHECK(run(L, "return hs.ClickChild('GuildManagementWnd', 'TributeOptOutButton', 'left')") == "true");
     rig.run_for(30ms);
-    CHECK(MockEqServer::count(server.zone_log, net::Op::GuildOptInOut) == 3);
+    CHECK(MockEqServer::count(server.zone_log, net::rof2::Op::GuildOptInOut) == 3);
 }
 
 TEST_CASE("guild tribute permissions and selections survive Source's metadata before membership ordering") {
@@ -374,7 +374,7 @@ TEST_CASE("guild tribute permissions and selections survive Source's metadata be
     auto& connection = rig.conn;
     const auto me = static_cast<std::uint16_t>(rig.server.config.own_spawn_id);
     auto appearance = [&](std::uint16_t type, std::uint32_t value) {
-        connection.receive_zone_packet_for_test(net::encode(net::SpawnAppearance{me, type, value}));
+        connection.receive_zone_message_for_test({net::messages::GameOpcode::SpawnAppearance, net::SpawnAppearance{me, type, value}});
     };
     auto permission = [&](std::uint32_t guild_id, std::uint32_t rank, bool on) {
         // SendGuildRanks: action at 0, recipient/header through 75, guild id at 76, then rank/function/value.
@@ -388,7 +388,8 @@ TEST_CASE("guild tribute permissions and selections survive Source's metadata be
         w.zeros(3);
         const auto bytes = w.take();
         CHECK(net::encode_guild_rank_permission(rank, 23, on, guild_id).data == bytes);
-        connection.receive_zone_packet_for_test({net::to_wire(net::Op::GuildUpdate), bytes});
+        connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildUpdate,
+            net::GuildUpdate{5, guild_id, rank, 23, on, {}}});
     };
     auto active = [&](std::uint32_t benefit) {
         net::GuildTributeActive settings;
@@ -397,12 +398,12 @@ TEST_CASE("guild tribute permissions and selections survive Source's metadata be
         settings.timer_ms = 600000;
         settings.tributes[0] = benefit;
         // Source SendGuildActiveTributes leaves its leading, unused DWORD zero.
-        connection.receive_zone_packet_for_test(net::encode(settings));
+        connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildSendActiveTributes, settings});
     };
 
     // Join/refresh sends tagged ranks, untagged rank names and active benefits before its GuildID appearance.
     permission(3, 5, true);
-    connection.receive_zone_packet_for_test(net::encode_guild_rank_name(5, "New guild officer"));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildUpdate, net::GuildUpdate{4, 0, 5, 0, false, "New guild officer"}});
     CHECK(connection.received_guild_permission_context() == 3);
     CHECK_FALSE(connection.guild().permissions.has(5, 23));
     active(71);
@@ -418,7 +419,7 @@ TEST_CASE("guild tribute permissions and selections survive Source's metadata be
 
     // Our old guild's valid permission cannot authorize the future guild's already received benefits.
     permission(4, 5, true);
-    connection.receive_zone_packet_for_test(net::encode_guild_rank_name(5, "Next guild officer"));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildUpdate, net::GuildUpdate{4, 0, 5, 0, false, "Next guild officer"}});
     active(73);
     CHECK(connection.guild().permissions.has(5, 23));
     CHECK_FALSE(connection.can_change_guild_tribute());
@@ -430,7 +431,7 @@ TEST_CASE("guild tribute permissions and selections survive Source's metadata be
     CHECK(connection.guild_tribute().active.tributes[0] == 73);
 
     // An untagged permission-change broadcast still updates the current guild.
-    connection.receive_zone_packet_for_test(net::encode_guild_rank_permission(5, 23, false));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildUpdate, net::GuildUpdate{5, 0, 5, 23, false, {}}});
     CHECK_FALSE(connection.can_change_guild_tribute());
     // A foreign table cannot grant access now, or follow us into a different guild than the stamped one.
     permission(99, 5, true);
@@ -442,10 +443,14 @@ TEST_CASE("guild tribute permissions and selections survive Source's metadata be
 
     // A new profile can establish membership directly, with the same exact-context promotion rule.
     permission(42, 1, true);
-    connection.receive_zone_packet_for_test(net::encode_guild_rank_name(1, "Profile guild leader"));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildUpdate, net::GuildUpdate{4, 0, 1, 0, false, "Profile guild leader"}});
     active(72);
     CHECK_FALSE(connection.can_change_guild_tribute());
-    connection.receive_zone_packet_for_test(build_player_profile()); // fixture's guild 42, rank 1
+    REQUIRE(connection.profile());
+    auto profile = *connection.profile();
+    profile.guild_id = 42;
+    profile.guild_rank = 1;
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::PlayerProfile, profile});
     CHECK(connection.guild().guild_id == 42);
     CHECK(connection.guild().rank == 1);
     CHECK(connection.guild().permissions.has(1, 23));
@@ -465,23 +470,23 @@ TEST_CASE("guild tribute permissions wait for the new guild rank when identity a
     REQUIRE(rig.to_zone());
     auto& connection = rig.conn;
     const auto me = static_cast<std::uint16_t>(rig.server.config.own_spawn_id);
-    connection.receive_zone_packet_for_test(net::encode(net::SpawnAppearance{me, 22, 3}));
-    connection.receive_zone_packet_for_test(net::encode(net::SpawnAppearance{me, 23, 1}));
-    connection.receive_zone_packet_for_test(net::encode_guild_rank_permission(1, 23, true, 3));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::SpawnAppearance, net::SpawnAppearance{me, 22, 3}});
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::SpawnAppearance, net::SpawnAppearance{me, 23, 1}});
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildUpdate, net::GuildUpdate{5, 3, 1, 23, true, {}}});
     CHECK(connection.can_change_guild_tribute());
 
     // The new guild permits leaders, while our own new rank has not arrived yet.
-    connection.receive_zone_packet_for_test(net::encode_guild_rank_permission(1, 23, true, 4));
-    connection.receive_zone_packet_for_test(net::encode(net::SpawnAppearance{me, 22, 4}));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildUpdate, net::GuildUpdate{5, 4, 1, 23, true, {}}});
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::SpawnAppearance, net::SpawnAppearance{me, 22, 4}});
     CHECK(connection.guild().permissions.has(1, 23));
     CHECK(connection.guild().rank == 0);
     CHECK(connection.guild().status == 1); // native rank-message history is separate from permission authority
     REQUIRE(connection.world().player());
     CHECK(connection.world().player()->guild_rank == 0);
     CHECK_FALSE(connection.can_change_guild_tribute());
-    connection.receive_zone_packet_for_test(net::encode(net::SpawnAppearance{me, 23, 8}));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::SpawnAppearance, net::SpawnAppearance{me, 23, 8}});
     CHECK_FALSE(connection.can_change_guild_tribute());
-    connection.receive_zone_packet_for_test(net::encode(net::SpawnAppearance{me, 23, 1}));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::SpawnAppearance, net::SpawnAppearance{me, 23, 1}});
     CHECK(connection.can_change_guild_tribute());
 }
 
@@ -490,22 +495,24 @@ TEST_CASE("guild rank permissions and names survive a zone change; a staged tabl
     REQUIRE(rig.to_zone());
     auto& connection = rig.conn;
     const auto me = static_cast<std::uint16_t>(rig.server.config.own_spawn_id);
-    connection.receive_zone_packet_for_test(net::encode(net::SpawnAppearance{me, 22, 3}));
-    connection.receive_zone_packet_for_test(net::encode(net::SpawnAppearance{me, 23, 5}));
-    connection.receive_zone_packet_for_test(net::encode_guild_rank_permission(5, 23, true, 3));
-    connection.receive_zone_packet_for_test(net::encode_guild_rank_name(5, "Officer"));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::SpawnAppearance, net::SpawnAppearance{me, 22, 3}});
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::SpawnAppearance, net::SpawnAppearance{me, 23, 5}});
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildUpdate, net::GuildUpdate{5, 3, 5, 23, true, {}}});
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildUpdate, net::GuildUpdate{4, 0, 5, 0, false, "Officer"}});
     REQUIRE(connection.can_change_guild_tribute());
     REQUIRE(connection.guild().rank_names[5] == "Officer");
     // Another guild's tagged rows that no GuildID appearance confirms.
-    connection.receive_zone_packet_for_test(net::encode_guild_rank_permission(5, 23, true, 9));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildUpdate, net::GuildUpdate{5, 9, 5, 23, true, {}}});
     CHECK(connection.received_guild_permission_context() == 9);
 
-    connection.receive_world_packet_for_test(net::encode(net::ZoneServerInfo{"127.0.0.1", 9000}));
+    net::ZoneChange accepted_zone;
+    accepted_zone.success = 1;
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::ZoneChange, accepted_zone});
     CHECK(connection.guild().permissions.has(5, 23));
     CHECK(connection.guild().rank_names[5] == "Officer");
     // The staged table is gone, so an untagged rank name reaches the current guild again.
     CHECK(connection.received_guild_permission_context() == 3);
-    connection.receive_zone_packet_for_test(net::encode_guild_rank_name(5, "Renamed"));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildUpdate, net::GuildUpdate{4, 0, 5, 0, false, "Renamed"}});
     CHECK(connection.guild().rank_names[5] == "Renamed");
 
     connection.disconnect();
@@ -519,15 +526,13 @@ TEST_CASE("the tribute master's Donate button is greyed while a guild platinum d
     REQUIRE(rig.to_zone());
     auto& conn = rig.conn;
     const auto me = static_cast<std::uint16_t>(rig.server.config.own_spawn_id);
-    conn.receive_zone_packet_for_test(net::encode(net::SpawnAppearance{me, 22, 3}));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::SpawnAppearance, net::SpawnAppearance{me, 22, 3}});
     auto master = *conn.world().player();
     master.id = 77;
     master.is_npc = true;
     master.class_id = 64;
     conn.world_for_test().spawns[77] = master;
-    auto open = net::encode(net::StartTribute{conn.world().player_id, 77, 1});
-    open.opcode = net::to_wire(net::Op::OpenGuildTributeMaster);
-    conn.receive_zone_packet_for_test(open);
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::OpenGuildTributeMaster, net::StartTribute{conn.world().player_id, 77, 1}});
     REQUIRE(conn.guild_tribute().master_id == 77);
     net::GameConnectionTestAccess::coins(conn) = {5, 0, 0, 0};
     conn.click_slot(net::ItemSlot::possessions(23), true, false);
@@ -553,14 +558,10 @@ TEST_CASE("the tribute master's Donate button is greyed while a guild platinum d
     // A click on the greyed button sends nothing.
     CHECK(run(L, "return hs.ClickChild('TributeMasterWnd', 'TMW_DonateButton', 'left')") == "true");
     rig.run_for(std::chrono::milliseconds(30));
-    CHECK(MockEqServer::count(rig.server.zone_log, net::Op::GuildTributeDonateItem) == 0);
+    CHECK(MockEqServer::count(rig.server.zone_log, net::rof2::Op::GuildTributeDonateItem) == 0);
     CHECK(conn.inventory().cursor());
 
-    ByteWriter w; // the reply: quantity, an unused DWORD, favour
-    w.le<std::uint32_t>(3);
-    w.le<std::uint32_t>(0);
-    w.le<std::uint32_t>(30);
-    conn.receive_zone_packet_for_test({net::to_wire(net::Op::GuildTributeDonatePlat), w.take()});
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::GuildTributeDonatePlat, net::GuildTributePlatinum{3, 30}});
     CHECK_FALSE(conn.guild_platinum_pending());
     CHECK(conn.coins().platinum == 2);
     CHECK(enabled() == "true");

@@ -20,7 +20,7 @@
 #include "game/hot_button_press.h"
 #include "game/hotbuttons.h"
 #include "game/lua_social.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "scratch_dir.h"
 
 using namespace hailstone;

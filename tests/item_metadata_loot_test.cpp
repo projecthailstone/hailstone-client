@@ -16,8 +16,8 @@
 #include "game/item_options.h"
 #include "game/server_ext.h"
 #include "mock_server/harness.h"
-#include "net/item_packets.h"
-#include "net/opcodes.h"
+#include "net/protocol/rof2/packets/item_packets.h"
+#include "net/protocol/rof2/opcode_map.h"
 
 using namespace hailstone;
 using namespace hailstone::net;
@@ -67,18 +67,17 @@ Item sample_item(std::uint32_t id = 70001) {
     return item;
 }
 
-AppPacket money_response(std::uint8_t response) {
-    // MoneyOnCorpse's response byte, three padding bytes, and four zero coins.
-    std::vector<std::byte> bytes(20, std::byte{0});
-    bytes[0] = static_cast<std::byte>(response);
-    return {to_wire(Op::MoneyOnCorpse), std::move(bytes)};
+MoneyOnCorpse money_response(std::uint8_t response) {
+    MoneyOnCorpse result;
+    result.response = response;
+    return result;
 }
 
 void install_loot_item(GameConnection& connection, Item item) {
     ItemPacket packet;
     packet.type = kItemPacketLoot;
     packet.item = std::move(item);
-    connection.receive_zone_packet_for_test(encode_item_packet(false, packet));
+    connection.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, packet});
     REQUIRE(connection.loot_session());
     REQUIRE(connection.loot_session()->items.contains(23));
 }
@@ -97,7 +96,7 @@ std::uint32_t open_corpse(Rig& rig, bool own = false) {
     corpse.position = connection.world().player()->position + glm::vec3(2.0f, 0.0f, 0.0f);
     connection.world_for_test().spawns[corpse.id] = corpse;
     connection.loot(corpse.id);
-    connection.receive_zone_packet_for_test(money_response(1));
+    connection.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money_response(1)});
     REQUIRE(connection.loot_session());
     REQUIRE(connection.loot_session()->open);
     return corpse.id;
@@ -105,7 +104,7 @@ std::uint32_t open_corpse(Rig& rig, bool own = false) {
 
 void no_loot_sent(Rig& rig) {
     rig.run_for(std::chrono::milliseconds(15));
-    CHECK(MockEqServer::count(rig.server.zone_log, Op::LootItem) == 0);
+    CHECK(MockEqServer::count(rig.server.zone_log, rof2::Op::LootItem) == 0);
 }
 
 void require_metadata_question(const GameConnection& connection, const ItemMetadataExtension& extension) {
@@ -117,9 +116,9 @@ void require_metadata_question(const GameConnection& connection, const ItemMetad
 }
 
 void require_sent_loot(Rig& rig, std::uint32_t corpse, bool automatic) {
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::LootItem) == 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::LootItem) == 1; }));
     for (const auto& packet : rig.server.zone_log) {
-        if (packet.opcode != to_wire(Op::LootItem)) continue;
+        if (packet.opcode != rof2::to_wire(rof2::Op::LootItem)) continue;
         REQUIRE(packet.data.size() == 20);
         ByteReader reader(packet.data);
         CHECK(reader.le<std::uint32_t>() == corpse);
@@ -365,8 +364,8 @@ TEST_CASE("Item metadata loot: an extra-only stack chooses quantity before the b
     CHECK(rig.conn.confirmation()->text.find("Quantity: " + std::to_string(shift ? 10 : ctrl ? 1 : 3)) != std::string::npos);
     no_loot_sent(rig);
     rig.conn.answer_confirmation(true);
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::LootItem) == 1; }));
-    for (const auto& packet : rig.server.zone_log) if (packet.opcode == to_wire(Op::LootItem)) {
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::LootItem) == 1; }));
+    for (const auto& packet : rig.server.zone_log) if (packet.opcode == rof2::to_wire(rof2::Op::LootItem)) {
         const auto request = decode_loot_item(packet); REQUIRE(request);
         CHECK(request->unknown16 == (shift ? 10u : ctrl ? 1u : 3u));
     }
@@ -389,12 +388,12 @@ TEST_CASE("Item metadata loot: Loot All keeps an extra-only stack as a whole-sta
     rig.conn.set_client_option_for_session(game::ClientOption::LootAllConfirm, 0);
     auto item = sample_item(); item.stack_count = 10; item.max_stack = 20;
     install_loot_item(rig.conn, std::move(item));
-    rig.conn.receive_zone_packet_for_test(money_response(6));
+    rig.conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money_response(6)});
     rig.conn.loot_all(); require_metadata_question(rig.conn, *extension);
     CHECK_FALSE(rig.conn.quantity_request());
     rig.conn.answer_confirmation(true);
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::LootItem) == 1; }));
-    for (const auto& packet : rig.server.zone_log) if (packet.opcode == to_wire(Op::LootItem))
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::LootItem) == 1; }));
+    for (const auto& packet : rig.server.zone_log) if (packet.opcode == rof2::to_wire(rof2::Op::LootItem))
         CHECK(decode_loot_item(packet)->unknown16 == 0);
 }
 
@@ -411,32 +410,32 @@ TEST_CASE("Item metadata loot: mixed Loot All asks each binding and preserves th
         item.item_class = bag ? 1 : 0; item.no_drop = nodrop ? 0 : 255;
         if (id == 70002) { item.stack_count = 10; item.max_stack = 20; }
         ItemPacket packet; packet.type = kItemPacketLoot; packet.item = std::move(item);
-        c.receive_zone_packet_for_test(encode_item_packet(false, packet));
+        c.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, packet});
     };
     put(23, 70001, true, false); put(24, 70003, false, false); put(25, 70002, false, true);
-    c.receive_zone_packet_for_test(money_response(6));
+    c.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money_response(6)});
     c.loot_all(); require_metadata_question(c, *extension); no_loot_sent(rig);
     c.loot_all(); // no duplicate question while the serial workflow is active
     c.answer_confirmation(false);
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::LootItem) == 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::LootItem) == 1; }));
     REQUIRE_FALSE(c.confirmation());
     LootItem answer; answer.lootee = corpse; answer.looter = c.world().player_id; answer.slot = 24; answer.auto_loot = 1;
-    c.receive_zone_packet_for_test(encode(answer));
+    c.receive_zone_message_for_test({messages::GameOpcode::LootItem, answer});
     REQUIRE(c.confirmation());
     CHECK(c.confirmation()->text.find(extension->question) != std::string::npos);
     CHECK(c.confirmation()->text.find("NO DROP") != std::string::npos);
     CHECK(c.confirmation()->plain_text);
     CHECK_FALSE(c.quantity_request());
     c.answer_confirmation(true);
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::LootItem) == 2; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::LootItem) == 2; }));
     std::vector<std::uint16_t> requested;
-    for (const auto& packet : rig.server.zone_log) if (packet.opcode == to_wire(Op::LootItem)) {
+    for (const auto& packet : rig.server.zone_log) if (packet.opcode == rof2::to_wire(rof2::Op::LootItem)) {
         const auto request = decode_loot_item(packet); REQUIRE(request);
         requested.push_back(request->slot);
         CHECK(request->unknown16 == 0); // Loot All still requests the whole stack
     }
     CHECK(requested == std::vector<std::uint16_t>{24, 25});
-    answer.slot = 25; c.receive_zone_packet_for_test(encode(answer));
+    answer.slot = 25; c.receive_zone_message_for_test({messages::GameOpcode::LootItem, answer});
     CHECK(c.loot_session()); // declined bag remains available
     CHECK_FALSE(c.confirmation());
 }

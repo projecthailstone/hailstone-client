@@ -627,13 +627,8 @@ public:
         st_.timers.set_can_use(skill, can != 0);
         if (!can) out_.used = true;
     }
-    bool send(std::int32_t, std::uint16_t opcode, const std::vector<std::uint8_t>& payload) override {
-        SkillSend s;
-        s.kind = kind_of(opcode, payload);
-        s.raw = true;
-        s.opcode = opcode;
-        s.payload = payload;
-        out_.sends.push_back(std::move(s));
+    bool send(std::int32_t, const SkillSend& action) override {
+        out_.sends.push_back(action);
         out_.used = true;
         return true;
     }
@@ -767,31 +762,6 @@ public:
     }
 
 private:
-    static SkillSend::Kind kind_of(std::uint16_t opcode, const std::vector<std::uint8_t>& payload) {
-        using K = SkillSend::Kind;
-        switch (opcode) {
-        case 0x71da: return K::RemoveTrap;
-        case 0x9be3: return K::PickLock;
-        case 0x78bf: return K::DisarmTraps;
-        case 0x2703: return K::Taunt;
-        case 0x52fa: return K::FeignDeath;
-        case 0x640e: return K::InstillDoubt;
-        case 0x6703: return K::Begging;
-        case 0x39e8: return K::PickPocket;
-        case 0x0ecf: return K::Mend;
-        case 0x02af: return K::SenseTraps;
-        case 0x0971: return payload.size() > 2 && payload[2] == 3 ? K::Unhide : K::StopSneak;
-        case 0x5ec8: return K::Disarm;
-        case 0x4577: return K::TrackUnknown;
-        case 0x5d55: return K::Sneak;
-        case 0x67fe: return K::Hide;
-        case 0x260a: return K::SenseHeading;
-        case 0x5306: return K::Forage;
-        case 0x0386: return K::BindWound;
-        case 0x7177: return K::FishAnimation;
-        default: return K::Fishing; // 0x1e2a
-        }
-    }
     void push(SkillSend::Kind kind) {
         SkillSend s;
         s.kind = kind;

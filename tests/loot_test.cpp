@@ -1,4 +1,4 @@
-// Looting a corpse (net/game_connection_items.cpp): CEverQuest::LootCorpse's checks, Handle_OP_MoneyOnCorpse's
+// Looting a corpse (net/connection/game_connection_items.cpp): CEverQuest::LootCorpse's checks, Handle_OP_MoneyOnCorpse's
 // answers and coin text (FormatCoinAmountsText), Handle_OP_LootItem's refusal and Loot All's close, and
 // unk_CLootWnd_ResetLootSession, against the mock EQEmu (whose string table prints "[id] args").
 
@@ -7,9 +7,10 @@
 #include "game/inventory.h"
 #include "game/item_options.h"
 #include "mock_server/harness.h"
-#include "net/item_packets.h"
-#include "net/packet_io.h"
-#include "net/trade_packets.h"
+#include "net/messages/trade.h"
+#include "net/protocol/rof2/packets/item_packets.h"
+#include "net/protocol/rof2/wire_io.h"
+#include "net/protocol/rof2/packets/trade_packets.h"
 #include "plugin/hooks.h"
 
 using namespace hailstone;
@@ -46,7 +47,7 @@ std::uint32_t add_corpse(GameConnection& conn, float offset) {
     return s.id;
 }
 
-AppPacket money(std::uint8_t response, std::uint32_t p = 0, std::uint32_t g = 0, std::uint32_t s = 0,
+MoneyOnCorpse money(std::uint8_t response, std::uint32_t p = 0, std::uint32_t g = 0, std::uint32_t s = 0,
                 std::uint32_t c = 0) {
     MoneyOnCorpse m;
     m.response = response;
@@ -54,10 +55,10 @@ AppPacket money(std::uint8_t response, std::uint32_t p = 0, std::uint32_t g = 0,
     m.gold = g;
     m.silver = s;
     m.copper = c;
-    return encode(m);
+    return m;
 }
 
-AppPacket loot_item_packet(std::int16_t slot, const std::string& name, std::uint8_t no_drop = 0, bool bag = false) {
+ItemPacket loot_item_packet(std::int16_t slot, const std::string& name, std::uint8_t no_drop = 0, bool bag = false) {
     ItemPacket ip;
     ip.type = kItemPacketLoot;
     ip.item.id = 1001;
@@ -67,13 +68,13 @@ AppPacket loot_item_packet(std::int16_t slot, const std::string& name, std::uint
     ip.item.stack_count = 1;
     ip.item.no_drop = no_drop;
     ip.item.item_class = bag ? 1 : 0;
-    return encode_item_packet(false, ip);
+    return ip;
 }
 
 std::vector<std::uint16_t> loot_requests(const Rig& rig) {
     std::vector<std::uint16_t> slots;
     for (const auto& packet : rig.server.zone_log)
-        if (is_op(packet, Op::LootItem)) {
+        if (is_op(packet, rof2::Op::LootItem)) {
             auto request = decode_loot_item(packet);
             REQUIRE(request);
             CHECK(request->auto_loot == 1);
@@ -85,9 +86,9 @@ std::vector<std::uint16_t> loot_requests(const Rig& rig) {
 // A reliable marker after the clicks proves every preceding request reached the mock. LootItem has no automatic
 // mock reply, so the tests can keep a request outstanding until they explicitly deliver its answer.
 void flush_loot_requests(Rig& rig) {
-    const auto before = MockEqServer::count(rig.server.zone_log, Op::ChannelMessage);
+    const auto before = MockEqServer::count(rig.server.zone_log, rof2::Op::ChannelMessage);
     rig.conn.say("loot-request-marker");
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::ChannelMessage) == before + 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::ChannelMessage) == before + 1; }));
 }
 
 } // namespace
@@ -119,11 +120,11 @@ TEST_CASE("loot: /loot without a target, a corpse too far, and the request") {
     conn.world_for_test().spawns[corpse].position = conn.world_for_test().player()->position + glm::vec3(10, 0, 0);
     conn.loot(corpse);
     REQUIRE(conn.loot_session());
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::LootRequest) == 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::LootRequest) == 1; }));
     // A second request while one corpse is open does nothing.
     conn.loot(corpse);
     rig.run_for(std::chrono::milliseconds(30));
-    CHECK(MockEqServer::count(rig.server.zone_log, Op::LootRequest) == 1);
+    CHECK(MockEqServer::count(rig.server.zone_log, rof2::Op::LootRequest) == 1);
 }
 
 TEST_CASE("loot: Handle_OP_MoneyOnCorpse's answers") {
@@ -143,12 +144,12 @@ TEST_CASE("loot: Handle_OP_MoneyOnCorpse's answers") {
             conn.loot(corpse);
             REQUIRE(conn.loot_session());
             drain_chat(conn);
-            conn.receive_zone_packet_for_test(money(response));
+            conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(response)});
             CHECK(has_line(drain_chat(conn), text));
             CHECK_FALSE(conn.loot_session());
         }
         conn.loot(corpse);
-        conn.receive_zone_packet_for_test(money(7)); // closes without a word
+        conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(7)}); // closes without a word
         CHECK(drain_chat(conn).empty());
         CHECK_FALSE(conn.loot_session());
     }
@@ -158,7 +159,7 @@ TEST_CASE("loot: Handle_OP_MoneyOnCorpse's answers") {
         conn.loot(corpse);
         auto before = conn.coins();
         drain_chat(conn);
-        conn.receive_zone_packet_for_test(money(1, 1, 2, 3, 4));
+        conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(1, 1, 2, 3, 4)});
         CHECK(has_line(drain_chat(conn), "[12072] 1 platinum, 2 gold, 3 silver and 4 copper"));
         CHECK(conn.coins().platinum == before.platinum + 1);
         CHECK(conn.coins().copper == before.copper + 4);
@@ -166,23 +167,23 @@ TEST_CASE("loot: Handle_OP_MoneyOnCorpse's answers") {
         CHECK(conn.loot_session()->open);
         CHECK(conn.player_status().stand_state == kStandLooting);
 
-        conn.receive_zone_packet_for_test(loot_item_packet(23, "Cloth Cap"));
-        conn.receive_zone_packet_for_test(loot_item_packet(24, "Rusty Dagger"));
+        conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, loot_item_packet(23, "Cloth Cap")});
+        conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, loot_item_packet(24, "Rusty Dagger")});
         CHECK(conn.loot_session()->items.size() == 2);
         // A refused item stays ("[1370]").
         LootItem refused;
         refused.lootee = corpse;
         refused.slot = 23;
         refused.auto_loot = -1;
-        conn.receive_zone_packet_for_test(encode(refused));
+        conn.receive_zone_message_for_test({messages::GameOpcode::LootItem, refused});
         CHECK(has_line(drain_chat(conn), "[1370]"));
         CHECK(conn.loot_session()->items.size() == 2);
         LootItem taken = refused;
         taken.auto_loot = 1;
-        conn.receive_zone_packet_for_test(encode(taken));
+        conn.receive_zone_message_for_test({messages::GameOpcode::LootItem, taken});
         CHECK(conn.loot_session()->items.size() == 1);
 
-        conn.receive_zone_packet_for_test(AppPacket{to_wire(Op::LootComplete), {}});
+        conn.receive_zone_message_for_test({messages::GameOpcode::LootComplete, {}});
         CHECK_FALSE(conn.loot_session());
         CHECK(conn.world().target_id == 0);
         CHECK(conn.player_status().stand_state == kStandStanding);
@@ -192,7 +193,7 @@ TEST_CASE("loot: Handle_OP_MoneyOnCorpse's answers") {
         conn.send_command("/autosplit on");
         conn.loot(corpse);
         drain_chat(conn);
-        conn.receive_zone_packet_for_test(money(1, 0, 0, 5, 0));
+        conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(1, 0, 0, 5, 0)});
         CHECK(has_line(drain_chat(conn), "[12071] 5 silver"));
     }
 }
@@ -203,28 +204,28 @@ TEST_CASE("loot: Loot All waits for every item, then closes the window after the
     REQUIRE(rig.to_zone());
     std::uint32_t corpse = add_corpse(conn, 5.0f);
     conn.loot(corpse);
-    conn.receive_zone_packet_for_test(money(1));
-    conn.receive_zone_packet_for_test(loot_item_packet(23, "Cloth Cap"));
-    conn.receive_zone_packet_for_test(loot_item_packet(24, "Rusty Dagger"));
+    conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(1)});
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, loot_item_packet(23, "Cloth Cap")});
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, loot_item_packet(24, "Rusty Dagger")});
     // Before the server's "every item sent" (6) Loot All only remembers it was asked for.
     conn.set_client_option_for_session(game::ClientOption::LootAllConfirm, 0);
     conn.set_client_option_for_session(game::ClientOption::LootNoDrop, 2); // never asks about no-drop items
     conn.destroy_cursor(); // the mock character holds coin, which stops Loot All
     conn.loot_all();
     rig.run_for(std::chrono::milliseconds(30));
-    CHECK(MockEqServer::count(rig.server.zone_log, Op::LootItem) == 0);
-    conn.receive_zone_packet_for_test(money(6));
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::LootItem) == 1; }));
+    CHECK(MockEqServer::count(rig.server.zone_log, rof2::Op::LootItem) == 0);
+    conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(6)});
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::LootItem) == 1; }));
     LootItem answer;
     answer.lootee = corpse;
     answer.slot = 23;
     answer.auto_loot = 1;
-    conn.receive_zone_packet_for_test(encode(answer));
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::LootItem) == 2; }));
-    CHECK(MockEqServer::count(rig.server.zone_log, Op::EndLootRequest) == 0);
+    conn.receive_zone_message_for_test({messages::GameOpcode::LootItem, answer});
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::LootItem) == 2; }));
+    CHECK(MockEqServer::count(rig.server.zone_log, rof2::Op::EndLootRequest) == 0);
     answer.slot = 24;
-    conn.receive_zone_packet_for_test(encode(answer));
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::EndLootRequest) == 1; }));
+    conn.receive_zone_message_for_test({messages::GameOpcode::LootItem, answer});
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::EndLootRequest) == 1; }));
 }
 
 TEST_CASE("loot: rapid Loot All activation preserves the active queue through its final delayed reply") {
@@ -236,11 +237,11 @@ TEST_CASE("loot: rapid Loot All activation preserves the active queue through it
     conn.set_client_option_for_session(game::ClientOption::LootNoDrop, 2);
     conn.destroy_cursor();
     conn.loot(corpse);
-    conn.receive_zone_packet_for_test(money(1));
-    conn.receive_zone_packet_for_test(loot_item_packet(23, "Cloth Cap"));
-    conn.receive_zone_packet_for_test(loot_item_packet(24, "Small Bag", 255, true));
-    conn.receive_zone_packet_for_test(loot_item_packet(25, "Rusty Dagger"));
-    conn.receive_zone_packet_for_test(money(6));
+    conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(1)});
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, loot_item_packet(23, "Cloth Cap")});
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, loot_item_packet(24, "Small Bag", 255, true)});
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, loot_item_packet(25, "Rusty Dagger")});
+    conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(6)});
 
     conn.loot_all();
     for (int click = 0; click < 10; ++click) conn.loot_all();
@@ -258,26 +259,26 @@ TEST_CASE("loot: rapid Loot All activation preserves the active queue through it
     answer.lootee = corpse;
     answer.slot = 24;
     answer.auto_loot = 1;
-    conn.receive_zone_packet_for_test(encode(answer));
+    conn.receive_zone_message_for_test({messages::GameOpcode::LootItem, answer});
     for (int click = 0; click < 10; ++click) conn.loot_all();
     flush_loot_requests(rig);
     CHECK(loot_requests(rig) == std::vector<std::uint16_t>{24, 23});
     CHECK_FALSE(conn.confirmation());
 
     answer.slot = 23;
-    conn.receive_zone_packet_for_test(encode(answer));
+    conn.receive_zone_message_for_test({messages::GameOpcode::LootItem, answer});
     // No slots remain queued while the final request waits: its busy state still prevents a duplicate.
     for (int click = 0; click < 10; ++click) conn.loot_all();
     flush_loot_requests(rig);
     CHECK(loot_requests(rig) == std::vector<std::uint16_t>{24, 23, 25});
     CHECK_FALSE(conn.confirmation());
-    CHECK(MockEqServer::count(rig.server.zone_log, Op::EndLootRequest) == 0);
+    CHECK(MockEqServer::count(rig.server.zone_log, rof2::Op::EndLootRequest) == 0);
 
     answer.slot = 25;
-    conn.receive_zone_packet_for_test(encode(answer));
+    conn.receive_zone_message_for_test({messages::GameOpcode::LootItem, answer});
     flush_loot_requests(rig);
     CHECK(loot_requests(rig) == std::vector<std::uint16_t>{24, 23, 25});
-    CHECK(MockEqServer::count(rig.server.zone_log, Op::EndLootRequest) == 1);
+    CHECK(MockEqServer::count(rig.server.zone_log, rof2::Op::EndLootRequest) == 1);
 }
 
 TEST_CASE("loot: Loot All does not wait for an individual item request still awaiting its reply") {
@@ -292,10 +293,10 @@ TEST_CASE("loot: Loot All does not wait for an individual item request still awa
     conn.set_client_option_for_session(game::ClientOption::LootNoDrop, 2);
     conn.destroy_cursor();
     conn.loot(corpse);
-    conn.receive_zone_packet_for_test(money(1));
-    conn.receive_zone_packet_for_test(loot_item_packet(23, "Cloth Cap"));
-    conn.receive_zone_packet_for_test(loot_item_packet(24, "Rusty Dagger"));
-    conn.receive_zone_packet_for_test(money(6));
+    conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(1)});
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, loot_item_packet(23, "Cloth Cap")});
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, loot_item_packet(24, "Rusty Dagger")});
+    conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(6)});
 
     conn.loot_item(24, true);
     conn.loot_all();
@@ -307,32 +308,32 @@ TEST_CASE("loot: Loot All does not wait for an individual item request still awa
     answer.lootee = corpse;
     answer.slot = 24;
     answer.auto_loot = 1;
-    conn.receive_zone_packet_for_test(encode(answer));
+    conn.receive_zone_message_for_test({messages::GameOpcode::LootItem, answer});
     flush_loot_requests(rig);
     CHECK(loot_requests(rig) == std::vector<std::uint16_t>{24, 23, 24});
     answer.slot = 23;
-    conn.receive_zone_packet_for_test(encode(answer));
+    conn.receive_zone_message_for_test({messages::GameOpcode::LootItem, answer});
     flush_loot_requests(rig);
     // The queue is done, but a reply is still owed: the window waits, and Loot All stays busy.
-    CHECK(MockEqServer::count(rig.server.zone_log, Op::EndLootRequest) == 0);
+    CHECK(MockEqServer::count(rig.server.zone_log, rof2::Op::EndLootRequest) == 0);
     for (int click = 0; click < 10; ++click) conn.loot_all();
     flush_loot_requests(rig);
     CHECK(loot_requests(rig) == std::vector<std::uint16_t>{24, 23, 24});
 
     answer.slot = 24;
     SUBCASE("the repeated request's reply closes the window") {
-        conn.receive_zone_packet_for_test(encode(answer));
+        conn.receive_zone_message_for_test({messages::GameOpcode::LootItem, answer});
         flush_loot_requests(rig);
-        CHECK(MockEqServer::count(rig.server.zone_log, Op::EndLootRequest) == 1);
+        CHECK(MockEqServer::count(rig.server.zone_log, rof2::Op::EndLootRequest) == 1);
     }
     SUBCASE("a refusal keeps the window open and Loot All usable again") {
         answer.auto_loot = -1;
-        conn.receive_zone_packet_for_test(encode(answer));
+        conn.receive_zone_message_for_test({messages::GameOpcode::LootItem, answer});
         flush_loot_requests(rig);
-        CHECK(MockEqServer::count(rig.server.zone_log, Op::EndLootRequest) == 0);
+        CHECK(MockEqServer::count(rig.server.zone_log, rof2::Op::EndLootRequest) == 0);
         conn.loot_all(); // nothing left to loot: the window closes
         flush_loot_requests(rig);
-        CHECK(MockEqServer::count(rig.server.zone_log, Op::EndLootRequest) == 1);
+        CHECK(MockEqServer::count(rig.server.zone_log, rof2::Op::EndLootRequest) == 1);
     }
 }
 
@@ -348,13 +349,13 @@ TEST_CASE("loot: a dropped LootItem handoff leaves Loot All retryable") {
     conn.set_client_option_for_session(game::ClientOption::LootNoDrop, 2);
     conn.destroy_cursor();
     conn.loot(corpse);
-    conn.receive_zone_packet_for_test(money(1));
-    conn.receive_zone_packet_for_test(loot_item_packet(23, "Cloth Cap"));
-    conn.receive_zone_packet_for_test(loot_item_packet(24, "Rusty Dagger"));
-    conn.receive_zone_packet_for_test(money(6));
+    conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(1)});
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, loot_item_packet(23, "Cloth Cap")});
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, loot_item_packet(24, "Rusty Dagger")});
+    conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(6)});
     const auto owner = hooks.new_owner("loot handoff drop test");
     bool drop = true;
-    hooks.on_packet(owner, plugin::Stream::Zone, plugin::Direction::Out, to_wire(Op::LootItem),
+    hooks.on_packet(owner, plugin::Stream::Zone, plugin::Direction::Out, rof2::to_wire(rof2::Op::LootItem),
         [&](AppPacket&) { return drop ? plugin::Flow::Drop : plugin::Flow::Continue; });
 
     SUBCASE("the first request of a new auto-loot queue is dropped") {
@@ -374,13 +375,13 @@ TEST_CASE("loot: a dropped LootItem handoff leaves Loot All retryable") {
     answer.lootee = corpse;
     answer.slot = 23;
     answer.auto_loot = 1;
-    conn.receive_zone_packet_for_test(encode(answer));
+    conn.receive_zone_message_for_test({messages::GameOpcode::LootItem, answer});
     flush_loot_requests(rig);
     CHECK(loot_requests(rig) == std::vector<std::uint16_t>{23, 24});
     answer.slot = 24;
-    conn.receive_zone_packet_for_test(encode(answer));
+    conn.receive_zone_message_for_test({messages::GameOpcode::LootItem, answer});
     flush_loot_requests(rig);
-    CHECK(MockEqServer::count(rig.server.zone_log, Op::EndLootRequest) == 1);
+    CHECK(MockEqServer::count(rig.server.zone_log, rof2::Op::EndLootRequest) == 1);
     hooks.remove(owner);
 }
 
@@ -393,10 +394,10 @@ TEST_CASE("loot: a delayed Loot All confirmation runs with an individual request
     conn.set_client_option_for_session(game::ClientOption::LootNoDrop, 2);
     conn.destroy_cursor();
     conn.loot(corpse);
-    conn.receive_zone_packet_for_test(money(1));
-    conn.receive_zone_packet_for_test(loot_item_packet(23, "Cloth Cap"));
-    conn.receive_zone_packet_for_test(loot_item_packet(24, "Rusty Dagger"));
-    conn.receive_zone_packet_for_test(money(6));
+    conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(1)});
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, loot_item_packet(23, "Cloth Cap")});
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, loot_item_packet(24, "Rusty Dagger")});
+    conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(6)});
     conn.loot_all();
     REQUIRE(conn.confirmation());
     CHECK(conn.confirmation()->id == kConfirmLootAll);
@@ -410,17 +411,17 @@ TEST_CASE("loot: a delayed Loot All confirmation runs with an individual request
     answer.lootee = corpse;
     answer.slot = 24;
     answer.auto_loot = 1;
-    conn.receive_zone_packet_for_test(encode(answer));
+    conn.receive_zone_message_for_test({messages::GameOpcode::LootItem, answer});
     flush_loot_requests(rig);
     CHECK(loot_requests(rig) == std::vector<std::uint16_t>{24, 23, 24});
     answer.slot = 23;
-    conn.receive_zone_packet_for_test(encode(answer));
+    conn.receive_zone_message_for_test({messages::GameOpcode::LootItem, answer});
     flush_loot_requests(rig);
-    CHECK(MockEqServer::count(rig.server.zone_log, Op::EndLootRequest) == 0);
+    CHECK(MockEqServer::count(rig.server.zone_log, rof2::Op::EndLootRequest) == 0);
     answer.slot = 24;
-    conn.receive_zone_packet_for_test(encode(answer));
+    conn.receive_zone_message_for_test({messages::GameOpcode::LootItem, answer});
     flush_loot_requests(rig);
-    CHECK(MockEqServer::count(rig.server.zone_log, Op::EndLootRequest) == 1);
+    CHECK(MockEqServer::count(rig.server.zone_log, rof2::Op::EndLootRequest) == 1);
 }
 
 TEST_CASE("loot: a second Loot All click while its question is pending asks nothing more") {
@@ -432,9 +433,9 @@ TEST_CASE("loot: a second Loot All click while its question is pending asks noth
     conn.set_client_option_for_session(game::ClientOption::LootNoDrop, 2);
     conn.destroy_cursor();
     conn.loot(corpse);
-    conn.receive_zone_packet_for_test(money(1));
-    conn.receive_zone_packet_for_test(loot_item_packet(23, "Cloth Cap"));
-    conn.receive_zone_packet_for_test(money(6));
+    conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(1)});
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, loot_item_packet(23, "Cloth Cap")});
+    conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(6)});
 
     conn.loot_all();
     conn.loot_all(); // a second click before the first question was answered
@@ -455,10 +456,10 @@ TEST_CASE("loot: an accepted NO DROP question keeps Loot All open until both out
     conn.set_client_option_for_session(game::ClientOption::LootNoDrop, 0);
     conn.destroy_cursor();
     conn.loot(corpse);
-    conn.receive_zone_packet_for_test(money(1));
-    conn.receive_zone_packet_for_test(loot_item_packet(23, "Cloth Cap", 255));
-    conn.receive_zone_packet_for_test(loot_item_packet(24, "Relic"));
-    conn.receive_zone_packet_for_test(money(6));
+    conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(1)});
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, loot_item_packet(23, "Cloth Cap", 255)});
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, loot_item_packet(24, "Relic")});
+    conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(6)});
     conn.loot_all();
     REQUIRE(conn.confirmation());
     CHECK(conn.confirmation()->data == 24);
@@ -477,15 +478,15 @@ TEST_CASE("loot: an accepted NO DROP question keeps Loot All open until both out
         last_slot = 23;
     }
     answer.slot = first_slot;
-    conn.receive_zone_packet_for_test(encode(answer));
+    conn.receive_zone_message_for_test({messages::GameOpcode::LootItem, answer});
     for (int click = 0; click < 10; ++click) conn.loot_all();
     flush_loot_requests(rig);
     CHECK(loot_requests(rig) == std::vector<std::uint16_t>{23, 24});
-    CHECK(MockEqServer::count(rig.server.zone_log, Op::EndLootRequest) == 0);
+    CHECK(MockEqServer::count(rig.server.zone_log, rof2::Op::EndLootRequest) == 0);
     answer.slot = last_slot;
-    conn.receive_zone_packet_for_test(encode(answer));
+    conn.receive_zone_message_for_test({messages::GameOpcode::LootItem, answer});
     flush_loot_requests(rig);
-    CHECK(MockEqServer::count(rig.server.zone_log, Op::EndLootRequest) == 1);
+    CHECK(MockEqServer::count(rig.server.zone_log, rof2::Op::EndLootRequest) == 1);
 }
 
 TEST_CASE("loot: multiple NO DROP items abort the queue but keep its first bag question answerable") {
@@ -497,12 +498,12 @@ TEST_CASE("loot: multiple NO DROP items abort the queue but keep its first bag q
     conn.set_client_option_for_session(game::ClientOption::LootNoDrop, 0);
     conn.destroy_cursor();
     conn.loot(corpse);
-    conn.receive_zone_packet_for_test(money(1));
-    conn.receive_zone_packet_for_test(loot_item_packet(23, "Cloth Cap", 255));
-    conn.receive_zone_packet_for_test(loot_item_packet(24, "Second Relic"));
-    conn.receive_zone_packet_for_test(loot_item_packet(25, "First Relic Bag", 0, true));
-    conn.receive_zone_packet_for_test(loot_item_packet(26, "Rusty Dagger", 255));
-    conn.receive_zone_packet_for_test(money(6));
+    conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(1)});
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, loot_item_packet(23, "Cloth Cap", 255)});
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, loot_item_packet(24, "Second Relic")});
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, loot_item_packet(25, "First Relic Bag", 0, true)});
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, loot_item_packet(26, "Rusty Dagger", 255)});
+    conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(6)});
 
     conn.loot_all();
     REQUIRE(conn.confirmation());
@@ -512,7 +513,7 @@ TEST_CASE("loot: multiple NO DROP items abort the queue but keep its first bag q
     for (int click = 0; click < 10; ++click) conn.loot_all();
     flush_loot_requests(rig);
     CHECK(loot_requests(rig).empty());
-    CHECK(MockEqServer::count(rig.server.zone_log, Op::EndLootRequest) == 0);
+    CHECK(MockEqServer::count(rig.server.zone_log, rof2::Op::EndLootRequest) == 0);
     REQUIRE(conn.confirmation());
     CHECK(conn.confirmation()->data == 25);
 
@@ -525,7 +526,7 @@ TEST_CASE("loot: multiple NO DROP items abort the queue but keep its first bag q
         answer.lootee = corpse;
         answer.slot = 25;
         answer.auto_loot = 1;
-        conn.receive_zone_packet_for_test(encode(answer));
+        conn.receive_zone_message_for_test({messages::GameOpcode::LootItem, answer});
         flush_loot_requests(rig);
         CHECK(loot_requests(rig) == std::vector<std::uint16_t>{25});
         REQUIRE(conn.loot_session());
@@ -564,11 +565,11 @@ TEST_CASE("loot: Loot All preserves an individual NO DROP question already pendi
     conn.set_client_option_for_session(game::ClientOption::LootNoDrop, 0);
     conn.destroy_cursor();
     conn.loot(corpse);
-    conn.receive_zone_packet_for_test(money(1));
-    conn.receive_zone_packet_for_test(loot_item_packet(23, "Original Relic"));
-    conn.receive_zone_packet_for_test(loot_item_packet(24, "Another Relic Bag", 0, true));
-    conn.receive_zone_packet_for_test(loot_item_packet(25, "Cloth Cap", 255));
-    conn.receive_zone_packet_for_test(money(6));
+    conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(1)});
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, loot_item_packet(23, "Original Relic")});
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, loot_item_packet(24, "Another Relic Bag", 0, true)});
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, loot_item_packet(25, "Cloth Cap", 255)});
+    conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(6)});
     conn.loot_item(23, true);
     REQUIRE(conn.confirmation());
     CHECK(conn.confirmation()->data == 23);
@@ -588,12 +589,12 @@ TEST_CASE("loot: walking away from the corpse closes the window (CLootWnd::OnPro
     REQUIRE(rig.to_zone());
     std::uint32_t corpse = add_corpse(conn, 5.0f);
     conn.loot(corpse);
-    conn.receive_zone_packet_for_test(money(1));
+    conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(1)});
     rig.run_for(std::chrono::milliseconds(600));
-    CHECK(MockEqServer::count(rig.server.zone_log, Op::EndLootRequest) == 0);
+    CHECK(MockEqServer::count(rig.server.zone_log, rof2::Op::EndLootRequest) == 0);
     // Beyond AvatarHeight * 1.5 + 20 = 23 (without z).
     conn.world_for_test().spawns[corpse].position += glm::vec3(30.0f, 0.0f, 0.0f);
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::EndLootRequest) == 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::EndLootRequest) == 1; }));
 }
 
 TEST_CASE("loot: a stack on someone else's corpse asks how many (CLootWnd::RequestLootSlot)") {
@@ -602,8 +603,8 @@ TEST_CASE("loot: a stack on someone else's corpse asks how many (CLootWnd::Reque
     REQUIRE(rig.to_zone());
     std::uint32_t corpse = add_corpse(conn, 5.0f);
     conn.loot(corpse);
-    conn.receive_zone_packet_for_test(money(1));
-    AppPacket stack = loot_item_packet(23, "Bone Chips");
+    conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(1)});
+    ItemPacket stack = loot_item_packet(23, "Bone Chips");
     {
         ItemPacket ip;
         ip.type = kItemPacketLoot;
@@ -612,16 +613,16 @@ TEST_CASE("loot: a stack on someone else's corpse asks how many (CLootWnd::Reque
         ip.item.slot.slot = 23;
         ip.item.stack_count = 7;
         ip.item.max_stack = 20;
-        stack = encode_item_packet(false, ip);
+        stack = ip;
     }
-    conn.receive_zone_packet_for_test(stack);
-    conn.receive_zone_packet_for_test(loot_item_packet(24, "Rusty Dagger"));
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, stack});
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, loot_item_packet(24, "Rusty Dagger")});
     conn.set_client_option_for_session(game::ClientOption::LootNoDrop, 2); // never asks about no-drop items
     conn.destroy_cursor(); // the mock character holds coin, which stops looting
     rig.run_for(std::chrono::milliseconds(30));
     // A single item goes at once with quantity 0.
     conn.click_slot(ItemSlot::corpse(24));
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::LootItem) == 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::LootItem) == 1; }));
     CHECK_FALSE(conn.quantity_request().has_value());
     // The stack opens the quantity dialog centred, from 7 down; nothing is sent until the answer.
     conn.click_slot(ItemSlot::corpse(23));
@@ -631,21 +632,21 @@ TEST_CASE("loot: a stack on someone else's corpse asks how many (CLootWnd::Reque
     CHECK(conn.quantity_request()->max == 7);
     CHECK(conn.quantity_request()->start == 7);
     rig.run_for(std::chrono::milliseconds(30));
-    CHECK(MockEqServer::count(rig.server.zone_log, Op::LootItem) == 1);
+    CHECK(MockEqServer::count(rig.server.zone_log, rof2::Op::LootItem) == 1);
     conn.finish_quantity(3);
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::LootItem) == 2; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::LootItem) == 2; }));
     std::optional<LootItem> sent;
     for (const auto& p : rig.server.zone_log)
-        if (is_op(p, Op::LootItem)) sent = decode_loot_item(p);
+        if (is_op(p, rof2::Op::LootItem)) sent = decode_loot_item(p);
     REQUIRE(sent);
     CHECK(sent->slot == 23);
     CHECK(sent->auto_loot == 0);
     CHECK(sent->unknown16 == 3);
     // Ctrl takes one at once.
     conn.click_slot(ItemSlot::corpse(23), false, true);
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::LootItem) == 3; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::LootItem) == 3; }));
     for (const auto& p : rig.server.zone_log)
-        if (is_op(p, Op::LootItem)) sent = decode_loot_item(p);
+        if (is_op(p, rof2::Op::LootItem)) sent = decode_loot_item(p);
     CHECK(sent->unknown16 == 1);
 }
 
@@ -670,14 +671,14 @@ TEST_CASE("trade: an answer that comes while busy cancels the trade (Handle_OP_T
     w.spawns[pc.id] = pc;
     conn.destroy_cursor();
     conn.give_to(pc.id);
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::TradeRequest) == 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::TradeRequest) == 1; }));
     // A request still waiting for its answer does not make the client busy; a loot window does.
     std::uint32_t corpse = add_corpse(conn, 5.0f);
     conn.loot(corpse);
-    conn.receive_zone_packet_for_test(money(1));
+    conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(1)});
     REQUIRE(conn.loot_session().has_value());
-    conn.receive_zone_packet_for_test(encode_trade_request_ack({w.player_id, pc.id}));
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::CancelTrade) == 1; }));
-    CHECK(MockEqServer::count(rig.server.zone_log, Op::ChannelMessage) >= 1);
+    conn.receive_zone_message_for_test({messages::GameOpcode::TradeRequestAck, TradeInvitation{w.player_id, pc.id}});
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::CancelTrade) == 1; }));
+    CHECK(MockEqServer::count(rig.server.zone_log, rof2::Op::ChannelMessage) >= 1);
     CHECK_FALSE(conn.trade().has_value());
 }

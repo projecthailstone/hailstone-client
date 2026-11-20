@@ -1,7 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "game/reward_selection.h"
-#include "reward_test_packets.h"
+#include "rof2/reward_test_packets.h"
 
 using namespace hailstone;
 using game::RewardLane;

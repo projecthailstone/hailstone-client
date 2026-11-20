@@ -10,7 +10,7 @@
 #include "core/game_dir.h"
 #include "game/server_ext_chain.h"
 #include "game/spells.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 
 using namespace hailstone;
 

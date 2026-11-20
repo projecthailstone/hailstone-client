@@ -8,12 +8,13 @@
 #include "game/bazaar.h"
 #include "game/client_options.h"
 #include "mock_server/harness.h"
-#include "net/aggro_packets.h"
-#include "net/group_packets.h"
-#include "net/item_packets.h"
-#include "net/market_packets.h"
-#include "net/social_packets.h"
-#include "net/spell_packets.h"
+#include "net/protocol/rof2/packets/aggro_packets.h"
+#include "net/protocol/rof2/packets/group_packets.h"
+#include "net/protocol/rof2/packets/item_packets.h"
+#include "net/protocol/rof2/packets/market_packets.h"
+#include "net/protocol/rof2/packets/social_packets.h"
+#include "net/messages/notice.h"
+#include "net/protocol/rof2/packets/spell_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::net;
@@ -44,27 +45,21 @@ std::uint32_t add_corpse(GameConnection& conn) {
     return s.id;
 }
 
-AppPacket money(std::uint8_t response) {
-    MoneyOnCorpse m;
-    m.response = response;
-    return encode(m);
+MoneyOnCorpse money(std::uint8_t response) {
+    MoneyOnCorpse coins;
+    coins.response = response;
+    return coins;
 }
 
-AppPacket corpse_item(std::int16_t slot, const std::string& name, std::uint8_t no_drop) {
-    ItemPacket ip;
-    ip.type = kItemPacketLoot;
-    ip.item.id = 1001;
-    ip.item.name = name;
-    ip.item.slot.slot = slot;
-    ip.item.stack_count = 1;
-    ip.item.no_drop = no_drop; // 0: NO DROP
-    return encode_item_packet(false, ip);
-}
-
-AppPacket stun(std::uint32_t ms) {
-    ByteWriter w;
-    w.le(ms);
-    return AppPacket(to_wire(Op::Stun), w.take());
+ItemPacket corpse_item(std::int16_t slot, const std::string& name, std::uint8_t no_drop) {
+    ItemPacket packet;
+    packet.type = kItemPacketLoot;
+    packet.item.id = 1001;
+    packet.item.name = name;
+    packet.item.slot.slot = slot;
+    packet.item.stack_count = 1;
+    packet.item.no_drop = no_drop;
+    return packet;
 }
 
 } // namespace
@@ -112,28 +107,28 @@ TEST_CASE("questions: the end of a loot session drops its NO DROP question and t
     conn.destroy_cursor(); // the mock character holds coin, which stops looting
 
     conn.loot(corpse);
-    conn.receive_zone_packet_for_test(money(1));
-    conn.receive_zone_packet_for_test(corpse_item(23, "Cloth Cap", 0));
+    conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(1)});
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, corpse_item(23, "Cloth Cap", 0)});
     conn.loot_item(23, false);
     REQUIRE(conn.confirmation());
     CHECK(conn.confirmation()->id == kConfirmLootNoDrop);
-    conn.receive_zone_packet_for_test(AppPacket{to_wire(Op::LootComplete), {}});
+    conn.receive_zone_message_for_test({messages::GameOpcode::LootComplete, std::monostate{}});
     CHECK_FALSE(conn.loot_session());
     CHECK_FALSE(conn.confirmation());
 
     // The next corpse: Loot All closes the window after the last answer, which a popup flag left set would stop.
     conn.loot(corpse);
-    conn.receive_zone_packet_for_test(money(1));
-    conn.receive_zone_packet_for_test(corpse_item(24, "Rusty Dagger", 255));
-    conn.receive_zone_packet_for_test(money(6));
+    conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(1)});
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, corpse_item(24, "Rusty Dagger", 255)});
+    conn.receive_zone_message_for_test({messages::GameOpcode::MoneyOnCorpse, money(6)});
     conn.loot_all();
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::LootItem) == 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::LootItem) == 1; }));
     LootItem answer;
     answer.lootee = corpse;
     answer.slot = 24;
     answer.auto_loot = 1;
-    conn.receive_zone_packet_for_test(encode(answer));
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::EndLootRequest) == 1; }));
+    conn.receive_zone_message_for_test({messages::GameOpcode::LootItem, answer});
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::EndLootRequest) == 1; }));
 }
 
 TEST_CASE("trader: a zone change forgets the selected slot with the slots") {
@@ -165,7 +160,7 @@ TEST_CASE("trader: a zone change forgets the selected slot with the slots") {
     CHECK(conn.trader_state().slots.empty());
     CHECK(conn.trader_state().selected == -1);
     // A late price update has no slot to name (it indexed the cleared list before).
-    conn.receive_zone_packet_for_test(encode_trader_status(kTraderPriceUpdate, 1));
+    conn.receive_zone_message_for_test({messages::GameOpcode::Trader, TraderMessage{kTraderPriceUpdate, 1}});
     conn.trader_remove();
     conn.trader_set_price();
     CHECK(conn.trader_state().slots.empty());
@@ -192,17 +187,17 @@ TEST_CASE("zone-in forgets the last zone's auras, aggro meter and stun") {
     Rig rig;
     auto& conn = rig.conn;
     REQUIRE(rig.to_zone());
-    AuraUpdate aura;
+    net::messages::AuraUpdate aura;
     aura.action = kAuraAdd;
     aura.spawn_id = 300;
     aura.name = "Aura of the Zealot";
-    conn.receive_zone_packet_for_test(encode(aura));
-    conn.receive_zone_packet_for_test(encode(AggroTargetInfo{101, 101}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::UpdateAura, aura});
+    conn.receive_zone_message_for_test({messages::GameOpcode::AggroMeterTargetInfo, AggroTargetInfo{101, 101}});
     AggroUpdate up;
     up.secondary_id = 102;
     up.entries = {{static_cast<std::uint8_t>(kAggroPlayer), 80}};
-    conn.receive_zone_packet_for_test(encode(up));
-    conn.receive_zone_packet_for_test(stun(60000));
+    conn.receive_zone_message_for_test({messages::GameOpcode::AggroMeterUpdate, up});
+    conn.receive_zone_message_for_test({messages::GameOpcode::Stun, StunNotice{60000, false}});
     REQUIRE(conn.auras().size() == 1);
     REQUIRE(conn.aggro().lock_id == 101);
     REQUIRE(conn.stunned());
@@ -231,7 +226,7 @@ TEST_CASE("decode_xtarget_response: the max, the entries, and a cut packet keeps
     w.le<std::uint32_t>(102);
     std::vector<std::byte> bytes = w.take();
     bytes.push_back(std::byte{'G'}); // the second name runs off the end
-    auto x = decode_xtarget_response(AppPacket(to_wire(Op::XTargetResponse), bytes));
+    auto x = decode_xtarget_response(AppPacket(rof2::to_wire(rof2::Op::XTargetResponse), bytes));
     REQUIRE(x);
     CHECK(x->max == 5);
     REQUIRE(x->entries.size() == 1);
@@ -240,17 +235,17 @@ TEST_CASE("decode_xtarget_response: the max, the entries, and a cut packet keeps
     CHECK(x->entries[0].spawn_id == 101);
     CHECK(x->entries[0].name == "a_rat");
     bytes.push_back(std::byte{0});
-    x = decode_xtarget_response(AppPacket(to_wire(Op::XTargetResponse), bytes));
+    x = decode_xtarget_response(AppPacket(rof2::to_wire(rof2::Op::XTargetResponse), bytes));
     REQUIRE(x);
     REQUIRE(x->entries.size() == 2);
     CHECK(x->entries[1].slot == 3);
     CHECK(x->entries[1].name == "G");
-    CHECK_FALSE(decode_xtarget_response(AppPacket(to_wire(Op::XTargetResponse), std::vector<std::byte>(3))));
+    CHECK_FALSE(decode_xtarget_response(AppPacket(rof2::to_wire(rof2::Op::XTargetResponse), std::vector<std::byte>(3))));
 }
 
 TEST_CASE("encode_xtarget_request: one slot, its slot number, type and NUL-terminated name") {
     auto p = encode_xtarget_request(4, 3, "a_rat00");
-    CHECK(p.opcode == to_wire(Op::XTargetRequest));
+    CHECK(p.opcode == rof2::to_wire(rof2::Op::XTargetRequest));
     ByteReader r(p.data);
     CHECK(r.le<std::uint32_t>() == 1u);
     CHECK(r.le<std::uint32_t>() == 4u);

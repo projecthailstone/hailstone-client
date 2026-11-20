@@ -15,8 +15,9 @@
 
 #include "app/lua_ui.h"
 #include "core/game_dir.h"
-#include "net/game_connection.h"
-#include "net/task_packets.h"
+#include "net/connection/game_connection.h"
+#include "net/messages/task.h"
+#include "net/protocol/rof2/packets/task_packets.h"
 #include "ui/dev_screens.h"
 #include "ui/lua/lua_host.h"
 #include "scratch_dir.h"
@@ -79,7 +80,7 @@ struct JournalSession {
             ImGui::NewFrame();
             lua->frame();
             ImGui::Render();
-            REQUIRE(ImGui::FindWindowByName("UI errors") == nullptr);
+            REQUIRE_MESSAGE((lua->load_status().error_count == 0), (lua->load_status().errors.empty() ? "" : lua->load_status().errors.front()));
         }
     }
     std::string run(const std::string& code) {
@@ -99,7 +100,7 @@ struct JournalSession {
         task.description = "A description unique to " + title;
         task.has_rewards = true;
         task.xp_reward = true;
-        conn->receive_zone_packet_for_test(net::encode_task_description(task));
+        conn->receive_zone_message_for_test({net::messages::GameOpcode::TaskDescription, task});
     }
     void activity(std::uint32_t id, std::uint32_t type, std::uint32_t slot, std::uint32_t group,
                   const std::string& description, bool hidden) {
@@ -113,7 +114,7 @@ struct JournalSession {
         packet.element.description = description;
         packet.element.goal_count = 5;
         packet.element.done_count = 1;
-        conn->receive_zone_packet_for_test(net::encode(packet));
+        conn->receive_zone_message_for_test({net::messages::GameOpcode::TaskActivity, packet});
     }
 };
 } // namespace
@@ -217,9 +218,9 @@ TEST_CASE("quest journal UI: native shared roster popup and membership updates w
     session.task(202, game::kTaskTypeShared, "Shared quest");
     session.activity(202, game::kTaskTypeShared, 0, 0, "Shared objective", false);
     const auto revision = session.conn->tasks().revision;
-    session.conn->receive_zone_packet_for_test(net::encode(std::vector<net::SharedTaskMember>{
+    session.conn->receive_zone_message_for_test({net::messages::GameOpcode::SharedTaskMemberList, std::vector<net::SharedTaskMember>{
         {"Aster", true}, {"Beryl", false},
-    }));
+    }});
     REQUIRE(session.conn->tasks().revision == revision);
     session.frames();
     session.run(R"lua(
@@ -255,12 +256,12 @@ TEST_CASE("quest journal UI: native shared roster popup and membership updates w
         CHECK(session.run("return tostring(hs.ChildState('TaskWnd','" + std::string(id) + "'))") == "false");
     }
 
-    session.conn->receive_zone_packet_for_test(net::encode(net::SharedTaskMemberChange{true, "Cyra"}));
+    session.conn->receive_zone_message_for_test({net::messages::GameOpcode::SharedTaskMemberChange, net::SharedTaskMemberChange{true, "Cyra"}});
     CHECK(session.conn->tasks().revision == revision);
     session.run("sharedRosterSeen = {}");
     session.frames();
     CHECK(session.run("return tostring(sharedRosterSeen['Cyra'] and sharedRosterSeen['Beryl'])") == "true");
-    session.conn->receive_zone_packet_for_test(net::encode(net::SharedTaskMemberChange{false, "Beryl"}));
+    session.conn->receive_zone_message_for_test({net::messages::GameOpcode::SharedTaskMemberChange, net::SharedTaskMemberChange{false, "Beryl"}});
     CHECK(session.conn->tasks().revision == revision);
     session.run("sharedRosterSeen = {}");
     session.frames();

@@ -13,7 +13,7 @@
 #include "app/lua_ui.h"
 #include "core/config.h"
 #include "core/game_dir.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "scratch_dir.h"
 #include "ui/dev_screens.h"
 #include "ui/lua/lua_host.h"
@@ -95,7 +95,9 @@ TEST_CASE("UI Options: real presenters show unavailable interface details and ke
             CHECK(api.replaces("OptionsWindow"));
             CHECK(reads > 0);
             CHECK(lua.setting("options.section") == "Interface");
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            // Check the live errors (ImGui retains the old error-window object).
+            for (const auto& error : loaded.errors) INFO(error);
+            CHECK(loaded.error_count == 0);
         }
     }
 }
@@ -165,7 +167,9 @@ TEST_CASE("UI SDK starter: installed example overrides Player and inherits real 
             ImGui::NewFrame();
             lua.frame();
             ImGui::Render();
-            REQUIRE(ImGui::FindWindowByName("UI errors") == nullptr);
+            const auto status = lua.load_status();
+            for (const auto& error : status.errors) INFO(error);
+            REQUIRE(status.error_count == 0);
         }
         CHECK(lua.run_for_test("", "return hs.UI.character.Name()") == "Starter Tester");
         CHECK(api.replaces("PlayerWindow"));

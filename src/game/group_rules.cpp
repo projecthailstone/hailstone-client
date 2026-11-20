@@ -63,9 +63,9 @@ bool iequal(const std::string& a, const std::string& b) {
 } // namespace
 
 void handle_group_world_message(bool& grouped, const GroupWorldPacket& p, GroupWorldCalls& c) {
-    if (p.opcode == kOpGroupAcknowledge) {
+    if (p.opcode == net::messages::GameOpcode::GroupAcknowledge) {
         c.say(kStrYouJoined);
-    } else if (p.opcode == kOpGroupDisbandYou) {
+    } else if (p.opcode == net::messages::GameOpcode::GroupDisbandYou) {
         c.say(kStrYouWereRemoved);
         if (grouped) {
             c.delete_group();
@@ -75,30 +75,24 @@ void handle_group_world_message(bool& grouped, const GroupWorldPacket& p, GroupW
     }
     if (!grouped) return;
     switch (p.opcode) {
-    case kOpGroupUpdate: {
+    case net::messages::GameOpcode::GroupUpdate: {
         if (c.member_by_name(p.name2) != -1) return;
         int m = c.new_member(p);
         if (c.add_member(m)) c.apply_armor_filter(p.name2);
         return;
     }
-    case kOpGroupLeaderChange: {
+    case net::messages::GameOpcode::GroupLeaderChange: {
         int m = c.member_by_name(p.name2);
         if (m != -1) c.set_leader(m);
         return;
     }
-    case kOpGroupDelete:
-    case kOpGroupDelete2:
+    case net::messages::GameOpcode::GroupDelete:
         c.pc_delete_group();
         return;
-    case kOpGroupDisbandOther:
+    case net::messages::GameOpcode::GroupDisbandOther:
         if (c.remove_member_by_name(p.name2)) c.apply_armor_filter(p.name2);
         return;
-    case kOpGroupRename: {
-        int m = c.member_by_name(p.name);
-        if (m != -1) c.rename(m, p.name2);
-        return;
-    }
-    case kOpGroupRoles: {
+    case net::messages::GameOpcode::GroupRoles: {
         int m = c.member_by_name(p.name);
         if (m == -1) return;
         auto leader = c.leader_name();
@@ -181,7 +175,7 @@ GroupInviteResult handle_group_invite(GroupInviteState& st, const GroupInviteInp
         r.calls.push_back({F::PlayerSetInvited, 1});
         st.pending_inviter = in.inviter;
         st.pending_word_148 = in.word_148;
-        if (in.opcode == kOpGroupInvite) st.follow_with_group_follow = true;
+        if (in.first_invite_opcode) st.follow_with_group_follow = true;
         return r;
     }
     r.cancel = GroupInviteCancel{in.inviter, in.my_name, reason};

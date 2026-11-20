@@ -4,7 +4,7 @@
 // 0x5b0140 / 0x4b2f40 / 0x4b30f0 / 0x4d6790 / 0x5b45b0): the definition catalog and its cost sets, the estate
 // records, their access tables, the item rows the server feeds per estate, the local character's owned-estate lists,
 // the areas, the placed objects, and which estate the player stands in (occupancy). No network and no windows here:
-// net/game_connection_real_estate.cpp feeds it and the UI reads it.
+// net/connection/game_connection_real_estate.cpp feeds it and the UI reads it.
 
 #include <cstdint>
 #include <map>
@@ -15,7 +15,7 @@
 
 #include <glm/glm.hpp>
 
-#include "net/real_estate_packets.h"
+#include "net/messages/real_estate.h"
 
 namespace hailstone::game {
 

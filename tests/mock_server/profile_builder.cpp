@@ -5,8 +5,8 @@
 #include <string_view>
 
 #include "core/byte_io.h"
-#include "net/opcodes.h"
-#include "net/packet_io.h"
+#include "net/protocol/rof2/opcode_map.h"
+#include "net/protocol/rof2/wire_io.h"
 
 namespace hailstone::test {
 
@@ -147,7 +147,7 @@ AppPacket build_player_profile(const ProfileSpec& spec) {
     head.le(static_cast<std::uint32_t>(data.size() - 9));
     auto h = head.take();
     std::copy(h.begin(), h.end(), data.begin());
-    return AppPacket(to_wire(Op::PlayerProfile), std::move(data));
+    return AppPacket(rof2::to_wire(rof2::Op::PlayerProfile), std::move(data));
 }
 
 } // namespace hailstone::test

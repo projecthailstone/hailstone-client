@@ -15,7 +15,7 @@
 #include "game/spells.h"
 #include "mq/commands.h"
 #include "mq/lua_mq.h"
-#include "net/social_packets.h"
+#include "net/protocol/rof2/packets/social_packets.h"
 #include "plugin/ui_bridge.h"
 #include "mq_test_world.h"
 

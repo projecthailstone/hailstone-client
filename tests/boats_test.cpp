@@ -13,7 +13,7 @@
 #include "game/coords.h"
 #include "game/mechanics/vehicle.h"
 #include "game/world_state.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "scratch_dir.h"
 
 using namespace hailstone;

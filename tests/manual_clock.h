@@ -7,7 +7,7 @@
 
 namespace hailstone::test {
 
-// A session clock (SessionOptions::clock) that follows the steady clock until hold(), then moves only by advance(),
+// A session clock (soe::Options::clock) that follows the steady clock until hold(), then moves only by advance(),
 // so a timeout test asserts on the session's own time, not on how promptly a loaded machine runs the test thread
 // (a 300 ms idle limit fed by real-time keepalives died whenever the test was descheduled that long). Copies share
 // the time; the session's service thread reads it too.

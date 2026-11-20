@@ -165,9 +165,9 @@ void Placement::validate(const std::vector<net::ReArea>& areas, std::uint32_t ro
     code_ = place_query(areas, codes_, root, placed_transform(ghost_), lo, hi);
 }
 
-std::optional<net::AppPacket> Placement::confirm(const glm::vec3& box_a, const glm::vec3& box_b) const {
+std::optional<net::RePlacementIntent> Placement::confirm(const glm::vec3& box_a, const glm::vec3& box_b) const {
     if (!active_ || code_ != 0) return std::nullopt;
-    return net::encode_re_place_confirm(ghost_, index_, box_a, box_b);
+    return net::RePlacementIntent{ghost_,index_,box_a,box_b};
 }
 
 } // namespace hailstone::game

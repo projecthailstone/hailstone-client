@@ -10,10 +10,10 @@
 #include <lua.hpp>
 
 #include "app/lua_ui_values.h"
-#include "core/byte_io.h"
 #include "mock_server/harness.h"
-#include "mock_server/profile_builder.h"
-#include "net/fellowship_packets.h"
+#include "net/messages/fellowship.h"
+#include "net/messages/message.h"
+#include "net/messages/zone.h"
 #include "scratch_dir.h"
 #include "ui/lua/lua_host.h"
 
@@ -21,10 +21,9 @@ using namespace hailstone;
 
 namespace {
 
-net::AppPacket vitality(std::uint64_t normal, std::uint64_t cap, std::uint32_t aa = 0, std::uint32_t aa_cap = 0) {
-    ByteWriter w;
-    w.le(normal); w.le(cap); w.le(aa); w.le<std::uint32_t>(0); w.le(aa_cap);
-    return net::AppPacket(net::kOpFellowshipVitality, w.take());
+net::messages::GameMessage vitality(std::uint64_t normal, std::uint64_t cap, std::uint32_t aa = 0,
+                                    std::uint32_t aa_cap = 0) {
+    return {net::messages::GameOpcode::FellowshipVitality, net::FellowshipVitality{normal, cap, aa, aa_cap}};
 }
 
 struct GaugeHost {
@@ -53,28 +52,28 @@ TEST_CASE("fellowship vitality: native gauges preserve unsigned precision and bo
     CHECK(app::ui_gauge(t.host, 147).value == 0);
     CHECK(app::ui_gauge(t.host, 147).text.empty());
     CHECK(app::ui_gauge(t.host, 148).text.empty());
-    t.conn.receive_zone_packet_for_test(vitality(9, 0, 7, 0));
+    t.conn.receive_zone_message_for_test(vitality(9, 0, 7, 0));
     CHECK(app::ui_gauge(t.host, 147).value == 0);
     CHECK(app::ui_gauge(t.host, 147).text == "9 / 0");
     CHECK(app::ui_gauge(t.host, 148).value == 0);
-    t.conn.receive_zone_packet_for_test(vitality(1, 3, 2, 3));
+    t.conn.receive_zone_message_for_test(vitality(1, 3, 2, 3));
     CHECK(app::ui_gauge(t.host, 147).value == 333);
     CHECK(app::ui_gauge(t.host, 148).value == 666);
-    t.conn.receive_zone_packet_for_test(vitality(12, 10, 5, 4));
+    t.conn.receive_zone_message_for_test(vitality(12, 10, 5, 4));
     CHECK(app::ui_gauge(t.host, 147).value == 1000);
     CHECK(app::ui_gauge(t.host, 148).value == 1000);
     constexpr auto max = std::numeric_limits<std::uint64_t>::max();
     constexpr auto max_aa = std::numeric_limits<std::uint32_t>::max();
-    t.conn.receive_zone_packet_for_test(vitality(max - 1, max, max_aa - 1, max_aa));
+    t.conn.receive_zone_message_for_test(vitality(max - 1, max, max_aa - 1, max_aa));
     CHECK(app::ui_gauge(t.host, 147).value == 999);
     CHECK(app::ui_gauge(t.host, 148).value == 999);
     CHECK(app::ui_gauge(t.host, 147).text == "18446744073709551614 / 18446744073709551615");
     CHECK(app::ui_gauge(t.host, 148).text == "4294967294 / 4294967295");
-    t.conn.receive_zone_packet_for_test(vitality(max / 2, max));
+    t.conn.receive_zone_message_for_test(vitality(max / 2, max));
     CHECK(app::ui_gauge(t.host, 147).value == 499);
-    t.conn.receive_zone_packet_for_test(vitality(max / 2 + 1, max));
+    t.conn.receive_zone_message_for_test(vitality(max / 2 + 1, max));
     CHECK(app::ui_gauge(t.host, 147).value == 500);
-    t.conn.receive_zone_packet_for_test(vitality(max, max, max_aa, max_aa));
+    t.conn.receive_zone_message_for_test(vitality(max, max, max_aa, max_aa));
     CHECK(app::ui_gauge(t.host, 147).value == 1000);
     CHECK(app::ui_gauge(t.host, 148).value == 1000);
     t.host.in_game = false;
@@ -84,13 +83,14 @@ TEST_CASE("fellowship vitality: native gauges preserve unsigned precision and bo
 
 TEST_CASE("fellowship vitality: profile pools and subsequent updates reach the native gauges") {
     GaugeHost t;
-    test::ProfileSpec profile;
-    profile.fellowship_vitality_normal = 5000000000ull;
-    profile.fellowship_vitality_aa = 17;
-    t.conn.receive_zone_packet_for_test(test::build_player_profile(profile));
+    net::PlayerProfile received;
+    received.name = "Gennro";
+    received.fellowship_vitality_normal = 5000000000ull;
+    received.fellowship_vitality_aa = 17;
+    t.conn.receive_zone_message_for_test({net::messages::GameOpcode::PlayerProfile, received});
     CHECK(app::ui_gauge(t.host, 147).text == "5000000000 / 0");
     CHECK(app::ui_gauge(t.host, 148).text == "17 / 0");
-    t.conn.receive_zone_packet_for_test(vitality(7500000000ull, 10000000000ull, 25, 50));
+    t.conn.receive_zone_message_for_test(vitality(7500000000ull, 10000000000ull, 25, 50));
     CHECK(app::ui_gauge(t.host, 147).value == 750);
     CHECK(app::ui_gauge(t.host, 148).value == 500);
     CHECK(app::ui_gauge(t.host, 147).text == "7500000000 / 10000000000");
@@ -150,15 +150,19 @@ TEST_CASE("fellowship vitality: both inventory packs draw the received pools and
         frames(ImVec2(1600, 900));
         CHECK(drawn(L).find("XP vitality") == std::string::npos); // stock server without a vitality feed
         REQUIRE(rig.conn.player_status().level == 50);
-        rig.conn.receive_zone_packet_for_test(vitality(5000000000ull, 10000000000ull, 15, 60));
+        rig.conn.receive_zone_message_for_test(vitality(5000000000ull, 10000000000ull, 15, 60));
         frames(ImVec2(1600, 900));
         CHECK(drawn(L).find("XP vitality") != std::string::npos);
         CHECK(drawn(L).find("AA vitality") == std::string::npos); // the native inventory hides AA before level 51
-        test::ProfileSpec profile;
-        profile.level = 51;
-        rig.conn.receive_zone_packet_for_test(test::build_player_profile(profile));
+        net::PlayerProfile received;
+        received.name = "Gennro";
+        received.race = 522;
+        received.class_ = 16;
+        received.level = 51;
+        received.character_id = 9876;
+        rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::PlayerProfile, received});
         REQUIRE(rig.conn.player_status().level == 51);
-        rig.conn.receive_zone_packet_for_test(vitality(5000000000ull, 10000000000ull, 15, 60));
+        rig.conn.receive_zone_message_for_test(vitality(5000000000ull, 10000000000ull, 15, 60));
         for (const auto& size : {ImVec2(1600, 900), ImVec2(960, 540)}) {
             frames(size);
             const auto text = drawn(L);
@@ -168,7 +172,7 @@ TEST_CASE("fellowship vitality: both inventory packs draw the received pools and
             CHECK(text.find("25.0%") != std::string::npos);
             CHECK(text.find("5000000000 / 10000000000") != std::string::npos);
         }
-        rig.conn.receive_zone_packet_for_test(vitality(2500000000ull, 10000000000ull, 30, 60));
+        rig.conn.receive_zone_message_for_test(vitality(2500000000ull, 10000000000ull, 30, 60));
         frames(ImVec2(1600, 900));
         CHECK(drawn(L).find("2500000000 / 10000000000") != std::string::npos);
     }

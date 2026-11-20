@@ -22,10 +22,12 @@ namespace fs = std::filesystem;
 
 namespace {
 struct AutomationHost {
-    mq_test::World world{"hailstone_automation_test"};
+    mq_test::World world;
+
     std::unique_ptr<app::Automation> automation;
     std::vector<std::pair<mq::AbilityKind, std::string>> used;
-    AutomationHost() {
+    explicit AutomationHost(bool connected = false)
+        : world("hailstone_automation_test", {}, connected) {
         net::GameConnectionTestAccess::set_server_rules(*world.conn, plugin::Rules{}); // no hailstone.cfg: free
         app::AutomationEnv env;
         env.data_dir = world.dir / "data";
@@ -238,7 +240,8 @@ print('[use] ' .. tostring(hs.use_ability('skill', 'Kick')) .. ' ' .. tostring(h
 }
 
 TEST_CASE("Automation: hailstone.alt_abilities lists the AA window's abilities; hailstone.train_aa buys one rank") {
-    AutomationHost h;
+    // Buying AA must traverse an admitted RoF2 zone session.
+    AutomationHost h(true);
     auto& aa = net::GameConnectionTestAccess::alt_adv(*h.world.conn);
     auto rank = [](std::uint32_t id, std::int32_t group, std::int32_t r, std::int32_t prev, std::int32_t next,
                    std::int32_t type, std::int32_t title) {

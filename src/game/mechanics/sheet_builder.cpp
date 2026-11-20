@@ -6,8 +6,8 @@
 #include "game/inventory.h"
 #include "game/spells.h"
 #include "game/world_state.h"
-#include "net/tribute_packets.h"
-#include "net/zone_packets.h"
+#include "net/messages/tribute.h"
+#include "net/messages/zone.h"
 
 namespace hailstone::game::mechanics {
 

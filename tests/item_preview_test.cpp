@@ -6,8 +6,8 @@
 
 #include "game/appearance.h"
 #include "game/item_preview.h"
-#include "net/item_packets.h"
-#include "net/opcodes.h"
+#include "net/protocol/rof2/packets/item_packets.h"
+#include "net/protocol/rof2/opcode_map.h"
 
 using namespace hailstone;
 using namespace hailstone::game;

@@ -22,8 +22,8 @@
 #include <string>
 #include <vector>
 
-#include "net/augment_packets.h"
-#include "net/item_packets.h"
+#include "net/messages/augment.h"
+#include "net/messages/item.h"
 
 namespace hailstone::game {
 

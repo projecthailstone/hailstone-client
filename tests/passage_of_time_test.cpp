@@ -18,8 +18,8 @@
 #include "game/world_state.h"
 #include "mock_server/harness.h"
 #include "mq_test_world.h"
-#include "net/spell_packets.h"
-#include "net/zone_packets.h"
+#include "net/protocol/rof2/packets/spell_packets.h"
+#include "net/protocol/rof2/packets/zone_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::game;
@@ -370,12 +370,12 @@ TEST_CASE("The connection runs the ticks: the buffs and regen move the pools bet
     const std::uint32_t me = conn.world().player_id;
     REQUIRE(me != 0);
     // The server's pools.
-    conn.receive_zone_packet_for_test(net::encode(net::HpUpdate{static_cast<std::int16_t>(me), 500, 1000}));
-    conn.receive_zone_packet_for_test(net::encode_points_update(false, {100, 5000, static_cast<std::uint16_t>(me)}));
-    conn.receive_zone_packet_for_test(net::encode_points_update(true, {50, 5000, static_cast<std::uint16_t>(me)}));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::HPUpdate, net::HpUpdate{static_cast<std::int16_t>(me), 500, 1000}});
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::ManaUpdate, net::PointsUpdate{100, 5000, static_cast<std::uint16_t>(me)}});
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::EnduranceUpdate, net::PointsUpdate{50, 5000, static_cast<std::uint16_t>(me)}});
     // A mana buff and an endurance buff (OP_Buff).
     for (auto [slot, spell] : {std::pair{0u, 11u}, std::pair{1u, 12u}}) {
-        net::BuffPacket bp;
+        net::messages::BuffChange bp;
         bp.entity_id = me;
         bp.slot = slot;
         bp.buff.effect_type = 2;
@@ -383,7 +383,7 @@ TEST_CASE("The connection runs the ticks: the buffs and regen move the pools bet
         bp.buff.spell_id = spell;
         bp.buff.duration = 10;
         bp.buff.caster_id = me;
-        conn.receive_zone_packet_for_test(net::encode(bp));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::Buff, bp});
     }
     REQUIRE(conn.spell_state().buffs[0].spell == 11);
     const auto before = conn.player_status();
@@ -395,7 +395,7 @@ TEST_CASE("The connection runs the ticks: the buffs and regen move the pools bet
     CHECK(after.hp > before.hp);                        // the HP regen below the maximum
     CHECK(conn.spell_state().buffs[0].tics == 9);
     // The server's next update still wins.
-    conn.receive_zone_packet_for_test(net::encode_points_update(false, {100, 5000, static_cast<std::uint16_t>(me)}));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::ManaUpdate, net::PointsUpdate{100, 5000, static_cast<std::uint16_t>(me)}});
     CHECK(conn.player_status().mana == 100);
 }
 

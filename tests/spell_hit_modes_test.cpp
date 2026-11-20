@@ -5,12 +5,12 @@
 #include <iterator>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
-#include "core/byte_io.h"
 #include "core/log.h"
 #include "mq_test_world.h"
-#include "net/opcodes.h"
+#include "net/messages/zone.h"
 #include "plugin/hooks.h"
 
 using namespace hailstone;
@@ -18,28 +18,25 @@ using namespace hailstone;
 namespace {
 using Access = net::GameConnectionTestAccess;
 
-net::AppPacket formatted(std::uint32_t id, const std::vector<std::string>& args, std::uint32_t color) {
-    ByteWriter writer;
-    writer.le(std::uint32_t{0});
-    writer.le(id);
-    writer.le(color);
-    for (const auto& arg : args) writer.fixed_string(arg, arg.size() + 1);
-    writer.le(std::uint8_t{0});
-    return {net::to_wire(net::Op::FormattedMessage), writer.take()};
+net::messages::GameMessage formatted(std::uint32_t id, std::vector<std::string> args, std::uint32_t color) {
+    net::FormattedMessage message;
+    message.string_id = id;
+    message.type = color;
+    message.args = std::move(args);
+    return {net::messages::GameOpcode::FormattedMessage, std::move(message)};
 }
 
-net::AppPacket special(std::string_view text, std::uint32_t color, std::uint8_t speak = 0,
-                       std::uint8_t journal = 0, std::uint8_t language = 0, std::string_view sayer = {}) {
-    ByteWriter writer;
-    writer.le(speak);
-    writer.le(journal);
-    writer.le(language);
-    writer.le(color);
-    writer.le(std::uint32_t{0});
-    writer.fixed_string(sayer, sayer.size() + 1);
-    for (int i = 0; i < 3; ++i) writer.le(std::uint32_t{0});
-    writer.fixed_string(text, text.size() + 1);
-    return {net::to_wire(net::Op::SpecialMesg), writer.take()};
+net::messages::GameMessage special(std::string_view text, std::uint32_t color, std::uint8_t speak = 0,
+                                   std::uint8_t journal = 0, std::uint8_t language = 0,
+                                   std::string_view sayer = {}) {
+    net::SpecialMessage message;
+    message.speak_mode = speak;
+    message.journal_mode = journal;
+    message.language = language;
+    message.type = color;
+    message.sayer = std::string(sayer);
+    message.message = std::string(text);
+    return {net::messages::GameOpcode::SpecialMesg, std::move(message)};
 }
 
 std::string read_hit_log(const std::filesystem::path& path) {
@@ -55,7 +52,7 @@ void enable_log(net::GameConnection& conn) {
 }
 } // namespace
 
-TEST_CASE("Spell hit modes: decoded packets change display while logs and hooks keep full text") {
+TEST_CASE("Spell hit modes: semantic messages change display while logs and hooks keep full text") {
     plugin::Hooks hooks;
     net::ConnectionOptions options;
     options.hooks = &hooks;
@@ -98,7 +95,7 @@ TEST_CASE("Spell hit modes: decoded packets change display while logs and hooks 
             game::SpellHitModes modes{};
             modes[static_cast<std::size_t>(sample.kind)] = mode;
             conn.set_spell_hit_modes(modes);
-            Access::handle_zone(conn, formatted(sample.id, sample.args, 321));
+            conn.receive_zone_message_for_test(formatted(sample.id, sample.args, 321));
             auto event = conn.poll_chat();
             REQUIRE(event);
             REQUIRE_FALSE(conn.poll_chat());
@@ -123,7 +120,7 @@ TEST_CASE("Spell hit modes: decoded packets change display while logs and hooks 
     conn.set_spell_hit_modes(modes);
     for (const auto& packet : {formatted(12205, {"Fixture Plague"}, 289),
                                formatted(9073, {"Tester", "a rat", "invalid"}, 321)}) {
-        Access::handle_zone(conn, packet);
+        conn.receive_zone_message_for_test(packet);
         auto event = conn.poll_chat();
         REQUIRE(event);
         CHECK(event->text == incoming.back());
@@ -131,7 +128,7 @@ TEST_CASE("Spell hit modes: decoded packets change display while logs and hooks 
     }
 }
 
-TEST_CASE("Spell hit modes: raw and generic combat packets shorten display and preserve full logs and hooks") {
+TEST_CASE("Spell hit modes: special and formatted combat messages shorten display and preserve full logs and hooks") {
     plugin::Hooks hooks;
     net::ConnectionOptions options;
     options.hooks = &hooks;
@@ -172,8 +169,8 @@ TEST_CASE("Spell hit modes: raw and generic combat packets shorten display and p
                 modes[static_cast<std::size_t>(fixture.kind)] = mode;
                 conn.set_spell_hit_modes(modes);
                 const auto before = read_hit_log(conn.chat_log_path());
-                Access::handle_zone(conn, generic ? formatted(6688, {fixture.full}, fixture.color)
-                                                  : special(fixture.full, fixture.color));
+                conn.receive_zone_message_for_test(generic ? formatted(6688, {fixture.full}, fixture.color)
+                                                        : special(fixture.full, fixture.color));
                 auto event = conn.poll_chat();
                 REQUIRE(event);
                 REQUIRE_FALSE(conn.poll_chat());
@@ -202,26 +199,26 @@ TEST_CASE("Spell hit modes: generic heals follow Healing independently of Healin
     game::SpellHitModes modes{};
     modes[static_cast<std::size_t>(game::SpellHitReport::HealingOverTime)] = 2;
     conn.set_spell_hit_modes(modes);
-    Access::handle_zone(conn, special(full, 375));
+    conn.receive_zone_message_for_test(special(full, 375));
     auto event = conn.poll_chat();
     REQUIRE(event);
     CHECK(event->text == full);
     modes[static_cast<std::size_t>(game::SpellHitReport::Healing)] = 1;
     conn.set_spell_hit_modes(modes);
-    Access::handle_zone(conn, special(full, 375));
+    conn.receive_zone_message_for_test(special(full, 375));
     event = conn.poll_chat();
     REQUIRE(event);
     CHECK(event->text == "Diddles -> herself: 315 heal (Killing Spree)");
 }
 
-TEST_CASE("Spell hit modes: unrelated ids, malformed generic packets and dialogue keep complete text") {
+TEST_CASE("Spell hit modes: unrelated ids, unmatched combat text and dialogue keep complete text") {
     mq_test::World world("hailstone_spell_text_exclusions");
     auto& conn = *world.conn;
     std::ofstream(world.dir / "eqstr_us.txt")
         << "EQST0002\n6688 %1\n99999 %1\n12205 %1\n1035 %2\n1032 %1 says, '%2'\n1410 %1 says, '%3'\n";
     world.game->rescan();
     conn.reload_game_files();
-    Access::profile(conn)->languages.resize(2, 100);
+    Access::profile(conn)->languages = std::vector<std::uint8_t>{100, 100};
     enable_log(conn);
     game::SpellHitModes modes;
     modes.fill(2);
@@ -229,7 +226,7 @@ TEST_CASE("Spell hit modes: unrelated ids, malformed generic packets and dialogu
     const std::string full = "Diddles hit a Broken Skull guardian for 486 points of non-melee damage. (Time Rend)";
     const std::string malformed = "Diddles hit a Broken Skull guardian for 48,6 points of non-melee damage. (Time Rend)";
     struct Fixture {
-        net::AppPacket packet;
+        net::messages::GameMessage message;
         std::string full;
         std::uint32_t color;
     };
@@ -249,9 +246,9 @@ TEST_CASE("Spell hit modes: unrelated ids, malformed generic packets and dialogu
         {special(full, 283, 1, 0, 0, "Guard"), "Guard says, '" + full + "'", 283},
     };
     for (const auto& fixture : fixtures) {
-        CAPTURE(fixture.packet.opcode);
+        CAPTURE(static_cast<std::uint16_t>(fixture.message.opcode));
         CAPTURE(fixture.full);
-        Access::handle_zone(conn, fixture.packet);
+        conn.receive_zone_message_for_test(fixture.message);
         auto event = conn.poll_chat();
         REQUIRE(event);
         REQUIRE_FALSE(conn.poll_chat());
@@ -264,13 +261,13 @@ TEST_CASE("Spell hit modes: unrelated ids, malformed generic packets and dialogu
     say.channel = 8;
     say.language_skill = 100;
     say.message = full;
-    Access::handle_zone(conn, net::encode(say));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::ChannelMessage, say});
     auto event = conn.poll_chat();
     REQUIRE(event);
     CHECK(event->text == "Groupie says, '" + full + "'");
 }
 
-TEST_CASE("Spell hit modes: raw and generic combat text respects hook replacements and drops") {
+TEST_CASE("Spell hit modes: special and formatted combat text respects hook replacements and drops") {
     plugin::Hooks hooks;
     net::ConnectionOptions options;
     options.hooks = &hooks;
@@ -292,7 +289,7 @@ TEST_CASE("Spell hit modes: raw and generic combat text respects hook replacemen
         return plugin::Flow::Continue;
     });
     for (const auto& packet : {special(full, 375), formatted(6688, {full}, 375)}) {
-        Access::handle_zone(conn, packet);
+        conn.receive_zone_message_for_test(packet);
         auto event = conn.poll_chat();
         REQUIRE(event);
         CHECK(event->text == "replacement full line");
@@ -301,7 +298,7 @@ TEST_CASE("Spell hit modes: raw and generic combat text respects hook replacemen
     drop = true;
     const auto before = read_hit_log(conn.chat_log_path());
     for (const auto& packet : {special(full, 375), formatted(6688, {full}, 375)}) {
-        Access::handle_zone(conn, packet);
+        conn.receive_zone_message_for_test(packet);
         CHECK_FALSE(conn.poll_chat());
     }
     CHECK(read_hit_log(conn.chat_log_path()) == before);
@@ -319,7 +316,7 @@ TEST_CASE("Spell hit modes: stock EQEmu's caster-less heal message follows Heali
         modes.fill(0);
         modes[static_cast<std::size_t>(game::SpellHitReport::Healing)] = mode;
         conn.set_spell_hit_modes(modes);
-        Access::handle_zone(conn, special(full, 283));
+        conn.receive_zone_message_for_test(special(full, 283));
         auto event = conn.poll_chat();
         REQUIRE(event);
         CHECK(event->color == 283);
@@ -352,7 +349,7 @@ TEST_CASE("Spell hit modes: numeric OP_Damage landings retain full logs and nonn
             hit.type = 231;
             hit.spell_id = 100;
             hit.damage = damage;
-            Access::handle_zone(conn, net::encode(hit));
+            conn.receive_zone_message_for_test({net::messages::GameOpcode::Damage, hit});
             auto event = conn.poll_chat();
             REQUIRE(event);
             const auto* spell = spells->get(100);
@@ -371,7 +368,7 @@ TEST_CASE("Spell hit modes: numeric OP_Damage landings retain full logs and nonn
     other.type = 231;
     other.spell_id = 100;
     other.damage = 99;
-    Access::handle_zone(conn, net::encode(other));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::Damage, other});
     auto event = conn.poll_chat();
     REQUIRE(event);
     CHECK(event->text == "Groupie OTHER LANDED");
@@ -399,7 +396,7 @@ TEST_CASE("Hit modes: existing melee modes preserve complete log lines") {
         const auto full = game::damage_report(conn.strings(), conn.world(), hit.target, hit.source,
                                                hit.type, hit.damage, hit.special);
         REQUIRE(full);
-        Access::handle_zone(conn, net::encode(hit));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::Damage, hit});
         auto event = conn.poll_chat();
         REQUIRE(event);
         CHECK(event->text == game::report_hit_line(conn.strings(), *full, mode));
@@ -408,7 +405,7 @@ TEST_CASE("Hit modes: existing melee modes preserve complete log lines") {
         const auto miss = game::damage_report(conn.strings(), conn.world(), hit.target, hit.source,
                                                 hit.type, hit.damage, hit.special);
         REQUIRE(miss);
-        Access::handle_zone(conn, net::encode(hit));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::Damage, hit});
         event = conn.poll_chat();
         REQUIRE(event);
         CHECK(event->text == game::report_hit_line(conn.strings(), *miss, mode));
@@ -434,7 +431,7 @@ TEST_CASE("Spell hit modes: chat hook rewrites remain authoritative") {
         line.text = "replacement full line";
         return plugin::Flow::Continue;
     });
-    Access::handle_zone(conn, formatted(428, {"123"}, 321));
+    conn.receive_zone_message_for_test(formatted(428, {"123"}, 321));
     auto event = conn.poll_chat();
     REQUIRE(event);
     CHECK(event->text == "replacement full line");

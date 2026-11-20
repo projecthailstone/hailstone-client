@@ -6,8 +6,8 @@
 
 #include "mock_server/harness.h"
 #include "mq_test_world.h"
-#include "net/item_packets.h"
-#include "net/packet_io.h"
+#include "net/protocol/rof2/packets/item_packets.h"
+#include "net/protocol/rof2/wire_io.h"
 
 using namespace hailstone;
 using namespace hailstone::test;
@@ -31,7 +31,7 @@ bool holds(const net::GameConnection& c, std::uint32_t id) {
 std::optional<net::MoveItem> last_move(const MockEqServer& server) {
     std::optional<net::MoveItem> m;
     for (const auto& p : server.zone_log)
-        if (net::is_op(p, net::Op::MoveItem)) m = net::decode_move_item(p);
+        if (net::is_op(p, net::rof2::Op::MoveItem)) m = net::decode_move_item(p);
     return m;
 }
 
@@ -122,7 +122,7 @@ TEST_CASE("/destroycursor and /stowcursor act only on the cursor item of the id 
     conn.send_command("/stowcursor 1");
     CHECK(conn.cursor_coins() == coins);
     put_coin_away(conn);
-    const int moves = MockEqServer::count(server.zone_log, net::Op::MoveItem);
+    const int moves = MockEqServer::count(server.zone_log, net::rof2::Op::MoveItem);
 
     server.item_packet(net::kItemPacketLimbo, make_item(2001, "Summoned Bread", net::kSlotCursor));
     REQUIRE(rig.until([&] { return holds(conn, 2001); }));
@@ -135,7 +135,7 @@ TEST_CASE("/destroycursor and /stowcursor act only on the cursor item of the id 
     // above sent nothing (reliable packets arrive in order).
     conn.send_command("/destroycursor 2001");
     CHECK_FALSE(conn.inventory().cursor());
-    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, net::Op::MoveItem) == moves + 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, net::rof2::Op::MoveItem) == moves + 1; }));
     auto m = last_move(server);
     REQUIRE(m);
     CHECK(m->from.same(net::ItemSlot::possessions(net::kSlotCursor)));
@@ -151,7 +151,7 @@ TEST_CASE("/destroycursor and /stowcursor act only on the cursor item of the id 
     CHECK(holds(conn, 3000));
     conn.send_command("/stowcursor 3000");
     CHECK_FALSE(conn.inventory().cursor());
-    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, net::Op::MoveItem) == moves + 2; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, net::rof2::Op::MoveItem) == moves + 2; }));
     m = last_move(server);
     REQUIRE(m);
     CHECK(m->from.same(net::ItemSlot::possessions(net::kSlotCursor)));

@@ -4,14 +4,15 @@
 #include "game/server_ext.h"
 #include "mock_server/harness.h"
 #include "mq_test_world.h"
-#include "net/movement_packets.h"
+#include "net/protocol/rof2/packets/movement_packets.h"
 #include "plugin/hooks.h"
 
 using namespace hailstone;
 
 namespace {
-net::AppPacket route(float destination) {
-    return net::encode_find_person_reply({{0, 0, 0}, {destination, 0, 0}});
+net::messages::GameMessage route(float destination) {
+    return {net::messages::GameOpcode::FindPersonReply,
+            std::vector<glm::vec3>{{destination, 0, 0}, {0, 0, 0}}};
 }
 struct FindPolicy final : game::ServerExtension {
     std::uint32_t flags = 0;
@@ -34,14 +35,14 @@ TEST_CASE("server path leases: overlapping routes each take their own reply, in 
     REQUIRE(rig.to_zone());
     const auto first = rig.conn.request_quiet_path(101, {11, 1});
     REQUIRE(first);
-    rig.conn.receive_zone_packet_for_test(route(100));
+    rig.conn.receive_zone_message_for_test(route(100));
     const auto second = rig.conn.request_quiet_path(102, {11, 2});
     const auto third = rig.conn.request_quiet_path(102, {11, 3});
     REQUIRE(second); REQUIRE(third);
-    rig.conn.receive_zone_packet_for_test(route(200));
+    rig.conn.receive_zone_message_for_test(route(200));
     auto result = rig.conn.take_quiet_path(second); REQUIRE(result); REQUIRE_FALSE(result->empty());
     CHECK(result->front().x == doctest::Approx(200));
-    rig.conn.receive_zone_packet_for_test(route(300));
+    rig.conn.receive_zone_message_for_test(route(300));
     CHECK_FALSE(rig.conn.take_quiet_path(second)); // an old handle must not consume the new result
     result = rig.conn.take_quiet_path(third); REQUIRE(result); REQUIRE_FALSE(result->empty());
     CHECK(result->front().x == doctest::Approx(300));
@@ -58,30 +59,30 @@ TEST_CASE("server path leases: a guarded Find fallback cannot become a replaceme
     policy->flags = game::MapPolicyDisableNpcFind; ++policy->revision;
     const auto manual = rig.conn.request_quiet_path(102, {21, 2}); REQUIRE(manual);
     // The owned route's reply is dropped (the policy now forbids it); the manual route keeps its own.
-    rig.conn.receive_zone_packet_for_test(route(111)); CHECK_FALSE(rig.conn.take_quiet_path(owned));
-    rig.conn.receive_zone_packet_for_test(route(222));
+    rig.conn.receive_zone_message_for_test(route(111)); CHECK_FALSE(rig.conn.take_quiet_path(owned));
+    rig.conn.receive_zone_message_for_test(route(222));
     const auto kept = rig.conn.take_quiet_path(manual); REQUIRE(kept); REQUIRE_FALSE(kept->empty());
     CHECK(kept->front().x == doctest::Approx(222));
     const auto fresh = rig.conn.request_quiet_path(101, {21, 3}); REQUIRE(fresh); // ordinary navigation remains available
-    rig.conn.receive_zone_packet_for_test(route(333)); CHECK(rig.conn.take_quiet_path(fresh).has_value());
+    rig.conn.receive_zone_message_for_test(route(333)); CHECK(rig.conn.take_quiet_path(fresh).has_value());
 }
 
 TEST_CASE("server path leases: stops, orphans and an unanswered request; later requests still get their replies") {
     test::Rig rig; REQUIRE(rig.to_zone());
     const auto replies = rig.conn.find_replies();
-    rig.conn.receive_zone_packet_for_test(route(123));
+    rig.conn.receive_zone_message_for_test(route(123));
     CHECK(rig.conn.find_replies() == replies); CHECK_FALSE(rig.conn.player_path().active());
     rig.conn.find_map_location({100, 0, 0}); rig.conn.stop_find_path();
-    rig.conn.receive_zone_packet_for_test(route(100));
+    rig.conn.receive_zone_message_for_test(route(100));
     CHECK(rig.conn.find_replies() == replies); CHECK_FALSE(rig.conn.player_path().active());
     const auto request = rig.conn.request_quiet_path(101, {31, 1}); REQUIRE(request);
     // Never answered (EQEmu sends no reply to a /find of a Bazaar trader: it warps the player): after the wait it is
     // dropped, as before, and every later request is answered. A reply that comes late anyway has no owner.
     net::GameConnectionTestAccess::expire_find_batch(rig.conn);
-    rig.conn.receive_zone_packet_for_test(route(200)); CHECK_FALSE(rig.conn.take_quiet_path(request));
+    rig.conn.receive_zone_message_for_test(route(200)); CHECK_FALSE(rig.conn.take_quiet_path(request));
     const auto later = rig.conn.request_quiet_path(102, {31, 2}); REQUIRE(later);
-    rig.conn.receive_zone_packet_for_test(route(250)); CHECK(rig.conn.take_quiet_path(later));
-    rig.conn.find_map_location({300, 0, 0}); rig.conn.receive_zone_packet_for_test(route(300));
+    rig.conn.receive_zone_message_for_test(route(250)); CHECK(rig.conn.take_quiet_path(later));
+    rig.conn.find_map_location({300, 0, 0}); rig.conn.receive_zone_message_for_test(route(300));
     CHECK(rig.conn.find_replies() == replies + 1); CHECK(rig.conn.player_path().active());
 }
 
@@ -93,10 +94,10 @@ TEST_CASE("server path leases: context actor replacement and source epochs retir
     const auto request = rig.conn.request_quiet_path(101, {41, 1}); REQUIRE(request);
     ++net::GameConnectionTestAccess::world(rig.conn).spawns.at(101).incarnation;
     CHECK_FALSE(rig.conn.matches(*actor));
-    rig.conn.receive_zone_packet_for_test(route(100)); CHECK_FALSE(rig.conn.take_quiet_path(request));
+    rig.conn.receive_zone_message_for_test(route(100)); CHECK_FALSE(rig.conn.take_quiet_path(request));
     const auto owned = rig.conn.request_quiet_path(101, {41, 2, game::ServerPathOrigin::Purpose::NpcFind}); REQUIRE(owned);
     ++policy->revision; // same flags/name, new provider generation
-    rig.conn.receive_zone_packet_for_test(route(200)); CHECK_FALSE(rig.conn.take_quiet_path(owned));
+    rig.conn.receive_zone_message_for_test(route(200)); CHECK_FALSE(rig.conn.take_quiet_path(owned));
     actor = rig.conn.captureActorRef(101); REQUIRE(actor);
     const auto before = rig.conn.interaction_context();
     auto& world = net::GameConnectionTestAccess::world(rig.conn);
@@ -110,12 +111,12 @@ TEST_CASE("server path leases: dropped outgoing requests do not leave phantom re
     test::Rig rig(test::MockConfig::standard(), options); REQUIRE(rig.to_zone());
     const auto owner = hooks.new_owner("path drop fixture");
     bool drop = true;
-    hooks.on_packet(owner, plugin::Stream::Zone, plugin::Direction::Out, net::to_wire(net::Op::FindPersonRequest),
+    hooks.on_packet(owner, plugin::Stream::Zone, plugin::Direction::Out, net::rof2::to_wire(net::rof2::Op::FindPersonRequest),
         [&](net::AppPacket&) { return drop ? plugin::Flow::Drop : plugin::Flow::Continue; });
     CHECK_FALSE(rig.conn.request_quiet_path(101, {51, 1}));
     drop = false;
     const auto admitted = rig.conn.request_quiet_path(102, {51, 2}); REQUIRE(admitted);
-    rig.conn.receive_zone_packet_for_test(route(400)); REQUIRE(rig.conn.take_quiet_path(admitted));
+    rig.conn.receive_zone_message_for_test(route(400)); REQUIRE(rig.conn.take_quiet_path(admitted));
 }
 
 TEST_CASE("server path leases: unsent rejected requests preserve an earlier valid reply") {
@@ -127,7 +128,7 @@ TEST_CASE("server path leases: unsent rejected requests preserve an earlier vali
         const auto first = rig.conn.request_quiet_path(101, {81, 1}); REQUIRE(first);
         const auto owner = hooks.new_owner("unsent replacement fixture");
         auto live = std::make_shared<bool>(true);
-        hooks.on_packet(owner, plugin::Stream::Zone, plugin::Direction::Out, net::to_wire(net::Op::FindPersonRequest),
+        hooks.on_packet(owner, plugin::Stream::Zone, plugin::Direction::Out, net::rof2::to_wire(net::rof2::Op::FindPersonRequest),
             [&](net::AppPacket&) {
                 if (rejection == 2) *live = false;
                 return rejection == 0 ? plugin::Flow::Drop : plugin::Flow::Continue;
@@ -142,7 +143,7 @@ TEST_CASE("server path leases: unsent rejected requests preserve an earlier vali
         else CHECK_FALSE(second());
         REQUIRE(net::GameConnectionTestAccess::find_request_count(rig.conn) == 1);
         policy->inspect = {};
-        rig.conn.receive_zone_packet_for_test(route(100));
+        rig.conn.receive_zone_message_for_test(route(100));
         const auto reply = rig.conn.take_quiet_path(first); REQUIRE(reply); REQUIRE_FALSE(reply->empty());
         CHECK(reply->front().x == doctest::Approx(100));
     }
@@ -155,21 +156,21 @@ TEST_CASE("server path leases: outgoing callbacks can receive and nest before th
     const auto first = rig.conn.request_quiet_path(101, {82, 1}); REQUIRE(first);
     const auto owner = hooks.new_owner("nested path receipt fixture");
     bool armed = true, first_received = false, nested_received = false;
-    hooks.on_packet(owner, plugin::Stream::Zone, plugin::Direction::Out, net::to_wire(net::Op::FindPersonRequest),
+    hooks.on_packet(owner, plugin::Stream::Zone, plugin::Direction::Out, net::rof2::to_wire(net::rof2::Op::FindPersonRequest),
         [&](net::AppPacket&) {
             if (armed) {
                 armed = false;
-                rig.conn.receive_zone_packet_for_test(route(100));
+                rig.conn.receive_zone_message_for_test(route(100));
                 first_received = rig.conn.take_quiet_path(first).has_value();
                 const auto nested = rig.conn.request_quiet_path(101, {82, 3}); REQUIRE(nested);
-                rig.conn.receive_zone_packet_for_test(route(300));
+                rig.conn.receive_zone_message_for_test(route(300));
                 nested_received = rig.conn.take_quiet_path(nested).has_value();
             }
             return plugin::Flow::Continue;
         });
     const auto second = rig.conn.request_quiet_path(102, {82, 2}); REQUIRE(second);
     CHECK(first_received); CHECK(nested_received);
-    rig.conn.receive_zone_packet_for_test(route(200));
+    rig.conn.receive_zone_message_for_test(route(200));
     CHECK(rig.conn.take_quiet_path(second).has_value());
 }
 
@@ -178,14 +179,14 @@ TEST_CASE("server path leases: unsent reservations neither time out nor consume 
     auto options = test::quick_options(); options.hooks = &hooks;
     test::Rig rig(test::MockConfig::standard(), options); REQUIRE(rig.to_zone());
     const auto owner = hooks.new_owner("reserved path timeout fixture");
-    hooks.on_packet(owner, plugin::Stream::Zone, plugin::Direction::Out, net::to_wire(net::Op::FindPersonRequest),
+    hooks.on_packet(owner, plugin::Stream::Zone, plugin::Direction::Out, net::rof2::to_wire(net::rof2::Op::FindPersonRequest),
         [&](net::AppPacket&) {
-            rig.conn.receive_zone_packet_for_test(route(999)); // no request has reached the transport
+            rig.conn.receive_zone_message_for_test(route(999)); // no request has reached the transport
             net::GameConnectionTestAccess::expire_find_batch(rig.conn);
             return plugin::Flow::Continue;
         });
     const auto request = rig.conn.request_quiet_path(101, {83, 1}); REQUIRE(request);
-    rig.conn.receive_zone_packet_for_test(route(100));
+    rig.conn.receive_zone_message_for_test(route(100));
     const auto reply = rig.conn.take_quiet_path(request); REQUIRE(reply); REQUIRE_FALSE(reply->empty());
     CHECK(reply->front().x == doctest::Approx(100));
 }
@@ -216,13 +217,13 @@ TEST_CASE("server path leases: an owner retired inside an outgoing callback cann
     const auto owner = hooks.new_owner("path lifetime fixture");
     auto live = std::make_shared<bool>(true);
     bool retire = true;
-    hooks.on_packet(owner, plugin::Stream::Zone, plugin::Direction::Out, net::to_wire(net::Op::FindPersonRequest),
+    hooks.on_packet(owner, plugin::Stream::Zone, plugin::Direction::Out, net::rof2::to_wire(net::rof2::Op::FindPersonRequest),
         [&](net::AppPacket&) { if (retire) *live = false; return plugin::Flow::Continue; });
     CHECK_FALSE(rig.conn.request_quiet_path(101, {61, 1, game::ServerPathOrigin::Purpose::ManualNavigation, live, true}));
     retire = false; live = std::make_shared<bool>(true);
     const auto request = rig.conn.request_quiet_path(102, {61, 2, game::ServerPathOrigin::Purpose::ManualNavigation, live, true});
     REQUIRE(request);
-    rig.conn.receive_zone_packet_for_test(route(400));
+    rig.conn.receive_zone_message_for_test(route(400));
     live.reset(); // no hook method needs to run for the retired owner to lose its completed result
     CHECK_FALSE(rig.conn.take_quiet_path(request));
 }
@@ -236,7 +237,7 @@ TEST_CASE("server path leases: exceptions after reservation roll back only the u
     CHECK(net::GameConnectionTestAccess::find_request_count(rig.conn) == 0);
     policy->throw_reserved = false;
     const auto fresh = rig.conn.request_quiet_path(102, {71, 2}); REQUIRE(fresh);
-    rig.conn.receive_zone_packet_for_test(route(500)); CHECK(rig.conn.take_quiet_path(fresh).has_value());
+    rig.conn.receive_zone_message_for_test(route(500)); CHECK(rig.conn.take_quiet_path(fresh).has_value());
 }
 
 TEST_CASE("server path leases: a reentrant policy cannot retire its replacement shown goal") {
@@ -253,7 +254,7 @@ TEST_CASE("server path leases: a reentrant policy cannot retire its replacement 
     rig.conn.find_spawn(101);
     CHECK_FALSE(replace); CHECK(rig.conn.player_path().kind() == game::FindKind::MapLocation);
     CHECK(net::GameConnectionTestAccess::find_request_count(rig.conn) == 1);
-    rig.conn.receive_zone_packet_for_test(route(600));
+    rig.conn.receive_zone_message_for_test(route(600));
     CHECK(rig.conn.player_path().active()); CHECK(rig.conn.find_replies() == 1);
 }
 
@@ -265,9 +266,9 @@ TEST_CASE("server path leases: a reply floor callback cannot overwrite a replace
         if (replace) { replace = false; rig.conn.find_map_location({700, 0, 0}); }
         return 0.0f;
     });
-    rig.conn.receive_zone_packet_for_test(route(100));
+    rig.conn.receive_zone_message_for_test(route(100));
     CHECK_FALSE(replace); CHECK(rig.conn.find_replies() == 0); CHECK_FALSE(rig.conn.player_path().active());
     rig.conn.set_path_floor({});
-    rig.conn.receive_zone_packet_for_test(route(700));
+    rig.conn.receive_zone_message_for_test(route(700));
     CHECK(rig.conn.find_replies() == 1); CHECK(rig.conn.player_path().active());
 }

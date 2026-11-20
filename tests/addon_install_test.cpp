@@ -812,7 +812,7 @@ TEST_CASE("addon_manager: the server's own and the hand-installed, listed beside
     if (!lib_ext().empty()) want.insert(want.begin(), "Dev:plugin");
     CHECK(names == want);
 
-    // A server's files as its last login recorded them (net/server_files.h's record).
+    // A server's files as its last login recorded them (game/server_file_sync.h's record).
     const fs::path profile = dir.path() / "servers" / "one";
     CHECK(server_addons(profile).empty());
     put_file(profile / "scripts" / "hud.lua", "x");

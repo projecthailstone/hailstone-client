@@ -3,25 +3,20 @@
 #include "core/byte_io.h"
 #include "mock_server/harness.h"
 #include "mq_test_world.h"
-#include "net/adventure_packets.h"
-#include "net/market_packets.h"
-#include "net/merchant_packets.h"
-#include "net/packet_io.h"
-#include "net/training_packets.h"
-#include "net/trade_packets.h"
-#include "net/tribute_packets.h"
+#include "net/protocol/rof2/packets/adventure_packets.h"
+#include "net/protocol/rof2/packets/market_packets.h"
+#include "net/protocol/rof2/packets/merchant_packets.h"
+#include "net/protocol/rof2/wire_io.h"
+#include "net/protocol/rof2/packets/training_packets.h"
+#include "net/messages/trade.h"
+#include "net/protocol/rof2/packets/trade_packets.h"
+#include "net/protocol/rof2/packets/tribute_packets.h"
 
 using namespace hailstone;
 
 namespace {
 constexpr std::uint32_t kNpc = 5002;
 
-net::AppPacket adventure_text(net::Op op, const std::string& text) {
-    net::AppPacket p(net::to_wire(op), {});
-    for (char ch : text) p.data.push_back(static_cast<std::byte>(ch));
-    p.data.push_back(std::byte{0});
-    return p;
-}
 enum class Service { Merchant, Bank, Points, AdventureMerchant, Tribute, GuildTribute, Trainer, Recruiter, Mercenary, Barter, Handin };
 constexpr Service services[] = {Service::Merchant, Service::Bank, Service::Points, Service::AdventureMerchant,
                                 Service::Tribute, Service::GuildTribute, Service::Trainer, Service::Recruiter,
@@ -53,7 +48,7 @@ void open_service(net::GameConnection& c, Service service) {
         net::MerchantClick reply;
         reply.npc_id = kNpc;
         reply.player_id = c.world().player_id;
-        c.receive_zone_packet_for_test(net::encode(reply));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::ShopRequest, reply});
         break;
     }
     case Service::Bank: c.open_bank(kNpc); break;
@@ -61,9 +56,9 @@ void open_service(net::GameConnection& c, Service service) {
     case Service::AdventureMerchant: REQUIRE(c.open_adventure_merchant(kNpc)); break;
     case Service::Tribute:
     case Service::GuildTribute: {
-        auto reply = net::encode(net::StartTribute{c.world().player_id, kNpc, 1});
-        if (service == Service::GuildTribute) reply.opcode = net::to_wire(net::Op::OpenGuildTributeMaster);
-        c.receive_zone_packet_for_test(reply);
+        c.receive_zone_message_for_test({service == Service::GuildTribute
+            ? net::messages::GameOpcode::OpenGuildTributeMaster : net::messages::GameOpcode::OpenTributeMaster,
+            net::StartTribute{c.world().player_id, kNpc, 1}});
         break;
     }
     case Service::Trainer: {
@@ -71,28 +66,24 @@ void open_service(net::GameConnection& c, Service service) {
         net::GMTraining reply;
         reply.trainer_id = kNpc;
         reply.success = 1;
-        c.receive_zone_packet_for_test(net::encode(reply));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::GMTraining, reply});
         break;
     }
     case Service::Recruiter:
         REQUIRE(c.open_adventure_recruiter(kNpc));
         // AdventureMgr state 1: the range check runs only from here, once more than 500 ms have passed.
-        c.receive_zone_packet_for_test(adventure_text(net::Op::AdventureInfo, "Greetings."));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::AdventureInfo, std::string("Greetings.")});
         net::GameConnectionTestAccess::npc_checks(c).recruiter -= 501;
         break;
     case Service::Mercenary: REQUIRE(c.open_merc_liaison(kNpc)); break;
     case Service::Barter: {
         REQUIRE(c.open_buyer(kNpc));
-        ByteWriter w;
-        w.le(net::kBuyerInspectBegin);
-        w.le(kNpc);
-        w.le(std::uint32_t{1});
-        c.receive_zone_packet_for_test(net::AppPacket(net::to_wire(net::Op::Barter), w.take()));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::Barter, net::MarketEvent{net::kBuyerInspectBegin, net::BarterInspectReply{kNpc, 1}}});
         break;
     }
     case Service::Handin:
         c.give_to(kNpc);
-        c.receive_zone_packet_for_test(net::encode_trade_request_ack({c.world().player_id, kNpc}));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::TradeRequestAck, net::TradeInvitation{c.world().player_id, kNpc}});
         break;
     }
 }
@@ -120,7 +111,7 @@ TEST_CASE("NPC services: connection updates end interactions outside 3D reach or
         for (int reason = 0; reason < 5; ++reason) {
             CAPTURE(static_cast<int>(service));
             CAPTURE(reason);
-            mq_test::World world("npc_interaction_distance");
+            mq_test::World world("npc_interaction_distance", {}, true);
             auto& c = *world.conn;
             open_service(c, service);
             REQUIRE(active(c, service));
@@ -134,7 +125,7 @@ TEST_CASE("NPC services: connection updates end interactions outside 3D reach or
             c.update();
             CHECK_FALSE(active(c, service));
         }
-        mq_test::World boundary("npc_interaction_boundary");
+        mq_test::World boundary("npc_interaction_boundary", {}, true);
         auto& c = *boundary.conn;
         open_service(c, service);
         c.set_player_motion({12, 0, 16}, 0, {}, true); // exactly 20 units, including height
@@ -144,7 +135,7 @@ TEST_CASE("NPC services: connection updates end interactions outside 3D reach or
 }
 
 TEST_CASE("NPC services: closing point merchants discards their active and queued purchase questions") {
-    mq_test::World world("npc_interaction_questions");
+    mq_test::World world("npc_interaction_questions", {}, true);
     auto& c = *world.conn;
     for (auto service : {Service::Points, Service::AdventureMerchant}) {
         c.set_player_motion({0, 0, 0}, 0, {}, false);
@@ -173,7 +164,7 @@ TEST_CASE("NPC services: closing point merchants discards their active and queue
 
 TEST_CASE("NPC services: late tribute and trainer opens cannot reopen an out-of-range window") {
     for (auto service : {Service::Tribute, Service::GuildTribute, Service::Trainer}) {
-        mq_test::World world("npc_interaction_late_open");
+        mq_test::World world("npc_interaction_late_open", {}, true);
         auto& c = *world.conn;
         open_service(c, service);
         c.set_player_motion({0, 0, 21}, 0, {}, true);
@@ -182,11 +173,11 @@ TEST_CASE("NPC services: late tribute and trainer opens cannot reopen an out-of-
             net::GMTraining reply;
             reply.trainer_id = kNpc;
             reply.success = 1;
-            c.receive_zone_packet_for_test(net::encode(reply));
+            c.receive_zone_message_for_test({net::messages::GameOpcode::GMTraining, reply});
         } else {
-            auto reply = net::encode(net::StartTribute{c.world().player_id, kNpc, 1});
-            if (service == Service::GuildTribute) reply.opcode = net::to_wire(net::Op::OpenGuildTributeMaster);
-            c.receive_zone_packet_for_test(reply);
+            c.receive_zone_message_for_test({service == Service::GuildTribute
+                ? net::messages::GameOpcode::OpenGuildTributeMaster : net::messages::GameOpcode::OpenTributeMaster,
+                net::StartTribute{c.world().player_id, kNpc, 1}});
         }
         CHECK_FALSE(active(c, service));
     }
@@ -200,9 +191,9 @@ TEST_CASE("NPC services: distance closure sends normal session end packets once"
         const auto at = c.world().player()->position;
         open_service(c, service);
         REQUIRE(active(c, service));
-        const auto op = service == Service::Merchant ? net::Op::ShopEnd :
-                        service == Service::Trainer ? net::Op::GMEndTraining :
-                        service == Service::Handin ? net::Op::CancelTrade : net::Op::Barter;
+        const auto op = service == Service::Merchant ? net::rof2::Op::ShopEnd :
+                        service == Service::Trainer ? net::rof2::Op::GMEndTraining :
+                        service == Service::Handin ? net::rof2::Op::CancelTrade : net::rof2::Op::Barter;
         auto end_count = [&] {
             int count = 0;
             for (const auto& p : rig.server.zone_log) {
@@ -238,7 +229,7 @@ TEST_CASE("NPC services: the service windows check their reach on 500 ms timers"
     for (auto service : {Service::Points, Service::AdventureMerchant, Service::Tribute, Service::GuildTribute,
                          Service::Trainer, Service::Handin}) {
         CAPTURE(static_cast<int>(service));
-        mq_test::World world("npc_interaction_timer");
+        mq_test::World world("npc_interaction_timer", {}, true);
         auto& c = *world.conn;
         open_service(c, service);
         auto& checks = net::GameConnectionTestAccess::npc_checks(c);
@@ -262,7 +253,7 @@ TEST_CASE("NPC services: the service windows check their reach on 500 ms timers"
 TEST_CASE("NPC services: a tribute master's window stays out of reach while an item request is pending") {
     for (auto service : {Service::Tribute, Service::GuildTribute}) {
         CAPTURE(static_cast<int>(service));
-        mq_test::World world("npc_interaction_tribute_pending");
+        mq_test::World world("npc_interaction_tribute_pending", {}, true);
         auto& c = *world.conn;
         open_service(c, service);
         net::GameConnectionTestAccess::spells(c).pending = 1; // EverQuestinfo::IsItemPending > 0
@@ -275,7 +266,7 @@ TEST_CASE("NPC services: a tribute master's window stays out of reach while an i
         CHECK_FALSE(active(c, service));
 
         // The master gone closes it even with a request pending.
-        mq_test::World gone("npc_interaction_tribute_gone");
+        mq_test::World gone("npc_interaction_tribute_gone", {}, true);
         auto& g = *gone.conn;
         open_service(g, service);
         net::GameConnectionTestAccess::spells(g).pending = 1;
@@ -297,17 +288,17 @@ TEST_CASE("NPC services: the adventure recruiter closes out of reach only while 
         c.set_player_motion({0, 0, 21}, 0, {}, true);
     };
     SUBCASE("state 0: the request still waiting") {
-        mq_test::World world("recruiter_state0");
+        mq_test::World world("recruiter_state0", {}, true);
         auto& c = *world.conn;
         open_far(c);
         c.update();
         CHECK(c.adventure().recruiter == kNpc);
     }
     SUBCASE("state 1: not before 500 ms have passed") {
-        mq_test::World world("recruiter_state1");
+        mq_test::World world("recruiter_state1", {}, true);
         auto& c = *world.conn;
         open_far(c);
-        c.receive_zone_packet_for_test(adventure_text(net::Op::AdventureInfo, "Greetings."));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::AdventureInfo, std::string("Greetings.")});
         c.update();
         CHECK(c.adventure().recruiter == kNpc);
         net::GameConnectionTestAccess::npc_checks(c).recruiter -= 501;
@@ -315,10 +306,10 @@ TEST_CASE("NPC services: the adventure recruiter closes out of reach only while 
         CHECK(c.adventure().recruiter == 0);
     }
     SUBCASE("state 2: the offer is declined as the window hides") {
-        mq_test::World world("recruiter_state2");
+        mq_test::World world("recruiter_state2", {}, true);
         auto& c = *world.conn;
         open_far(c);
-        c.receive_zone_packet_for_test(adventure_text(net::Op::AdventureDetails, "Find the lost scout."));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::AdventureDetails, std::string("Find the lost scout.")});
         REQUIRE_FALSE(c.adventure().offer.empty());
         net::GameConnectionTestAccess::npc_checks(c).recruiter -= 501;
         c.update();
@@ -326,15 +317,15 @@ TEST_CASE("NPC services: the adventure recruiter closes out of reach only while 
         CHECK(c.adventure().offer.empty());
     }
     SUBCASE("states 3 and 4: on an adventure the window stays") {
-        mq_test::World world("recruiter_state3");
+        mq_test::World world("recruiter_state3", {}, true);
         auto& c = *world.conn;
         open_far(c);
-        c.receive_zone_packet_for_test(adventure_text(net::Op::AdventureInfo, "Greetings."));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::AdventureInfo, std::string("Greetings.")});
         net::AdventureData d;
         d.assigned = true;
         d.text = "Find the lost scout.";
         d.time_to_enter = 1800;
-        c.receive_zone_packet_for_test(net::encode(d));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::AdventureData, d});
         net::GameConnectionTestAccess::npc_checks(c).recruiter -= 501;
         c.update();
         CHECK(c.adventure().recruiter == kNpc);
@@ -353,21 +344,21 @@ TEST_CASE("NPC services: walking away from an adventure offer sends the decline"
     npc.class_id = 60;
     c.world_for_test().spawns[kNpc] = npc;
     REQUIRE(c.open_adventure_recruiter(kNpc));
-    c.receive_zone_packet_for_test(adventure_text(net::Op::AdventureDetails, "Find the lost scout."));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::AdventureDetails, std::string("Find the lost scout.")});
     net::GameConnectionTestAccess::npc_checks(c).recruiter -= 501;
     c.set_player_motion(at + glm::vec3{0, 0, 21}, 0, {}, true);
     REQUIRE(rig.until([&] { return c.adventure().recruiter == 0 &&
-                                   test::MockEqServer::count(rig.server.zone_log, net::Op::LDoNButton) == 1; }));
+                                   test::MockEqServer::count(rig.server.zone_log, net::rof2::Op::LDoNButton) == 1; }));
     const net::AppPacket* button = nullptr;
     for (const auto& p : rig.server.zone_log)
-        if (net::is_op(p, net::Op::LDoNButton)) button = &p;
+        if (net::is_op(p, net::rof2::Op::LDoNButton)) button = &p;
     REQUIRE(button);
     REQUIRE(button->data.size() == 1);
     CHECK(button->data[0] == std::byte{0});
 }
 
 TEST_CASE("NPC services: a training request still waiting is not range-checked; its answer is, up to 20 units") {
-    mq_test::World world("npc_interaction_trainer_pending");
+    mq_test::World world("npc_interaction_trainer_pending", {}, true);
     auto& c = *world.conn;
     auto npc = *c.world().player();
     npc.id = kNpc;
@@ -382,6 +373,6 @@ TEST_CASE("NPC services: a training request still waiting is not range-checked; 
     net::GMTraining reply;
     reply.trainer_id = kNpc;
     reply.success = 1;
-    c.receive_zone_packet_for_test(net::encode(reply));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::GMTraining, reply});
     CHECK(c.training().has_value());
 }

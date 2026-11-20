@@ -6,8 +6,10 @@
 
 #include "core/byte_io.h"
 #include "mock_server/profile_builder.h"
-#include "net/des.h"
-#include "net/packet_io.h"
+#include "net/crypto/des.h"
+#include "net/protocol/login/codec.h"
+#include "net/protocol/login/opcodes.h"
+#include "net/protocol/rof2/wire_io.h"
 
 namespace hailstone::test {
 
@@ -49,7 +51,7 @@ std::string string_of(std::span<const std::byte> data) {
     return s;
 }
 
-AppPacket empty(Op op) { return make_empty(op); }
+AppPacket empty(rof2::Op op) { return make_empty(op); }
 
 } // namespace
 
@@ -148,7 +150,7 @@ AppPacket MockEqServer::build_zone_points(const std::vector<ZonePoint>& points) 
         w.le(p.unknown028);
     }
     w.zeros(32);
-    return make_packet(Op::SendZonepoints, std::move(w));
+    return make_packet(rof2::Op::SendZonepoints, std::move(w));
 }
 
 MockConfig MockConfig::standard() {
@@ -208,13 +210,13 @@ const MockCharacter* MockEqServer::character(const std::string& name) const {
 
 const MockZone& MockEqServer::current_zone_def() const { return config.zones.at(current_zone_); }
 
-std::vector<Op> MockEqServer::ops(const std::vector<AppPacket>& log) {
-    std::vector<Op> out;
-    for (const auto& p : log) out.push_back(from_wire(p.opcode));
+std::vector<rof2::Op> MockEqServer::ops(const std::vector<AppPacket>& log) {
+    std::vector<rof2::Op> out;
+    for (const auto& p : log) out.push_back(rof2::from_wire(p.opcode));
     return out;
 }
 
-int MockEqServer::count(const std::vector<AppPacket>& log, Op op) {
+int MockEqServer::count(const std::vector<AppPacket>& log, rof2::Op op) {
     return static_cast<int>(std::count_if(log.begin(), log.end(), [&](const AppPacket& p) { return is_op(p, op); }));
 }
 
@@ -297,7 +299,9 @@ void MockEqServer::on_login_packet(const AppPacket& p) {
         cstr(r, ok ? config.returned_login_token : std::string());
         cstr(r, "");
         auto encrypted = des::zero_cbc_encrypt(r.data());
-        encrypted.resize(std::max<std::size_t>(80, encrypted.size()), std::byte{0});
+        // Pad the encrypted login response without a zero-length vector bulk insert.
+        // GCC 16 flags the libstdc++ fill-insert path for this small test buffer.
+        while (encrypted.size() < 80) encrypted.push_back(std::byte{0});
         ByteWriter w;
         login_header(w, seq, 2);
         w.bytes(encrypted);
@@ -360,7 +364,7 @@ void MockEqServer::send_world_hello(bool zoning) {
         ByteWriter g;
         g.zeros(64);
         g.le<std::uint32_t>(0);
-        world.send_reliable(make_packet(Op::GuildsList, std::move(g)));
+        world.send_reliable(make_packet(rof2::Op::GuildsList, std::move(g)));
     }
     ByteWriter log;
     log.zeros(560);
@@ -369,22 +373,22 @@ void MockEqServer::send_world_hello(bool zoning) {
     for (int k = 0; k < 4; ++k) bytes[0x18 + k] = static_cast<std::byte>(config.log_server_spell_scribe >> (8 * k));
     const char name[] = "mock";
     for (std::size_t i = 0; i < sizeof name - 1; ++i) bytes[36 + i] = static_cast<std::byte>(name[i]);
-    world.send_reliable(AppPacket(to_wire(Op::LogServer), std::move(bytes)));
-    world.send_reliable(AppPacket(to_wire(Op::ApproveWorld), std::vector<std::byte>(544)));
+    world.send_reliable(AppPacket(rof2::to_wire(rof2::Op::LogServer), std::move(bytes)));
+    world.send_reliable(AppPacket(rof2::to_wire(rof2::Op::ApproveWorld), std::vector<std::byte>(544)));
     ByteWriter e;
     cstr(e, zoning ? zone_char_ : std::string());
-    world.send_reliable(make_packet(Op::EnterWorld, std::move(e)));
-    world.send_reliable(empty(Op::PostEnterWorld));
+    world.send_reliable(make_packet(rof2::Op::EnterWorld, std::move(e)));
+    world.send_reliable(empty(rof2::Op::PostEnterWorld));
     if (!zoning) {
         ByteWriter x;
         x.zeros(64);
         x.le<std::uint32_t>(0xffffffffu); // expansion mask at +64
         x.zeros(0);
-        world.send_reliable(make_packet(Op::ExpansionInfo, std::move(x)));
+        world.send_reliable(make_packet(rof2::Op::ExpansionInfo, std::move(x)));
         ByteWriter m;
         m.le<std::uint32_t>(8); // max characters
         m.zeros(8);
-        world.send_reliable(make_packet(Op::SendMaxCharacters, std::move(m)));
+        world.send_reliable(make_packet(rof2::Op::SendMaxCharacters, std::move(m)));
         // SendMembership / SendMembershipSettings: gold (2), as EQEmu always sends, with RoF2's 25 entries.
         Membership mem;
         mem.level = 2;
@@ -401,9 +405,9 @@ void MockEqServer::send_world_hello(bool zoning) {
 }
 
 void MockEqServer::send_char_list() {
-    std::vector<CharacterSelectEntry> list;
+    std::vector<CharacterPreview> list;
     for (const auto& c : config.characters) {
-        CharacterSelectEntry e;
+        CharacterPreview e;
         e.name = c.name;
         e.class_ = c.class_;
         e.race = c.race;
@@ -421,29 +425,29 @@ void MockEqServer::enter_world(const std::string& name) {
     entering_ = name;
     ByteWriter m;
     cstr(m, config.motd);
-    world.send_reliable(make_packet(Op::MOTD, std::move(m)));
+    world.send_reliable(make_packet(rof2::Op::MOTD, std::move(m)));
     if (config.send_chat_server) {
         // "host,port,server.Character,<type letter><8 hex key>"
         std::string info = "127.0.0.1," + std::to_string(ucs.port()) + ",mock." + name + ",U12345678";
         ByteWriter a, b;
         cstr(a, info);
         cstr(b, info);
-        world.send_reliable(make_packet(Op::SetChatServer, std::move(a)));
-        world.send_reliable(make_packet(Op::SetChatServer2, std::move(b)));
+        world.send_reliable(make_packet(rof2::Op::SetChatServer, std::move(a)));
+        world.send_reliable(make_packet(rof2::Op::SetChatServer2, std::move(b)));
     }
     if (config.zone_unavailable) {
         ByteWriter u;
         u.fixed_string(config.zones.at(current_zone_).short_name, 16);
         u.zeros(8);
-        world.send_reliable(make_packet(Op::ZoneUnavail, std::move(u)));
+        world.send_reliable(make_packet(rof2::Op::ZoneUnavail, std::move(u)));
         return;
     }
     world.send_reliable(encode(ZoneServerInfo{"127.0.0.1", zone.port()}));
 }
 
 void MockEqServer::on_world_packet(const AppPacket& p) {
-    switch (from_wire(p.opcode)) {
-    case Op::SendLoginInfo: {
+    switch (rof2::from_wire(p.opcode)) {
+    case rof2::Op::SendLoginInfo: {
         auto info = decode_login_info(p);
         if (!info) break;
         login_infos.push_back(*info);
@@ -456,7 +460,7 @@ void MockEqServer::on_world_packet(const AppPacket& p) {
         send_world_hello(info->zoning);
         break;
     }
-    case Op::EnterWorld: {
+    case rof2::Op::EnterWorld: {
         auto e = decode_enter_world(p);
         if (!e) break;
         const MockCharacter* c = character(e->name);
@@ -469,17 +473,17 @@ void MockEqServer::on_world_packet(const AppPacket& p) {
         enter_world(c->name);
         break;
     }
-    case Op::DeleteCharacter: {
+    case rof2::Op::DeleteCharacter: {
         // The name is a NUL-terminated string.
         std::string name = string_of(p.data);
         std::erase_if(config.characters, [&](const MockCharacter& c) { return c.name == name; });
         send_char_list();
         break;
     }
-    case Op::CharacterCreateRequest:
+    case rof2::Op::CharacterCreateRequest:
         world.send_reliable(encode(CharCreateData{}));
         break;
-    case Op::WorldComplete:
+    case rof2::Op::WorldComplete:
         world.send_disconnect(); // eqs->Close()
         break;
     default:
@@ -520,8 +524,8 @@ void MockEqServer::send_zone_in(const MockCharacter& c, const MockZone& z) {
 }
 
 void MockEqServer::on_zone_packet(const AppPacket& p) {
-    switch (from_wire(p.opcode)) {
-    case Op::ZoneEntry: {
+    switch (rof2::from_wire(p.opcode)) {
+    case rof2::Op::ZoneEntry: {
         ++zone_entries;
         auto req = decode_zone_entry_request(p);
         const MockCharacter* c = req ? character(req->name) : nullptr;
@@ -533,30 +537,30 @@ void MockEqServer::on_zone_packet(const AppPacket& p) {
         send_zone_in(*c, config.zones.at(current_zone_));
         break;
     }
-    case Op::ReqClientSpawn: {
+    case rof2::Op::ReqClientSpawn: {
         // Handle_Connect_OP_ReqClientSpawn: doors, objects, zone points, OP_SendAAStats, OP_SendExpZonein,
         // OP_ClientReady, OP_WorldObjectsSent (the last four empty).
         const MockZone& z = config.zones.at(current_zone_);
         zone.send_reliable(build_zone_points(z.zone_points));
-        zone.send_reliable(empty(Op::SendAAStats));
-        zone.send_reliable(empty(Op::SendExpZonein));
-        zone.send_reliable(empty(Op::ClientReady));
-        zone.send_reliable(empty(Op::WorldObjectsSent));
+        zone.send_reliable(empty(rof2::Op::SendAAStats));
+        zone.send_reliable(empty(rof2::Op::SendExpZonein));
+        zone.send_reliable(empty(rof2::Op::ClientReady));
+        zone.send_reliable(empty(rof2::Op::WorldObjectsSent));
         break;
     }
-    case Op::WorldObjectsSent: {
+    case rof2::Op::WorldObjectsSent: {
         // The echo makes the server send the zone-in packets (SendZoneInPackets): the stand state here.
         zone.send_reliable(encode(SpawnAppearance{0, 14, 100}));
         break;
     }
-    case Op::ClientReady: {
+    case rof2::Op::ClientReady: {
         // CompleteConnect finishes with an HP update.
         if (const MockCharacter* c = character(zone_char_))
             zone.send_reliable(encode(HpUpdate{static_cast<std::int16_t>(config.own_spawn_id), c->hp,
                                                static_cast<std::int32_t>(c->max_hp)}));
         break;
     }
-    case Op::ClientUpdate: {
+    case rof2::Op::ClientUpdate: {
         if (auto u = decode_client_position_update(p)) {
             client_updates.push_back(*u);
             if (echo_client_updates_as) {
@@ -568,7 +572,7 @@ void MockEqServer::on_zone_packet(const AppPacket& p) {
         }
         break;
     }
-    case Op::ZoneChange: {
+    case rof2::Op::ZoneChange: {
         auto z = decode_zone_change(p);
         if (!z || z->success != 0) break;
         std::int32_t answer = 1;
@@ -582,14 +586,14 @@ void MockEqServer::on_zone_packet(const AppPacket& p) {
         zone.send_reliable(encode(reply));
         break;
     }
-    case Op::Camp:
+    case rof2::Op::Camp:
         ++camp_requests;
         break;
-    case Op::Logout:
+    case rof2::Op::Logout:
         ++logouts;
         if (drop_on_logout) zone.send_disconnect(); // Handle_OP_Logout: Disconnect()
         break;
-    case Op::DeleteSpawn:
+    case rof2::Op::DeleteSpawn:
         ++own_delete_spawns;
         zone.send_disconnect(); // Handle_OP_DeleteSpawn: Disconnect()
         break;
@@ -612,7 +616,7 @@ void MockEqServer::chat(const std::string& sender, std::uint32_t channel, const 
 
 void MockEqServer::add_spawn(const Spawn& spawn) {
     AppPacket p = encode(spawn);
-    p.opcode = to_wire(Op::NewSpawn);
+    p.opcode = rof2::to_wire(rof2::Op::NewSpawn);
     zone.send_reliable(p);
 }
 
@@ -649,7 +653,7 @@ void MockEqServer::request_zone_change(std::uint16_t zone_id, float x, float y, 
     w.le<std::uint32_t>(0x0b);
     w.zeros(144);
     w.le<std::uint32_t>(0);
-    zone.send_reliable(make_packet(Op::RequestClientZoneChange, std::move(w)));
+    zone.send_reliable(make_packet(rof2::Op::RequestClientZoneChange, std::move(w)));
 }
 
 } // namespace hailstone::test

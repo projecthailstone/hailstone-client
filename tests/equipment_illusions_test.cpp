@@ -1,37 +1,31 @@
 #include <doctest/doctest.h>
 #include <algorithm>
-#include "core/byte_io.h"
 #include "game/appearance.h"
 #include "game/mounts.h"
 #include "mock_server/harness.h"
-#include "net/group_packets.h"
-#include "net/opcodes.h"
-#include "net/social_packets.h"
+#include "net/messages/message.h"
+#include "net/messages/zone.h"
+#include "net/protocol/rof2/packets/group_packets.h"
+#include "net/protocol/rof2/opcode_map.h"
+#include "net/protocol/rof2/packets/social_packets.h"
 using namespace hailstone;
 using namespace hailstone::test;
 
 namespace {
-net::AppPacket illusion(std::uint32_t spawn, std::uint16_t race,
-                       std::uint32_t heritage = 0xffffffffu, std::uint32_t tattoo = 0xffffffffu,
-                       std::uint32_t details = 0xffffffffu) {
-    ByteWriter w;
-    w.le(spawn);
-    w.zeros(64);
-    w.le(race);
-    w.zeros(2);
-    w.le<std::uint8_t>(0xff); // keep gender
-    w.le<std::uint8_t>(0xff); // per-slot armor
-    w.zeros(2);
-    w.le<std::uint8_t>(0xff); // keep head
-    w.zeros(3);
-    w.le<std::uint32_t>(0xffffffffu); // keep face
-    for (int i = 0; i < 4; ++i) w.le<std::uint8_t>(0xff);
-    w.f32(0.0f); // keep height
-    w.zeros(152);
-    w.le(heritage);
-    w.le(tattoo);
-    w.le(details);
-    return {net::to_wire(net::Op::Illusion), w.take()};
+net::messages::GameMessage illusion(std::uint32_t spawn, std::uint16_t race,
+                                    std::uint32_t heritage = 0xffffffffu,
+                                    std::uint32_t tattoo = 0xffffffffu,
+                                    std::uint32_t details = 0xffffffffu) {
+    net::Illusion value;
+    value.spawn_id = spawn;
+    value.race = race;
+    value.gender = value.texture = value.helm = 0xff;
+    value.face = 0xffffffffu;
+    value.hair_style = value.hair_color = value.beard = value.beard_color = 0xff;
+    value.drakkin_heritage = heritage;
+    value.drakkin_tattoo = tattoo;
+    value.drakkin_details = details;
+    return {net::messages::GameOpcode::Illusion, value};
 }
 }
 
@@ -71,9 +65,9 @@ TEST_CASE("Appearance integration: spawn and wear records retain all five words 
     CHECK(a.elite_material[wear.slot] == 72);
     CHECK(a.tint[wear.slot] == 0xffabcdefu);
     rig.conn.camp();
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::Op::Save) != 0; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::rof2::Op::Save) != 0; }));
     auto saved = std::find_if(rig.server.zone_log.rbegin(), rig.server.zone_log.rend(),
-        [](const net::AppPacket& p) { return net::from_wire(p.opcode) == net::Op::Save; });
+        [](const net::AppPacket& p) { return net::rof2::from_wire(p.opcode) == net::rof2::Op::Save; });
     REQUIRE(saved != rig.server.zone_log.rend());
     auto decoded = net::decode_save(*saved);
     REQUIRE(decoded);
@@ -127,10 +121,10 @@ TEST_CASE("Appearance filter: spawn kinds, corpses and group/raid membership") {
     CHECK(rig.conn.world().spawns.at(301).appearance.new_armor_bits == 0x10);
     // EQEmu sends NPC 2 for every corpse, a player's too; RoF2 hides hero's forge on any Type above 1.
     auto corpse = make_spawn("Gennro's_corpse", 303, 2, 1, 0, 0, 3);
-    rig.conn.receive_zone_packet_for_test(net::encode(corpse));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::ZoneEntry, corpse});
     CHECK(rig.conn.world().spawns.at(303).appearance.new_armor_bits == 0);
     auto member = make_spawn("Armored_Visitor", 302, 0, 1, 0, 0, 3);
-    rig.conn.receive_zone_packet_for_test(net::encode(member));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::ZoneEntry, member});
     auto& bits = rig.conn.world_for_test().spawns.at(302).appearance.new_armor_bits;
     const auto exempt = [&] { return (bits & 0x06) != 0; };
     rig.step();
@@ -150,23 +144,23 @@ TEST_CASE("Appearance filter: spawn kinds, corpses and group/raid membership") {
     entry.slot = 1;
     entry.name = member.name;
     group.members.push_back(entry);
-    rig.conn.receive_zone_packet_for_test(net::encode(group));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::GroupUpdateB, group});
     rig.step();
     CHECK(exempt());
     CHECK(bits == 0x0a);
     group.members.pop_back();
-    rig.conn.receive_zone_packet_for_test(net::encode(group));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::GroupUpdateB, group});
     rig.step();
     CHECK_FALSE(exempt());
     net::RaidUpdate raid;
     raid.general.action = net::kRaidAddMember;
     raid.general.player_name = member.name;
     raid.general.leader_name = group.leader;
-    rig.conn.receive_zone_packet_for_test(net::encode_raid_update(raid));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::RaidUpdate, raid});
     rig.step();
     CHECK(exempt());
     raid.general.action = net::kRaidRemoveMember;
-    rig.conn.receive_zone_packet_for_test(net::encode_raid_update(raid));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::RaidUpdate, raid});
     rig.step();
     CHECK_FALSE(exempt());
 }
@@ -178,29 +172,29 @@ TEST_CASE("Appearance integration: illusions change, retain and reset Drakkin fe
     s.drakkin_heritage = 1;
     s.drakkin_tattoo = 2;
     s.drakkin_details = 3;
-    rig.conn.receive_zone_packet_for_test(net::encode(s));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::ZoneEntry, s});
     auto& spawn = rig.conn.world_for_test().spawns.at(s.spawn_id);
     auto& a = spawn.appearance;
     REQUIRE(a.drakkin_heritage == 1);
     REQUIRE(a.drakkin_tattoo == 2);
     REQUIRE(a.drakkin_details == 3);
     const auto original = a;
-    rig.conn.receive_zone_packet_for_test(illusion(s.spawn_id, 522, 4, 5, 6));
+    rig.conn.receive_zone_message_for_test(illusion(s.spawn_id, 522, 4, 5, 6));
     CHECK(a.drakkin_heritage == 4);
     CHECK(a.drakkin_tattoo == 5);
     CHECK(a.drakkin_details == 6);
     CHECK_FALSE(a == original); // the renderer's appearance comparison sees the change
     CHECK_FALSE(spawn.actor_made);
 
-    rig.conn.receive_zone_packet_for_test(illusion(s.spawn_id, 522));
+    rig.conn.receive_zone_message_for_test(illusion(s.spawn_id, 522));
     CHECK(a.drakkin_heritage == 4);
     CHECK(a.drakkin_tattoo == 5);
     CHECK(a.drakkin_details == 6);
-    rig.conn.receive_zone_packet_for_test(illusion(s.spawn_id, 522, 0xffffffffu, 0, 0xffffffffu));
+    rig.conn.receive_zone_message_for_test(illusion(s.spawn_id, 522, 0xffffffffu, 0, 0xffffffffu));
     CHECK(a.drakkin_heritage == 4);
     CHECK(a.drakkin_tattoo == 0);
     CHECK(a.drakkin_details == 6);
-    rig.conn.receive_zone_packet_for_test(illusion(s.spawn_id, 522, 0, 0xffffffffu, 0));
+    rig.conn.receive_zone_message_for_test(illusion(s.spawn_id, 522, 0, 0xffffffffu, 0));
     CHECK(a.drakkin_heritage == 0);
     CHECK(a.drakkin_tattoo == 0);
     CHECK(a.drakkin_details == 0);
@@ -212,14 +206,14 @@ TEST_CASE("Mounted form changes: unseat before rebuild and re-seat against the n
     auto& world = rig.conn.world_for_test();
     auto& rider = world.spawns.at(world.player_id);
     auto horse = make_spawn("Gennro`s_Mount00", 9000, 1, 216, 0, 0, 3);
-    rig.conn.receive_zone_packet_for_test(net::encode(horse));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::ZoneEntry, horse});
     const auto actor = [](const game::Spawn&) -> std::optional<game::WorldState::ActorModel> {
         return game::WorldState::ActorModel{true, false};
     };
     rig.conn.smooth(0.0f, {}, actor);
     REQUIRE(rider.mount_id == 9000);
     REQUIRE(world.controlled_id == 9000);
-    rig.conn.receive_zone_packet_for_test(illusion(rider.id, 60));
+    rig.conn.receive_zone_message_for_test(illusion(rider.id, 60));
     CHECK(rider.mount_id == 0);
     CHECK(world.spawns.at(9000).rider_id == 0);
     CHECK(world.controlled_id == 0);
@@ -233,9 +227,9 @@ TEST_CASE("Mounted form changes: unseat before rebuild and re-seat against the n
         CHECK(rider.form_mount_id == 0);
     }
     SUBCASE("a departing mount cannot reattach through a reused id") {
-        rig.conn.receive_zone_packet_for_test(net::encode_delete_spawn(9000));
+        rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::DeleteSpawn, net::SpawnDespawn{9000, true}});
         horse.name = "Another_Rider`s_Mount00";
-        rig.conn.receive_zone_packet_for_test(net::encode(horse));
+        rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::ZoneEntry, horse});
         rig.conn.smooth(0.0f, {}, actor);
         CHECK(rider.mount_id == 0);
         CHECK(world.controlled_id == 0);

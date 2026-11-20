@@ -1,4 +1,4 @@
-// net/server_files.h and net/server_files_packets.h: the server's client files, brought into a profile's folder.
+// game/server_file_sync.h and net/protocol/extensions/hailstone/server_files_packets.h: the server's client files, brought into a profile's folder.
 #include <doctest/doctest.h>
 
 #include <chrono>
@@ -10,8 +10,8 @@
 #include <string>
 
 #include "core/sha256.h"
-#include "net/server_files.h"
-#include "net/server_files_packets.h"
+#include "game/server_file_sync.h"
+#include "net/protocol/extensions/hailstone/server_files_packets.h"
 
 namespace fs = std::filesystem;
 using namespace hailstone;
@@ -52,7 +52,7 @@ struct FakeServer {
     bool stray = false;  // also sends a piece at an offset nobody asked for
     std::set<std::size_t> drop; // piece requests (1, 2 ... in the order they come) left unanswered
     std::string never;          // a file whose pieces are never sent
-    std::deque<net::AppPacket> replies;
+    std::deque<net::ServerFilesReply> replies;
     std::size_t pieces = 0;
     std::size_t requests = 0;
 
@@ -63,24 +63,23 @@ struct FakeServer {
         return out;
     }
 
-    void receive(const net::AppPacket& p) {
+    void receive(const net::ServerFilesRequest& request) {
         if (!answer) return;
-        REQUIRE(p.opcode == net::kOpHsFilesRequest);
-        auto u16 = [&](std::size_t at) { return std::to_integer<std::uint16_t>(p.data[at]) | std::to_integer<std::uint16_t>(p.data[at + 1]) << 8; };
-        auto u32 = [&](std::size_t at) { return std::uint32_t(u16(at)) | std::uint32_t(u16(at + 2)) << 16; };
         auto all = list();
-        if (u16(6) == net::kServerFilesList) {
+        if (request.kind == net::ServerFilesRequest::Kind::List) {
             net::ServerFilesPage v;
             v.list_id = list_id;
             v.total = static_cast<std::uint32_t>(all.size());
-            v.first = u32(8);
-            for (std::uint32_t i = v.first; i < all.size() && i < v.first + page; ++i) v.entries.push_back(all[i]);
-            replies.push_back(net::encode(v));
+            v.first = request.first;
+            for (std::uint32_t i = v.first; i < all.size() && i < v.first + page; ++i)
+                v.entries.push_back(all[i]);
+            replies.emplace_back(std::move(v));
             return;
         }
-        std::uint32_t id = u32(8), index = u32(12), offset = u32(16), length = u32(20);
+        const auto id = request.list_id, index = request.index;
+        const auto offset = request.offset, length = request.length;
         if (id != list_id) {
-            replies.push_back(net::encode(net::ServerFilesError{id, index, net::kServerFilesStale}));
+            replies.emplace_back(net::ServerFilesError{id, index, net::kServerFilesStale});
             return;
         }
         ++requests;
@@ -91,13 +90,13 @@ struct FakeServer {
             c.data.push_back(static_cast<std::byte>(data[i]));
         if (damage && !c.data.empty()) c.data[0] ^= std::byte{1};
         ++pieces;
-        replies.push_back(net::encode(c));
-        if (twice) replies.push_back(net::encode(c));
+        replies.emplace_back(c);
+        if (twice) replies.emplace_back(c);
         if (stray && offset == 0 && data.size() > 1) {
             net::ServerFilesChunk odd{id, index, 1, {}};
             for (std::uint32_t i = 1; i < 1 + length && i < data.size(); ++i)
                 odd.data.push_back(static_cast<std::byte>(data[i]));
-            replies.push_front(net::encode(odd));
+            replies.emplace_front(std::move(odd));
         }
     }
 };
@@ -105,7 +104,7 @@ struct FakeServer {
 // Runs a sync against the fake server until it finishes.
 ServerFileSync::State run(const fs::path& profile, FakeServer& server, bool* changed = nullptr,
                           ServerFileSync::Limits limits = {}, std::string* error = nullptr) {
-    ServerFileSync sync(profile, [&](net::AppPacket p) { server.receive(p); }, limits);
+    ServerFileSync sync(profile, [&](net::ServerFilesRequest request) { server.receive(request); }, limits);
     auto now = ServerFileSync::Clock::now();
     sync.start(now);
     for (int steps = 0; !sync.finished() && steps < 100000; ++steps) {
@@ -116,9 +115,7 @@ ServerFileSync::State run(const fs::path& profile, FakeServer& server, bool* cha
         }
         auto p = server.replies.front();
         server.replies.pop_front();
-        auto reply = net::decode_server_files(p);
-        REQUIRE(reply);
-        sync.handle(*reply, now);
+        sync.handle(p, now);
     }
     if (changed) *changed = sync.changed();
     if (error) *error = sync.error();
@@ -199,13 +196,13 @@ TEST_CASE("server files: a piece the server skipped is asked for again, at once"
     server.files["a.bin"] = std::string(300000, 'a'); // ten pieces
     server.files["b.bin"] = std::string(70000, 'b');
     server.drop = {2, 5, 6}; // an older script over its limit: later requests are answered, these are not
-    ServerFileSync sync(dir.path, [&](net::AppPacket p) { server.receive(p); });
+    ServerFileSync sync(dir.path, [&](net::ServerFilesRequest request) { server.receive(request); });
     auto now = ServerFileSync::Clock::now();
     sync.start(now);
     while (!sync.finished() && !server.replies.empty()) {
         auto p = server.replies.front();
         server.replies.pop_front();
-        sync.handle(*net::decode_server_files(p), now); // no time passes: no timeout is involved
+        sync.handle(p, now); // no time passes: no timeout is involved
     }
     // a.bin came out of order: update() hashes it from .download/.
     for (int calls = 0; !sync.finished() && calls < 100; ++calls) sync.update(now);
@@ -220,14 +217,14 @@ TEST_CASE("server files: the last pieces lost are asked for again after a silenc
     FakeServer server;
     server.files["a.bin"] = std::string(100000, 'a'); // four pieces, all asked at once
     server.drop = {3, 4};                             // nothing asked after them to show the loss
-    ServerFileSync sync(dir.path, [&](net::AppPacket p) { server.receive(p); });
+    ServerFileSync sync(dir.path, [&](net::ServerFilesRequest request) { server.receive(request); });
     auto now = ServerFileSync::Clock::now();
     sync.start(now);
     auto drain = [&] {
         while (!sync.finished() && !server.replies.empty()) {
             auto p = server.replies.front();
             server.replies.pop_front();
-            sync.handle(*net::decode_server_files(p), now);
+            sync.handle(p, now);
         }
     };
     drain();
@@ -249,14 +246,14 @@ TEST_CASE("server files: a piece that never comes fails the sync after kChunkRet
     FakeServer server;
     server.files["a.bin"] = "never sent";
     server.never = "a.bin";
-    ServerFileSync sync(dir.path, [&](net::AppPacket p) { server.receive(p); });
+    ServerFileSync sync(dir.path, [&](net::ServerFilesRequest request) { server.receive(request); });
     auto now = ServerFileSync::Clock::now();
     sync.start(now);
     for (int steps = 0; !sync.finished() && steps < 100; ++steps) {
         while (!server.replies.empty()) {
             auto p = server.replies.front();
             server.replies.pop_front();
-            sync.handle(*net::decode_server_files(p), now);
+            sync.handle(p, now);
         }
         now += ServerFileSync::kChunkRetry;
         sync.update(now);
@@ -510,14 +507,14 @@ TEST_CASE("server files: files the record does not know are hashed a budget at a
     write(dir.path / "assets" / "a.bin", server.files["a.bin"]);
     write(dir.path / "assets" / "b.bin", std::string(3000, 'x')); // the right size, other bytes: downloaded again
     write(dir.path / ".download" / "assets" / "c.bin", server.files["c.bin"]); // came complete in an earlier try
-    ServerFileSync sync(dir.path, [&](net::AppPacket p) { server.receive(p); });
+    ServerFileSync sync(dir.path, [&](net::ServerFilesRequest request) { server.receive(request); });
     sync.set_hash_budget(1000);
     auto now = ServerFileSync::Clock::now();
     sync.start(now);
     while (sync.state() == ServerFileSync::State::Listing && !server.replies.empty()) {
         auto p = server.replies.front();
         server.replies.pop_front();
-        sync.handle(*net::decode_server_files(p), now);
+        sync.handle(p, now);
     }
     REQUIRE(sync.state() == ServerFileSync::State::Verifying); // 1000 bytes of 12000 hashed in the last page's call
     CHECK(server.requests == 0);
@@ -537,7 +534,7 @@ TEST_CASE("server files: files the record does not know are hashed a budget at a
         }
         auto p = server.replies.front();
         server.replies.pop_front();
-        sync.handle(*net::decode_server_files(p), now);
+        sync.handle(p, now);
     }
     CHECK(sync.state() == ServerFileSync::State::Done);
     CHECK(server.requests == 1); // b.bin's one piece; a.bin matched, c.bin came before
@@ -554,14 +551,14 @@ TEST_CASE("server files: a file whose pieces came out of order is hashed from di
     FakeServer server;
     server.files["a.bin"] = std::string(100000, 'a'); // four pieces
     server.drop = {1};                                // the first: asked again after the others came
-    ServerFileSync sync(dir.path, [&](net::AppPacket p) { server.receive(p); });
+    ServerFileSync sync(dir.path, [&](net::ServerFilesRequest request) { server.receive(request); });
     sync.set_hash_budget(1000);
     auto now = ServerFileSync::Clock::now();
     sync.start(now);
     for (int steps = 0; !server.replies.empty() && steps < 1000; ++steps) {
         auto p = server.replies.front();
         server.replies.pop_front();
-        sync.handle(*net::decode_server_files(p), now);
+        sync.handle(p, now);
     }
     CHECK(server.requests == 5);
     REQUIRE(sync.state() == ServerFileSync::State::Downloading); // all came; 1000 of 100000 bytes checked
@@ -581,7 +578,7 @@ TEST_CASE("server files: a file whose pieces came out of order and does not matc
     FakeServer server;
     server.files["a.bin"] = std::string(100000, 'a');
     server.drop = {1};
-    ServerFileSync sync(dir.path, [&](net::AppPacket p) { server.receive(p); });
+    ServerFileSync sync(dir.path, [&](net::ServerFilesRequest request) { server.receive(request); });
     auto now = ServerFileSync::Clock::now();
     sync.start(now);
     bool spoiled = false;
@@ -593,13 +590,11 @@ TEST_CASE("server files: a file whose pieces came out of order and does not matc
         }
         auto p = server.replies.front();
         server.replies.pop_front();
-        auto reply = net::decode_server_files(p);
-        REQUIRE(reply);
-        if (auto* c = std::get_if<net::ServerFilesChunk>(&*reply); c && c->offset == 0 && !spoiled) {
+        if (auto* c = std::get_if<net::ServerFilesChunk>(&p); c && c->offset == 0 && !spoiled) {
             c->data[5] ^= std::byte{1}; // the piece asked for again, damaged
             spoiled = true;
         }
-        sync.handle(*reply, now);
+        sync.handle(p, now);
     }
     CHECK(spoiled);
     CHECK(sync.state() == ServerFileSync::State::Failed);
@@ -615,14 +610,14 @@ TEST_CASE("server files: chunks of other files handled in one frame do not hash 
     server.files["a.bin"] = std::string(100000, 'a');                          // four pieces, the first asked again
     server.files["b.bin"] = std::string(64 * net::kServerFilesChunkMax, 'b'); // still coming after a.bin is all here
     server.drop = {1};
-    ServerFileSync sync(dir.path, [&](net::AppPacket p) { server.receive(p); });
+    ServerFileSync sync(dir.path, [&](net::ServerFilesRequest request) { server.receive(request); });
     sync.set_hash_budget(1000);
     auto now = ServerFileSync::Clock::now();
     sync.start(now);
     for (int steps = 0; !server.replies.empty() && steps < 1000; ++steps) {
         auto p = server.replies.front();
         server.replies.pop_front();
-        sync.handle(*net::decode_server_files(p), now);
+        sync.handle(p, now);
     }
     REQUIRE(sync.state() == ServerFileSync::State::Downloading); // b.bin came in order; a.bin is not hashed yet
     int calls = 0;
@@ -643,13 +638,13 @@ TEST_CASE("server files: the stale errors for every piece in flight list the fil
     TempDir dir("stale_window");
     FakeServer server;
     server.files["a.bin"] = std::string(64 * net::kServerFilesChunkMax, 'a');
-    ServerFileSync sync(dir.path, [&](net::AppPacket p) { server.receive(p); });
+    ServerFileSync sync(dir.path, [&](net::ServerFilesRequest request) { server.receive(request); });
     auto now = ServerFileSync::Clock::now();
     sync.start(now);
     while (sync.state() == ServerFileSync::State::Listing && !server.replies.empty()) {
         auto p = server.replies.front();
         server.replies.pop_front();
-        sync.handle(*net::decode_server_files(p), now);
+        sync.handle(p, now);
     }
     REQUIRE(sync.state() == ServerFileSync::State::Downloading);
     const std::size_t asked = server.replies.size();
@@ -658,7 +653,7 @@ TEST_CASE("server files: the stale errors for every piece in flight list the fil
     const std::uint32_t old_id = server.list_id;
     server.list_id = old_id + 1;
     for (std::size_t i = 0; i < asked; ++i)
-        server.replies.push_back(net::encode(net::ServerFilesError{old_id, 0, net::kServerFilesStale}));
+        server.replies.push_back(net::ServerFilesError{old_id, 0, net::kServerFilesStale});
     for (int steps = 0; !sync.finished() && steps < 10000; ++steps) {
         if (server.replies.empty()) {
             now += std::chrono::seconds(1);
@@ -667,7 +662,7 @@ TEST_CASE("server files: the stale errors for every piece in flight list the fil
         }
         auto p = server.replies.front();
         server.replies.pop_front();
-        sync.handle(*net::decode_server_files(p), now);
+        sync.handle(p, now);
     }
     CHECK(sync.state() == ServerFileSync::State::Done);
     CHECK(read(dir.path / "assets" / "a.bin") == server.files["a.bin"]);

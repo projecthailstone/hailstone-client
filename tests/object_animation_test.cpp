@@ -23,7 +23,7 @@
 #include "game/collision.h"
 #include "game/mechanics/collision_movement.h"
 #include "game_files.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "wld_fixtures.h"
 
 using namespace hailstone;

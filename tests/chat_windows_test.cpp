@@ -25,7 +25,7 @@
 #include "game/social.h"
 #include "ui/ui_ini.h"
 #include "core/game_dir.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "platform/local_time.h"
 #include "ui/dev_screens.h"
 #include "scratch_dir.h"

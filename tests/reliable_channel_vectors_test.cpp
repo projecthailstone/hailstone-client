@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#include "net/reliable_channel.h"
+#include "net/session/soe/reliable_channel.h"
 #include "vector_files.h"
 
 using namespace hailstone::net;

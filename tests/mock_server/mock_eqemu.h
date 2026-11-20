@@ -21,12 +21,12 @@
 #include <vector>
 
 #include "mock_server/soe_endpoint.h"
-#include "net/item_packets.h"
-#include "net/login.h"
-#include "net/opcodes.h"
-#include "net/packet.h"
-#include "net/world_packets.h"
-#include "net/zone_packets.h"
+#include "net/protocol/rof2/packets/item_packets.h"
+#include "net/connection/login_client.h"
+#include "net/protocol/rof2/opcode_map.h"
+#include "net/wire/app_packet.h"
+#include "net/protocol/rof2/packets/world_packets.h"
+#include "net/protocol/rof2/packets/zone_packets.h"
 
 namespace hailstone::test {
 
@@ -35,7 +35,7 @@ namespace hailstone::test {
 net::Spawn make_spawn(const std::string& name, std::uint32_t id, std::uint8_t npc, std::uint32_t race, float x, float y,
                       float z, float heading = 0.0f);
 
-// A common item in a possessions slot (net/item_packets.h).
+// A common item in a possessions slot (net/protocol/rof2/packets/item_packets.h).
 net::Item make_item(std::uint32_t item_id, const std::string& name, std::int16_t slot, std::uint32_t stack = 1);
 
 struct MockCharacter {
@@ -120,9 +120,9 @@ public:
     int own_delete_spawns = 0;               // OP_DeleteSpawn received (the zone then drops the link)
     bool drop_on_logout = true;              // EQEmu drops the link on OP_Logout
     // The names of the opcodes in a log, for assertions on order.
-    static std::vector<net::Op> ops(const std::vector<net::AppPacket>& log);
+    static std::vector<net::rof2::Op> ops(const std::vector<net::AppPacket>& log);
     // How many times a log holds the opcode.
-    static int count(const std::vector<net::AppPacket>& log, net::Op op);
+    static int count(const std::vector<net::AppPacket>& log, net::rof2::Op op);
 
     // ---- scripted behaviour a test can change ----
     // Echo each OP_ClientUpdate back as the server's update for this spawn (an NPC that mirrors the player).

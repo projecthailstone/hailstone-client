@@ -8,7 +8,7 @@
 #include "game/inventory.h"
 #include "game/option_commands.h"
 #include "game/spells.h"
-#include "net/guild_bank_packets.h"
+#include "net/messages/guild_bank.h"
 
 namespace hailstone::game {
 

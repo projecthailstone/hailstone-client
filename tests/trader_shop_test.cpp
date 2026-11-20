@@ -3,7 +3,7 @@
 #include <doctest/doctest.h>
 
 #include "mock_server/harness.h"
-#include "net/market_packets.h"
+#include "net/protocol/rof2/packets/market_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::test;
@@ -37,12 +37,12 @@ TEST_CASE("a right click on a trader asks for its shop, and EQEmu's approval ope
     CHECK_FALSE(conn.merchant());
     REQUIRE(rig.until([&] {
         for (std::size_t i = before; i < rig.server.zone_log.size(); ++i)
-            if (rig.server.zone_log[i].opcode == net::to_wire(net::Op::TraderShop)) return true;
+            if (rig.server.zone_log[i].opcode == net::rof2::to_wire(net::rof2::Op::TraderShop)) return true;
         return false;
     }));
 
     // EQEmu's RoF2 answer: {28, trader, approval} (12 bytes, Approval in the third word).
-    conn.receive_zone_packet_for_test(net::encode(net::TraderClick{net::kTraderClick, kTrader, 1}));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::TraderShop, net::TraderShopMessage{.action = net::kTraderClick, .click = net::TraderClick{net::kTraderClick, kTrader, 1}}});
     REQUIRE(conn.merchant());
     CHECK(conn.merchant()->open);
     CHECK(conn.merchant()->trader);
@@ -55,13 +55,10 @@ TEST_CASE("a player who becomes a trader after the spawn arrived is shopped at t
     REQUIRE(rig.to_zone());
     conn.world_for_test().spawns[kTrader] = trader_beside(conn, false);
     // EQEmu's OP_BecomeTrader {entity id, action 1 TraderOn}.
-    ByteWriter w;
-    w.le(kTrader);
-    w.le(std::uint32_t{1});
-    conn.receive_zone_packet_for_test(net::AppPacket(net::to_wire(net::Op::BecomeTrader), w.take()));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::BecomeTrader, net::BecomeTrader{kTrader, 1}});
     REQUIRE(conn.world().spawns.at(kTrader).trader);
     conn.right_click_player(kTrader);
-    conn.receive_zone_packet_for_test(net::encode(net::TraderClick{net::kTraderClick, kTrader, 1}));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::TraderShop, net::TraderShopMessage{.action = net::kTraderClick, .click = net::TraderClick{net::kTraderClick, kTrader, 1}}});
     REQUIRE(conn.merchant());
     CHECK(conn.merchant()->trader);
 }
@@ -75,7 +72,7 @@ TEST_CASE("an NPC in trader mode (a server's simulated trader) opens its shop on
     t.class_id = 1; // not a service class: RightClickedOnPlayer reaches the trader test
     conn.world_for_test().spawns[kTrader] = t;
     conn.right_click_player(kTrader);
-    conn.receive_zone_packet_for_test(net::encode(net::TraderClick{net::kTraderClick, kTrader, 1}));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::TraderShop, net::TraderShopMessage{.action = net::kTraderClick, .click = net::TraderClick{net::kTraderClick, kTrader, 1}}});
     REQUIRE(conn.merchant());
     CHECK(conn.merchant()->open);
     CHECK(conn.merchant()->trader);
@@ -88,6 +85,6 @@ TEST_CASE("an NPC in trader mode (a server's simulated trader) opens its shop on
     conn.right_click_player(kTrader);
     rig.run_for(std::chrono::milliseconds(50));
     for (std::size_t i = before; i < rig.server.zone_log.size(); ++i)
-        CHECK(rig.server.zone_log[i].opcode != net::to_wire(net::Op::TraderShop));
+        CHECK(rig.server.zone_log[i].opcode != net::rof2::to_wire(net::rof2::Op::TraderShop));
     CHECK_FALSE(conn.merchant());
 }

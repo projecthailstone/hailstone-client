@@ -44,7 +44,7 @@ inline constexpr std::uint8_t kSwitchOpening = 2;
 inline constexpr std::uint8_t kSwitchClosing = 3;
 inline constexpr std::uint8_t kSwitchTriggered = 4; // a trap that went off; resets after 60 s
 
-// What an OP_SpawnDoor record carries (net/door_packets.h DoorRecord, in game terms).
+// What an OP_SpawnDoor record carries (net/protocol/rof2/packets/door_packets.h DoorRecord, in game terms).
 struct DoorSpawn {
     std::string name;
     float y = 0, x = 0, z = 0, heading = 0;

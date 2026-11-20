@@ -7,8 +7,8 @@
 #include "game/server_ext_chain.h"
 #include "mq_test_world.h"
 #include "mock_server/harness.h"
-#include "net/zone_packets.h"
-#include "net/movement_packets.h"
+#include "net/protocol/rof2/packets/zone_packets.h"
+#include "net/protocol/rof2/packets/movement_packets.h"
 
 using namespace hailstone;
 namespace {
@@ -191,17 +191,17 @@ TEST_CASE("server addon maps: restricted NPC Find requests retire without cancel
     test::Rig w(test::MockConfig::standard(), options); REQUIRE(w.to_zone());
     auto& c = w.conn; path_actors(c);
     REQUIRE(c.find_spawn(10));
-    c.receive_zone_packet_for_test(net::encode_find_person_reply({{100, 0, 0}, {0, 0, 0}, {100, 0, 0}}));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::FindPersonReply, std::vector<glm::vec3>{{100, 0, 0}, {100, 0, 0}, {0, 0, 0}, {100, 0, 0}}});
     REQUIRE(c.player_path().active());
     policy->policy.flags = game::MapPolicyDisableNpcFind;
     CHECK_FALSE(c.find_spawn(10)); CHECK_FALSE(app::guide_spawn_position(c, 10));
     c.find_person_request(); CHECK_FALSE(c.player_path().active());
     c.find_target("a_rat00"); CHECK_FALSE(c.player_path().active());
     CHECK(c.find_spawn(12));
-    c.receive_zone_packet_for_test(net::encode_find_person_reply({{100, 0, 0}, {0, 0, 0}, {100, 0, 0}}));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::FindPersonReply, std::vector<glm::vec3>{{100, 0, 0}, {100, 0, 0}, {0, 0, 0}, {100, 0, 0}}});
     CHECK(c.player_path().active()); CHECK(c.player_path().target_id() == 12);
     c.find_map_location({500, 500, 0});
-    c.receive_zone_packet_for_test(net::encode_find_person_reply({{500, 500, 0}, {0, 0, 0}, {500, 500, 0}}));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::FindPersonReply, std::vector<glm::vec3>{{500, 500, 0}, {500, 500, 0}, {0, 0, 0}, {500, 500, 0}}});
     CHECK(c.player_path().active());
     CHECK(c.player_path().kind() == game::FindKind::MapLocation);
     CHECK_FALSE(c.find_spawn(13)); // corpse remains ineligible even if it belongs to a PC
@@ -245,14 +245,14 @@ TEST_CASE("server addon maps: a retired NPC Find's reply is dropped and its repl
         if (coordinate) c.find_map_location({500, 500, 0});
         else REQUIRE(c.find_spawn(12));
         const auto before = c.find_replies();
-        const auto old = net::encode_find_person_reply({{100, 0, 0}, {0, 0, 0}, {100, 0, 0}});
-        const auto replacement = net::encode_find_person_reply({{500, 500, 0}, {0, 0, 0}, {500, 500, 0}});
-        c.receive_zone_packet_for_test(old);
+        const net::messages::GameMessage old{net::messages::GameOpcode::FindPersonReply, std::vector<glm::vec3>{{100, 0, 0}, {100, 0, 0}, {0, 0, 0}, {100, 0, 0}}};
+        const net::messages::GameMessage replacement{net::messages::GameOpcode::FindPersonReply, std::vector<glm::vec3>{{500, 500, 0}, {500, 500, 0}, {0, 0, 0}, {500, 500, 0}}};
+        c.receive_zone_message_for_test(old);
         CHECK(c.find_replies() == before); CHECK_FALSE(c.player_path().active()); CHECK(c.find_path().empty());
-        c.receive_zone_packet_for_test(replacement);
+        c.receive_zone_message_for_test(replacement);
         CHECK(c.find_replies() == before + 1); CHECK(c.player_path().active());
         REQUIRE(c.find_spawn(12));
-        c.receive_zone_packet_for_test(replacement);
+        c.receive_zone_message_for_test(replacement);
         CHECK(c.find_replies() == before + 2); CHECK(c.player_path().active());
     }
 }
@@ -267,10 +267,10 @@ TEST_CASE("server addon maps: an unanswered NPC Find expires and the next Find g
     REQUIRE(c.find_spawn(10));
     net::GameConnectionTestAccess::expire_find_batch(c);
     const auto before = c.find_replies();
-    const auto reply = net::encode_find_person_reply({{100, 0, 0}, {0, 0, 0}, {100, 0, 0}});
-    c.receive_zone_packet_for_test(reply); // the old request's, late: no request owns it
+    const net::messages::GameMessage reply{net::messages::GameOpcode::FindPersonReply, std::vector<glm::vec3>{{100, 0, 0}, {100, 0, 0}, {0, 0, 0}, {100, 0, 0}}};
+    c.receive_zone_message_for_test(reply); // the old request's, late: no request owns it
     CHECK(c.find_replies() == before);
-    REQUIRE(c.find_spawn(12)); c.receive_zone_packet_for_test(reply);
+    REQUIRE(c.find_spawn(12)); c.receive_zone_message_for_test(reply);
     CHECK(c.find_replies() == before + 1); CHECK(c.player_path().active());
 }
 
@@ -285,7 +285,7 @@ TEST_CASE("server addon maps: a retired NPC request cannot revive when eligibili
         if (explicit_stop) c.stop_find_path(); else c.find_person_request();
         policy->policy.flags = 0;
         const auto before = c.find_replies();
-        c.receive_zone_packet_for_test(net::encode_find_person_reply({{100, 0, 0}, {0, 0, 0}, {100, 0, 0}}));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::FindPersonReply, std::vector<glm::vec3>{{100, 0, 0}, {100, 0, 0}, {0, 0, 0}, {100, 0, 0}}});
         CHECK(c.find_replies() == before); CHECK_FALSE(c.player_path().active());
     }
 }

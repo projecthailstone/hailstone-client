@@ -24,8 +24,11 @@
 #include "mock_server/harness.h"
 #include "mock_server/profile_builder.h"
 #include "mq_test_world.h"
-#include "net/packet_io.h"
-#include "net/spell_packets.h"
+#include "net/messages/notice.h"
+#include "net/messages/social.h"
+#include "net/messages/zone.h"
+#include "net/protocol/rof2/wire_io.h"
+#include "net/protocol/rof2/packets/spell_packets.h"
 
 using namespace hailstone;
 
@@ -41,32 +44,28 @@ std::vector<std::string> drain(net::GameConnection& c) {
     return out;
 }
 
-// OP_XTargetResponse {max, count, slot, status, id, name}: one slot holding a spawn.
-net::AppPacket xtarget_slot(std::uint32_t slot, std::uint32_t id, const std::string& name) {
-    ByteWriter w;
-    w.le<std::uint32_t>(5);
-    w.le<std::uint32_t>(1);
-    w.le<std::uint32_t>(slot);
-    w.le<std::uint8_t>(1);
-    w.le<std::uint32_t>(id);
-    w.fixed_string(name, name.size() + 1);
-    return net::AppPacket(net::to_wire(net::Op::XTargetResponse), w.take());
+// A single occupied extended-target slot from the server.
+net::XTargetResponse xtarget_slot(std::uint32_t slot, std::uint32_t id, const std::string& name) {
+    net::XTargetResponse response;
+    response.max = 5;
+    response.entries.push_back({static_cast<std::int32_t>(slot), 1, id, name});
+    return response;
 }
 
-net::AppPacket death_of(std::uint32_t id) {
+net::Death death_of(std::uint32_t id) {
     net::Death d;
     d.spawn_id = id;
     d.killer_id = 1;
     d.corpse_id = id;
-    return net::encode(d);
+    return d;
 }
 
-net::AppPacket hit_on_me(std::uint32_t from, std::int32_t damage = 5) {
+net::CombatDamage hit_on_me(std::uint32_t from, std::int32_t damage = 5) {
     net::CombatDamage d;
     d.target = 1;
     d.source = static_cast<std::uint16_t>(from);
     d.damage = damage;
-    return net::encode(d);
+    return d;
 }
 
 } // namespace
@@ -247,8 +246,8 @@ TEST_CASE("StopSpellCast: a bard's non-song never interrupts or restarts the twi
     sp.recovery_ready = 0;
     c.melody_command("1");
     REQUIRE(c.next_bard_twist_gem() == 1);
-    const auto mana_changes = [&] { return test::MockEqServer::count(rig.server.zone_log, net::Op::ManaChange); };
-    const auto casts = [&] { return test::MockEqServer::count(rig.server.zone_log, net::Op::CastSpell); };
+    const auto mana_changes = [&] { return test::MockEqServer::count(rig.server.zone_log, net::rof2::Op::ManaChange); };
+    const auto casts = [&] { return test::MockEqServer::count(rig.server.zone_log, net::rof2::Op::CastSpell); };
     for (std::uint8_t reason : {std::uint8_t{0}, std::uint8_t{1}}) {
         sp.casting = {};
         sp.casting.spell = 6800;
@@ -311,17 +310,21 @@ TEST_CASE("Unconscious status follows local damage and conscious recovery withou
 
 TEST_CASE("a fresh zone clears the previous character body's unconscious or dead status") {
     for (std::int8_t previous : {std::int8_t{3}, std::int8_t{4}}) {
-        mq_test::World w("hailstone_consciousness_zone_test");
-        auto& c = *w.conn;
-        auto& status = A::status(c);
+        test::Rig rig;
+        REQUIRE(rig.to_character_select());
+        rig.conn.enter_world("Gennro");
+        REQUIRE(rig.until_state(net::ConnectionState::EnteringWorld));
+        auto& status = A::status(rig.conn);
         status.owner_status = previous;
         status.dead = previous == 4;
         status.stand_state = net::kStandLying;
-        c.receive_world_packet_for_test(net::encode(net::ZoneServerInfo{"127.0.0.1", 9000}));
+        // The real world handoff, not an unsolicited ZoneServerInfo delivered
+        // to a connection already in the zone, triggers the body reset.
+        REQUIRE(rig.until_state(net::ConnectionState::ZoneConnecting));
         CHECK(status.owner_status == 0);
         CHECK_FALSE(status.dead);
         CHECK(status.stand_state == net::kStandStanding);
-        CHECK_FALSE(c.player_down());
+        CHECK_FALSE(rig.conn.player_down());
     }
 }
 
@@ -354,10 +357,10 @@ TEST_CASE("attack_until_xtarget_clear: auto attack outlives the target while the
     {
         mq_test::World w("hailstone_attack_hold_off_test");
         auto& c = *w.conn;
-        c.receive_zone_packet_for_test(xtarget_slot(0, 10, "a_rat01"));
-        c.receive_zone_packet_for_test(xtarget_slot(1, 11, "Fippy_Darkpaw000"));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::XTargetResponse, xtarget_slot(0, 10, "a_rat01")});
+        c.receive_zone_message_for_test({net::messages::GameOpcode::XTargetResponse, xtarget_slot(1, 11, "Fippy_Darkpaw000")});
         REQUIRE(c.auto_attack());
-        c.receive_zone_packet_for_test(death_of(10));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::Death, death_of(10)});
         CHECK_FALSE(c.auto_attack());
     }
     // The option: on while Fippy is left, off once Fippy dies too.
@@ -365,14 +368,14 @@ TEST_CASE("attack_until_xtarget_clear: auto attack outlives the target while the
         mq_test::World w("hailstone_attack_hold_on_test");
         auto& c = *w.conn;
         c.set_attack_until_xtarget_clear(true);
-        c.receive_zone_packet_for_test(xtarget_slot(0, 10, "a_rat01"));
-        c.receive_zone_packet_for_test(xtarget_slot(1, 11, "Fippy_Darkpaw000"));
-        c.receive_zone_packet_for_test(death_of(10));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::XTargetResponse, xtarget_slot(0, 10, "a_rat01")});
+        c.receive_zone_message_for_test({net::messages::GameOpcode::XTargetResponse, xtarget_slot(1, 11, "Fippy_Darkpaw000")});
+        c.receive_zone_message_for_test({net::messages::GameOpcode::Death, death_of(10)});
         CHECK(c.world().target_id == 0);
         CHECK(c.auto_attack());
         c.update();
         CHECK(c.auto_attack());
-        c.receive_zone_packet_for_test(death_of(11));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::Death, death_of(11)});
         c.update();
         CHECK_FALSE(c.auto_attack());
     }
@@ -381,8 +384,8 @@ TEST_CASE("attack_until_xtarget_clear: auto attack outlives the target while the
         mq_test::World w("hailstone_attack_hold_empty_test");
         auto& c = *w.conn;
         c.set_attack_until_xtarget_clear(true);
-        c.receive_zone_packet_for_test(xtarget_slot(0, 10, "a_rat01"));
-        c.receive_zone_packet_for_test(death_of(10));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::XTargetResponse, xtarget_slot(0, 10, "a_rat01")});
+        c.receive_zone_message_for_test({net::messages::GameOpcode::Death, death_of(10)});
         CHECK_FALSE(c.auto_attack());
     }
     // A new target taken while held: the usual rules from then on (the list emptying does not stop the attack).
@@ -390,13 +393,13 @@ TEST_CASE("attack_until_xtarget_clear: auto attack outlives the target while the
         mq_test::World w("hailstone_attack_hold_retarget_test");
         auto& c = *w.conn;
         c.set_attack_until_xtarget_clear(true);
-        c.receive_zone_packet_for_test(xtarget_slot(0, 10, "a_rat01"));
-        c.receive_zone_packet_for_test(xtarget_slot(1, 11, "Fippy_Darkpaw000"));
-        c.receive_zone_packet_for_test(death_of(10));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::XTargetResponse, xtarget_slot(0, 10, "a_rat01")});
+        c.receive_zone_message_for_test({net::messages::GameOpcode::XTargetResponse, xtarget_slot(1, 11, "Fippy_Darkpaw000")});
+        c.receive_zone_message_for_test({net::messages::GameOpcode::Death, death_of(10)});
         REQUIRE(c.auto_attack());
         A::world(c).target_id = 12;
         c.update();
-        c.receive_zone_packet_for_test(death_of(11));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::Death, death_of(11)});
         c.update();
         CHECK(c.auto_attack());
     }
@@ -409,9 +412,9 @@ TEST_CASE("auto_target_xtarget: with no target, an NPC on the extended target li
         auto& c = *w.conn;
         REQUIRE(c.auto_target_xtarget());
         A::world(c).target_id = 0;
-        c.receive_zone_packet_for_test(xtarget_slot(0, 10, "a_rat01"));
-        c.receive_zone_packet_for_test(xtarget_slot(1, 11, "Fippy_Darkpaw000"));
-        c.receive_zone_packet_for_test(hit_on_me(11, 0));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::XTargetResponse, xtarget_slot(0, 10, "a_rat01")});
+        c.receive_zone_message_for_test({net::messages::GameOpcode::XTargetResponse, xtarget_slot(1, 11, "Fippy_Darkpaw000")});
+        c.receive_zone_message_for_test({net::messages::GameOpcode::Damage, hit_on_me(11, 0)});
         c.update();
         CHECK(c.world().target_id == 11);
     }
@@ -419,8 +422,8 @@ TEST_CASE("auto_target_xtarget: with no target, an NPC on the extended target li
     {
         mq_test::World w("hailstone_auto_target_held_test");
         auto& c = *w.conn;
-        c.receive_zone_packet_for_test(xtarget_slot(0, 11, "Fippy_Darkpaw000"));
-        c.receive_zone_packet_for_test(hit_on_me(11));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::XTargetResponse, xtarget_slot(0, 11, "Fippy_Darkpaw000")});
+        c.receive_zone_message_for_test({net::messages::GameOpcode::Damage, hit_on_me(11)});
         c.update();
         CHECK(c.world().target_id == 10);
     }
@@ -429,8 +432,8 @@ TEST_CASE("auto_target_xtarget: with no target, an NPC on the extended target li
         mq_test::World w("hailstone_auto_target_off_list_test");
         auto& c = *w.conn;
         A::world(c).target_id = 0;
-        c.receive_zone_packet_for_test(hit_on_me(11));
-        c.receive_zone_packet_for_test(hit_on_me(12));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::Damage, hit_on_me(11)});
+        c.receive_zone_message_for_test({net::messages::GameOpcode::Damage, hit_on_me(12)});
         c.update();
         CHECK(c.world().target_id == 0);
     }
@@ -438,22 +441,22 @@ TEST_CASE("auto_target_xtarget: with no target, an NPC on the extended target li
     {
         mq_test::World w("hailstone_auto_target_death_test");
         auto& c = *w.conn;
-        c.receive_zone_packet_for_test(xtarget_slot(0, 10, "a_rat01"));
-        c.receive_zone_packet_for_test(xtarget_slot(1, 11, "Fippy_Darkpaw000"));
-        c.receive_zone_packet_for_test(hit_on_me(10));
-        c.receive_zone_packet_for_test(death_of(10));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::XTargetResponse, xtarget_slot(0, 10, "a_rat01")});
+        c.receive_zone_message_for_test({net::messages::GameOpcode::XTargetResponse, xtarget_slot(1, 11, "Fippy_Darkpaw000")});
+        c.receive_zone_message_for_test({net::messages::GameOpcode::Damage, hit_on_me(10)});
+        c.receive_zone_message_for_test({net::messages::GameOpcode::Death, death_of(10)});
         c.update();
         CHECK(c.world().target_id == 0);
         A::world(c).target_id = 10; // (a stand-in target, so the next hit only records the attacker)
-        c.receive_zone_packet_for_test(hit_on_me(11));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::Damage, hit_on_me(11)});
         A::world(c).target_id = 0;
         c.update();
         CHECK(c.world().target_id == 0); // cleared by hand: held until the next hit
         A::world(c).target_id = 11;
-        c.receive_zone_packet_for_test(xtarget_slot(2, 14, "a_bat00"));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::XTargetResponse, xtarget_slot(2, 14, "a_bat00")});
         w.add(14, "a_bat00", true, 3, {0, 0, 0});
-        c.receive_zone_packet_for_test(hit_on_me(14));
-        c.receive_zone_packet_for_test(death_of(11));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::Damage, hit_on_me(14)});
+        c.receive_zone_message_for_test({net::messages::GameOpcode::Death, death_of(11)});
         c.update();
         CHECK(c.world().target_id == 14);
     }
@@ -463,8 +466,8 @@ TEST_CASE("auto_target_xtarget: with no target, an NPC on the extended target li
         auto& c = *w.conn;
         c.set_auto_target_xtarget(false);
         A::world(c).target_id = 0;
-        c.receive_zone_packet_for_test(xtarget_slot(0, 11, "Fippy_Darkpaw000"));
-        c.receive_zone_packet_for_test(hit_on_me(11));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::XTargetResponse, xtarget_slot(0, 11, "Fippy_Darkpaw000")});
+        c.receive_zone_message_for_test({net::messages::GameOpcode::Damage, hit_on_me(11)});
         c.update();
         CHECK(c.world().target_id == 0);
     }
@@ -546,11 +549,11 @@ TEST_CASE("an active discipline refreshes and its icon asks the server for its s
     };
     auto barriers = [&] {
         return std::count_if(server.zone_log.begin(), server.zone_log.end(),
-            [](const net::AppPacket& p) { return p.opcode == 0x7f01; });
+            [](const net::AppPacket& p) { return p.opcode == net::rof2::to_wire(net::rof2::Op::RandomReq); });
     };
     auto barrier = [&] {
         const auto before = barriers();
-        c.send_zone_packet(net::AppPacket(0x7f01));
+        c.send_zone_message(net::messages::outgoing(net::messages::GameOpcode::RandomReq, net::RandomRollIntent{1, 1}));
         REQUIRE(until([&] { return barriers() > before; }));
     };
     c.start(server.ticket());
@@ -572,7 +575,7 @@ TEST_CASE("an active discipline refreshes and its icon asks the server for its s
     // With no discipline, the stop command sends no removal request.
     c.stop_discipline();
     barrier();
-    CHECK(test::MockEqServer::count(server.zone_log, net::Op::BuffRemoveRequest) == 0);
+    CHECK(test::MockEqServer::count(server.zone_log, net::rof2::Op::BuffRemoveRequest) == 0);
 
     net::BuffIcons icons;
     icons.entity_id = c.world().player_id;
@@ -595,9 +598,9 @@ TEST_CASE("an active discipline refreshes and its icon asks the server for its s
     CHECK(discipline.level == 50);
 
     REQUIRE(api.click_child("CombatAbilityWnd", "CAW_CombatEffectButton"));
-    REQUIRE(until([&] { return test::MockEqServer::count(server.zone_log, net::Op::BuffRemoveRequest) == 1; }));
+    REQUIRE(until([&] { return test::MockEqServer::count(server.zone_log, net::rof2::Op::BuffRemoveRequest) == 1; }));
     const auto request = std::find_if(server.zone_log.begin(), server.zone_log.end(),
-        [](const net::AppPacket& p) { return net::is_op(p, net::Op::BuffRemoveRequest); });
+        [](const net::AppPacket& p) { return net::is_op(p, net::rof2::Op::BuffRemoveRequest); });
     REQUIRE(request != server.zone_log.end());
     REQUIRE(request->data.size() == 8);
     ByteReader bytes(request->data);
@@ -614,7 +617,7 @@ TEST_CASE("an active discipline refreshes and its icon asks the server for its s
     CHECK(c.spell_state().buffs[1].spell == 4498);
     c.stop_discipline();
     barrier();
-    CHECK(test::MockEqServer::count(server.zone_log, net::Op::BuffRemoveRequest) == 1);
+    CHECK(test::MockEqServer::count(server.zone_log, net::rof2::Op::BuffRemoveRequest) == 1);
 }
 
 TEST_CASE("discipline buttons share server reuse timers despite different recasts") {
@@ -633,10 +636,13 @@ TEST_CASE("discipline buttons share server reuse timers despite different recast
     profile.combat_ability_timers[0] = now + 120;
     profile.combat_ability_timers[1] = now + 600;
     profile.combat_ability_timers[2] = now - 1;
-    c.receive_zone_packet_for_test(test::build_player_profile(profile));
-    ByteWriter known;
-    for (std::uint32_t i = 0; i < 300; ++i) known.le<std::uint32_t>(i < 5 ? 6001 + i : 0);
-    c.receive_zone_packet_for_test(net::AppPacket(net::to_wire(net::Op::DisciplineUpdate), known.take()));
+    net::PlayerProfile character;
+    character.combat_ability_timers.assign(profile.combat_ability_timers.begin(), profile.combat_ability_timers.end());
+    c.receive_zone_message_for_test({net::messages::GameOpcode::PlayerProfile, std::move(character)});
+    net::LearnedDisciplines learned;
+    learned.spell_ids.resize(300);
+    for (std::uint32_t i = 0; i < 5; ++i) learned.spell_ids[i] = 6001 + i;
+    c.receive_zone_message_for_test({net::messages::GameOpcode::DisciplineUpdate, std::move(learned)});
     Config config;
     app::ActionsUi actions(config, dir.path() / "hailstone.ini");
     for (int i = 0; i < 5; ++i)
@@ -691,11 +697,8 @@ TEST_CASE("discipline buttons share server reuse timers despite different recast
     CHECK(cooldown(2).shown);
 
     auto timer = [&](std::uint32_t id, std::uint32_t seconds) {
-        ByteWriter bytes;
-        bytes.le<std::uint32_t>(id);
-        bytes.le<std::uint32_t>(seconds);
-        bytes.le<std::uint32_t>(0);
-        c.receive_zone_packet_for_test(net::AppPacket(net::to_wire(net::Op::DisciplineTimer), bytes.take()));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::DisciplineTimer,
+            net::messages::DisciplineReuse{id, seconds}});
     };
     timer(1, 20);
     CHECK(cooldown(1).left > 0);
@@ -732,31 +735,25 @@ TEST_CASE("CYCLE_XTARGET after the server shrank the list past the cursor ends")
     mq_test::World w("hailstone_xtarget_shrink_test");
     auto& c = *w.conn;
     auto response = [](std::uint32_t max, std::int32_t slot, std::uint32_t id) {
-        ByteWriter b;
-        b.le<std::uint32_t>(max);
-        b.le<std::uint32_t>(id ? 1 : 0);
-        if (id) {
-            b.le<std::int32_t>(slot);
-            b.le<std::uint8_t>(1);
-            b.le<std::uint32_t>(id);
-            b.fixed_string("a_rat01", 8);
-        }
-        return net::AppPacket(net::to_wire(net::Op::XTargetResponse), b.take());
+        net::XTargetResponse state;
+        state.max = max;
+        if (id) state.entries.push_back({slot, 1, id, "a_rat01"});
+        return state;
     };
-    c.receive_zone_packet_for_test(response(10, 7, 10));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::XTargetResponse, response(10, 7, 10)});
     w.conn->world_for_test().target_id = 0;
     c.target_next_xtarget();
     REQUIRE(c.xtargets().current == 7);
     CHECK(c.world().target_id == 10);
-    c.receive_zone_packet_for_test(response(5, 0, 0));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::XTargetResponse, response(5, 0, 0)});
     CHECK(c.xtargets().current < 5);
     c.target_next_xtarget(); // no slot holds a spawn
     CHECK(c.xtargets().current < 5);
-    c.receive_zone_packet_for_test(response(0, 0, 0));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::XTargetResponse, response(0, 0, 0)});
     c.target_next_xtarget();
     CHECK(c.xtargets().current == 0);
     // A spawn in the shrunk list is still found.
-    c.receive_zone_packet_for_test(response(5, 2, 11));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::XTargetResponse, response(5, 2, 11)});
     c.target_next_xtarget();
     CHECK(c.world().target_id == 11);
 }
@@ -770,7 +767,7 @@ TEST_CASE("a spawn killed while moving stops where it died (PlayerZoneClient::ID
     rat.speed_heading = 3.0f;
     rat.fly_mode = 2;
     rat.update_time = 100.0;
-    c.receive_zone_packet_for_test(death_of(10));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::Death, death_of(10)});
     CHECK(rat.is_corpse);
     CHECK(rat.velocity == glm::vec3(0.0f));
     CHECK(rat.speed_run == 0.0f);

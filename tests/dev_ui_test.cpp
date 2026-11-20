@@ -510,6 +510,40 @@ TEST_CASE("Login profiles: a test login's server is never saved") {
     CHECK_FALSE(cfg.get("login.profile"));
 }
 
+TEST_CASE("Login profiles: protocol selection round-trips through the saved view") {
+    using namespace hailstone;
+    TempServers servers;
+    Config cfg;
+    ui::LoginView in;
+    ui::load_login_settings(in, cfg, servers.path);
+    in.name = "Protocol Server";
+    in.host = "protocol.example.org";
+    in.port = 5997;
+    in.game_codec = "rof2";
+    in.session_protocol = "soe";
+    in.hailstone_extensions = false;
+
+    auto saved = ui::store_login_settings(in, cfg);
+    REQUIRE(saved);
+    CHECK(saved->game_codec == "rof2");
+    CHECK(saved->session_protocol == "soe");
+    CHECK_FALSE(saved->hailstone_extensions);
+
+    const auto persisted = load_profile(saved->id, servers.path);
+    REQUIRE(persisted);
+    CHECK(persisted->game_codec == "rof2");
+    CHECK(persisted->session_protocol == "soe");
+    CHECK_FALSE(persisted->hailstone_extensions);
+
+    ui::LoginView out;
+    ui::load_login_settings(out, cfg, servers.path);
+    ui::select_profile(out, 0);
+    CHECK(out.game_codec == "rof2");
+    CHECK(out.session_protocol == "soe");
+    CHECK_FALSE(out.hailstone_extensions);
+    CHECK(ui::profile_from_view(out).game_codec == "rof2");
+}
+
 TEST_CASE("Login accounts: kept per server, passwords only in the keyring, the box set") {
     using namespace hailstone;
     TempServers servers;

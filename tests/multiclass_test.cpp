@@ -1,4 +1,4 @@
-// Hailstone's multiclass and multi-pet support in the core (net/game_connection.h): the class masks and the pet
+// Hailstone's multiclass and multi-pet support in the core (net/connection/game_connection.h): the class masks and the pet
 // list a server's extension sets, on a connection with the stock extension.
 
 #include <doctest/doctest.h>
@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "core/game_dir.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 
 using namespace hailstone;
 

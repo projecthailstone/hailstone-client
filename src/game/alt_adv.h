@@ -7,7 +7,7 @@
 // timers (OP_AAAction from the server, Handle_OP_AAAction @0x4b5bd0) and the
 // original's rules for what may be trained and when an ability is ready.
 // docs/protocol/rof2-packets.md "Alternate advancement".
-// Pure state and rules; the packets are handled in net/game_connection_progress.cpp.
+// Pure state and rules; the packets are handled in net/connection/game_connection_progress.cpp.
 
 #include <array>
 #include <cstdint>
@@ -76,7 +76,7 @@ inline constexpr int kAATimers = 100;     // PcBase_SetAATimer's bound
 // The slots a stock server sends in OP_RespondAA (EQEmu's MAX_PP_AA_ARRAY, the
 // original's reader stops there too). Deliberate difference: the client reads
 // every slot the packet holds, since some servers send more than 300; the
-// packet's size (net/session_codec.h kMaxFragmentedPayload) bounds the list.
+// packet's size (net/session/soe/framing.h kMaxFragmentedPayload) bounds the list.
 inline constexpr int kOwnedAbilities = 300;
 
 // What CanTrainAbility needs about the player.

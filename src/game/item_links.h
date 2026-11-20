@@ -23,7 +23,7 @@
 #include <string_view>
 #include <vector>
 
-#include "net/item_packets.h"
+#include "net/messages/item.h"
 
 namespace hailstone::game {
 

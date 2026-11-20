@@ -4,7 +4,7 @@
 // filter words and its result lines, /random's numbers, /played and /time
 // texts, tells and replies, friends and ignore lists, guild and raid state.
 // Sources are the original's handlers (addresses
-// below); the network side is net/game_connection_social.cpp.
+// below); the network side is net/connection/game_connection_social.cpp.
 
 #include <array>
 #include <cstdint>

@@ -16,7 +16,7 @@
 #include "game/server_ext_chain.h"
 #include "game/spells.h"
 #include "mq/commands.h"
-#include "net/social_packets.h"
+#include "net/protocol/rof2/packets/social_packets.h"
 #include "plugin/native_plugins.h"
 #include "plugin/ui_bridge.h"
 #include "app/lua_ui.h"

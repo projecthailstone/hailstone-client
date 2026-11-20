@@ -10,6 +10,8 @@
 
 #include "game/hot_button_press.h"
 #include "game/tracking.h"
+#include "net/protocol/rof2/packets/tracking_packets.h"
+#include "net/protocol/rof2/opcode_map.h"
 #include "vector_files.h"
 
 using namespace hailstone::game;
@@ -356,7 +358,25 @@ TEST_CASE("vectors: CTrackingWnd_SetTrackingList (the OP_Track reply and its sor
             e.spawn_id = static_cast<std::int32_t>(0xeeeeeeeeu);
         }
         bool ranger = !in["class"].is_null() && in["class"].i32() == 4;
-        set_tracking_list(list, data, ranger, in["sort_order"].u32(), &identity);
+        std::vector<std::byte> raw;
+        for (std::uint8_t b : data) raw.push_back(static_cast<std::byte>(b));
+        auto reply = hailstone::net::decode_track_reply(
+            {hailstone::net::rof2::to_wire(hailstone::net::rof2::Op::Track), std::move(raw)});
+        if (!reply || reply->timer) return "track reply codec";
+        for (auto& e : list) {
+            e.spawn_id = 0;
+            e.distance = -1.0f;
+            e.name.clear();
+            e.sort_name.clear();
+            e.position = -1;
+            e.flags = 0;
+        }
+        for (std::size_t k = 0; k < reply->entries.size() && k < list.size(); ++k) {
+            list[k] = reply->entries[k];
+            list[k].sort_name = identity(list[k].name);
+        }
+        const auto sort_order = ranger ? in["sort_order"].u32() : 0u;
+        if (sort_order <= 6) track_sort(list, static_cast<int>(sort_order));
         std::vector<std::string> got, want;
         for (int n = 0; n < kTrackEntries; ++n) {
             const TrackEntry& e = list[static_cast<std::size_t>(n)];

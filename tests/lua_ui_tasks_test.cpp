@@ -5,16 +5,16 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <utility>
 
 #include <imgui.h>
 #include <lua.hpp>
 
 #include "app/lua_ui.h"
 #include "app/lua_ui_caps.h"
-#include "core/byte_io.h"
 #include "core/game_dir.h"
-#include "net/game_connection.h"
-#include "net/task_packets.h"
+#include "net/connection/game_connection.h"
+#include "net/messages/task.h"
 #include "plugin/policy.h"
 #include "scratch_dir.h"
 
@@ -77,7 +77,7 @@ struct TasksHarness {
         t.has_rewards = true;
         t.xp_reward = true;
         t.points = 3;
-        conn->receive_zone_packet_for_test(net::encode_task_description(t));
+        conn->receive_zone_message_for_test({net::messages::GameOpcode::TaskDescription, std::move(t)});
     }
     void element(std::uint32_t id, std::uint32_t type, std::uint32_t sequence, std::uint32_t activity,
                  std::uint32_t group, bool hidden, int count = 0, int goal = 5, const std::string& zones = "1;2") {
@@ -94,7 +94,7 @@ struct TasksHarness {
         e.goal_count = goal;
         e.done_count = count;
         e.zones = zones;
-        conn->receive_zone_packet_for_test(net::encode(packet));
+        conn->receive_zone_message_for_test({net::messages::GameOpcode::TaskActivity, std::move(packet)});
     }
     void fixtures(std::uint32_t offset = 0) {
         const auto quest = 101u + offset, shared = 201u + offset, task_id = 301u + offset;
@@ -180,9 +180,7 @@ TEST_CASE("hs Tasks: real reward and timer fields, and no active view outside th
     CHECK(t.run("return hs.Tasks()[3].description") == "Description 101: Objective 2");
     CHECK(t.run("return hs.Tasks()[3].rewards") == "Rewards:<BR>Experience<BR>3 points");
     CHECK(t.run("return hs.Tasks()[3].details == nil") == "true"); // description and rewards only
-    ByteWriter timer;
-    timer.le(std::uint32_t{60000});
-    t.conn->receive_zone_packet_for_test(net::AppPacket(net::to_wire(net::Op::TaskRequestTimer), timer.take()));
+    t.conn->receive_zone_message_for_test({net::messages::GameOpcode::TaskRequestTimer, std::uint32_t{60000}});
     CHECK(t.run("local n=hs.Tasks().requestTimerLeft; return n>=59 and n<=60") == "true");
     t.host.in_game = false;
     CHECK(t.run("return #hs.Tasks()") == "0");

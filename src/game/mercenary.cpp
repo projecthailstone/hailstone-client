@@ -1,4 +1,5 @@
 #include "game/mercenary.h"
+#include "net/messages/mercenary.h"
 
 #include <cctype>
 #include <cstdio>
@@ -10,33 +11,7 @@ namespace hailstone::game {
 
 namespace {
 
-std::uint32_t le32(const std::uint8_t* p) {
-    return static_cast<std::uint32_t>(p[0]) | static_cast<std::uint32_t>(p[1]) << 8 |
-           static_cast<std::uint32_t>(p[2]) << 16 | static_cast<std::uint32_t>(p[3]) << 24;
-}
-
-std::vector<std::uint8_t> u32_payload(std::uint32_t v) {
-    return {static_cast<std::uint8_t>(v), static_cast<std::uint8_t>(v >> 8), static_cast<std::uint8_t>(v >> 16),
-            static_cast<std::uint8_t>(v >> 24)};
-}
-
-// The list readers' u32 (0x56bf90 and the handlers): read when it fits, else the value stays.
-bool read_u32(std::span<const std::uint8_t> d, std::size_t& pos, std::uint32_t& out) {
-    if (pos + 4 > d.size()) return false;
-    out = le32(d.data() + pos);
-    pos += 4;
-    return true;
-}
-template <typename T> void read_field(std::span<const std::uint8_t> d, std::size_t& pos, T& out) {
-    std::uint32_t v = 0;
-    if (read_u32(d, pos, v)) out = static_cast<T>(v);
-}
-void read_u8(std::span<const std::uint8_t> d, std::size_t& pos, std::uint8_t& out) {
-    if (pos < d.size()) out = d[pos++];
-}
-
 // The "corrupt" check both list handlers make.
-constexpr const char* kCorrupt = "ERROR: Corrupt MSG_MERCENARIES.\n";
 
 // SecondsToHMS @0x8098d0 with the force flag (always split).
 void hms(std::int32_t seconds, std::int32_t& h, std::int32_t& m, std::int32_t& s) {
@@ -62,49 +37,6 @@ int merc_stricmp(const std::string& a, const std::string& b) {
         if (x != y) return x - y;
     }
     return static_cast<int>(a.size()) - static_cast<int>(b.size());
-}
-
-void merc_read_record(std::span<const std::uint8_t> d, std::size_t& pos, MercRecord& r) {
-    read_field(d, pos, r.id);
-    read_field(d, pos, r.type);
-    read_field(d, pos, r.subtype);
-    read_field(d, pos, r.purchase_cost);
-    read_field(d, pos, r.upkeep_cost);
-    read_field(d, pos, r.required_membership);
-    read_field(d, pos, r.alt_purchase_cost);
-    read_field(d, pos, r.alt_upkeep_cost);
-    read_field(d, pos, r.alt_currency);
-    read_u8(d, pos, r.byte_0x20);
-    read_field(d, pos, r.time_left_ms);
-    read_field(d, pos, r.command);
-    read_field(d, pos, r.stance);
-    read_field(d, pos, r.stance_count);
-    read_field(d, pos, r.active_since);
-    read_u8(d, pos, r.assist_mode);
-    if (pos < d.size()) {
-        // The name: at most 63 bytes kept (+0x78 = 0); the position skips the whole string and its NUL.
-        std::size_t end = pos;
-        while (end < d.size() && d[end] != 0) ++end;
-        std::size_t keep = std::min<std::size_t>(end - pos, 63);
-        r.name.assign(reinterpret_cast<const char*>(d.data() + pos), keep);
-        pos = end < d.size() ? end + 1 : end;
-    }
-    // The stance pairs, each read when it fits. Pairs beyond kMercMaxStances (which overrun the original's record)
-    // are skipped.
-    if (r.stances.size() > r.stance_count) r.stances.resize(r.stance_count);
-    for (std::uint32_t k = 0; k < r.stance_count; ++k) {
-        if (pos >= d.size()) break; // nothing left to read: every further pair keeps its value
-        // Past the stored pairs a pass only moves the position, and with under 4 bytes left none can: stop rather
-        // than spin through a wire count of up to 2^32.
-        if (k >= kMercMaxStances && pos + 4 > d.size()) break;
-        MercStance s = k < r.stances.size() ? r.stances[k] : MercStance{};
-        read_field(d, pos, s.index);
-        read_field(d, pos, s.stance);
-        if (k < kMercMaxStances) {
-            if (k < r.stances.size()) r.stances[k] = s;
-            else r.stances.push_back(s);
-        }
-    }
 }
 
 void merc_reset(MercManager& m, std::uint32_t fast_time) {
@@ -153,47 +85,21 @@ void merc_restart_upkeep(MercManager& m, MercHooks& h) {
 
 // ---------------------------------------------------------------- handlers
 
-void merc_handle_data_response(MercManager& m, std::span<const std::uint8_t> d, MercHooks& h) {
-    std::size_t pos = 0;
-    std::uint32_t types = 0;
-    read_u32(d, pos, types);
-    m.merc_types.clear();
-    for (std::uint32_t k = 0; k < types && pos < d.size(); ++k) {
-        std::uint32_t t = 0;
-        // A short tail (1-3 bytes) moves nothing: stop there rather than push a zero per remaining count, which a
-        // wire count of up to 2^32 turns into gigabytes.
-        if (!read_u32(d, pos, t)) break;
-        m.merc_types.push_back(t);
-    }
-    std::uint32_t count = 0;
-    read_u32(d, pos, count);
-    m.merchant_list.clear();
-    MercRecord rec;
-    for (std::uint32_t k = 0; k < count && pos < d.size(); ++k) {
-        merc_read_record(d, pos, rec);
-        m.merchant_list.push_back(rec);
-    }
+void merc_handle_data_response(MercManager& m, const net::messages::MercenaryNotice& n, MercHooks& h) {
+    m.merc_types = n.types;
+    m.merchant_list = n.mercenaries;
     if (m.merc_types.empty()) {
         if (m.liaison_id != 0) h.chat("You do not meet the requirements to purchase any mercenaries.\n", kMercChatDefault);
         if (h.find_window("MMTW_MerchantWnd")) h.hide_window("MMTW_MerchantWnd");
         return;
     }
-    if (pos != d.size()) h.debug_log(kCorrupt);
     if (m.liaison_id != 0) h.event(0xd, 0);
 }
 
-void merc_handle_data_update(MercManager& m, std::span<const std::uint8_t> d, MercHooks& h) {
-    std::size_t pos = 0;
-    read_field(d, pos, m.current_index);
-    std::uint32_t count = 0;
-    read_u32(d, pos, count);
-    m.owned.clear();
-    MercRecord rec;
-    for (std::uint32_t k = 0; k < count && pos < d.size(); ++k) {
-        merc_read_record(d, pos, rec);
-        m.owned.push_back(rec);
-    }
-    read_field(d, pos, m.slot_count);
+void merc_handle_data_update(MercManager& m, const net::messages::MercenaryNotice& n, MercHooks& h) {
+    m.current_index = n.current_index;
+    m.owned = n.mercenaries;
+    m.slot_count = n.slot_count;
     if (m.owned.empty()) {
         h.chat("You do not currently have a mercenary.\n", kMercChatDefault);
         if (h.find_window("MMGW_ManageWnd")) {
@@ -202,7 +108,6 @@ void merc_handle_data_update(MercManager& m, std::span<const std::uint8_t> d, Me
         }
         return;
     }
-    if (pos != d.size()) h.debug_log(kCorrupt);
     if (m.current_index >= 0 && m.current_index < static_cast<std::int32_t>(m.owned.size())) {
         m.active = m.owned[static_cast<std::size_t>(m.current_index)];
         m.stance_pointers = m.active.stance_count;
@@ -212,8 +117,8 @@ void merc_handle_data_update(MercManager& m, std::span<const std::uint8_t> d, Me
     }
 }
 
-void merc_handle_hire(MercManager& m, const std::uint8_t* p, MercHooks& h) {
-    std::uint32_t code = p ? le32(p) : 0;
+void merc_handle_hire(MercManager& m, const net::messages::MercenaryNotice& n, MercHooks& h) {
+    std::uint32_t code = n.result;
     auto say = [&](const char* text) { h.chat(text, kMercChatDefault); };
     switch (code) {
     case 0:
@@ -258,11 +163,11 @@ void merc_handle_hire(MercManager& m, const std::uint8_t* p, MercHooks& h) {
     }
 }
 
-void merc_handle_timer(MercManager& m, const std::uint8_t* p, MercHooks& h) {
-    std::uint8_t flag = p[0]; // only the low byte of +0 (EQEmu sends the mercenary's entity id there)
-    std::uint32_t state = le32(p + 12), timer = le32(p + 16);
-    m.timer_interval = le32(p + 4);
-    m.timer_dword_8 = le32(p + 8);
+void merc_handle_timer(MercManager& m, const net::messages::MercenaryNotice& n, MercHooks& h) {
+    std::uint8_t flag = n.flag; // only the low byte of +0 (EQEmu sends the mercenary's entity id there)
+    std::uint32_t state = n.state, timer = n.suspend_time;
+    m.timer_interval = n.timer_interval;
+    m.timer_dword_8 = n.timer_tag;
     if ((m.has_mercenary == 0 && flag != 0) || (!merc_inactive(m.state) && state != kMercActive))
         merc_send_data_update_request(h);
     else if (m.has_mercenary != 0 && flag == 0 && state == kMercActive)
@@ -273,72 +178,72 @@ void merc_handle_timer(MercManager& m, const std::uint8_t* p, MercHooks& h) {
     merc_restart_upkeep(m, h);
 }
 
-void merc_handle_suspend_response(MercManager& m, const std::uint8_t* p, MercHooks& h) {
+void merc_handle_suspend_response(MercManager& m, const net::messages::MercenaryNotice& n, MercHooks& h) {
     m.state = kMercSuspended;
-    if (!p) return;
-    m.suspend_time = le32(p);
+
+    m.suspend_time = n.suspend_time;
     h.event(2, 0);
 }
 
-void merc_handle_unsuspend_response(MercManager& m, const std::uint8_t*, MercHooks& h) {
+void merc_handle_unsuspend_response(MercManager& m, const net::messages::MercenaryNotice& n, MercHooks& h) {
     m.state = kMercActive;
     m.active.active_since = h.fast_time();
     h.event(3, 0);
 }
 
-void merc_handle_suspended(MercManager& m, const std::uint8_t*, MercHooks& h) {
+void merc_handle_suspended(MercManager& m, const net::messages::MercenaryNotice& n, MercHooks& h) {
     if (m.state != 1 && m.state != 0 && m.state != 4) m.state = kMercSuspendedHere;
     h.chat("Your mercenary has been suspended.", kMercChatDefault);
     m.suspend_time = 0;
     h.event(6, 0);
 }
 
-void merc_handle_died(MercManager& m, const std::uint8_t* p, MercHooks& h) {
+void merc_handle_died(MercManager& m, const net::messages::MercenaryNotice& n, MercHooks& h) {
     m.state = kMercDead;
-    if (!p) return;
-    m.suspend_time = le32(p);
+
+    m.suspend_time = n.suspend_time;
     h.event(5, 0);
 }
 
-void merc_handle_timer_cleared(MercManager& m, const std::uint8_t*, MercHooks& h) {
+void merc_handle_timer_cleared(MercManager& m, const net::messages::MercenaryNotice& n, MercHooks& h) {
     m.suspend_time = 0;
     h.event(8, 0);
 }
 
-void merc_handle_event7(MercManager&, const std::uint8_t*, MercHooks& h) { h.event(7, 0); }
+void merc_handle_event7(MercManager&, const net::messages::MercenaryNotice& n, MercHooks& h) { h.event(7, 0); }
 
-void merc_handle_unknown1(MercManager&, const std::uint8_t* p, MercHooks& h) { h.event(0x19, p ? p[0] : 0); }
+void merc_handle_unknown1(MercManager&, const net::messages::MercenaryNotice& n, MercHooks& h) { h.event(0x19, n.flag); }
 
-void merc_handle_time_left(MercManager& m, const std::uint8_t* p, MercHooks& h) {
-    m.active.time_left_ms = p ? le32(p) : 0;
+void merc_handle_time_left(MercManager& m, const net::messages::MercenaryNotice& n, MercHooks& h) {
+    m.active.time_left_ms = n.time_left;
     m.last_tick = h.tick_count();
     h.event(0x13, 0);
 }
 
-void merc_handle_upkeep_charged(MercManager& m, const std::uint8_t* p, MercHooks& h) {
+void merc_handle_upkeep_charged(MercManager& m, const net::messages::MercenaryNotice& n, MercHooks& h) {
     m.state = kMercActive;
     m.active.active_since = h.fast_time();
-    h.report_upkeep_charged(p ? p[0] : 0);
+    h.report_upkeep_charged(n.flag);
     h.event(4, 0);
 }
 
-void merc_handle_costs(MercManager& m, const std::uint8_t* p, MercHooks& h) {
-    if (!p) return;
-    m.active.purchase_cost = static_cast<std::int32_t>(le32(p));
-    m.active.alt_purchase_cost = static_cast<std::int32_t>(le32(p + 4));
-    m.active.upkeep_cost = static_cast<std::int32_t>(le32(p + 8));
-    m.active.alt_upkeep_cost = static_cast<std::int32_t>(le32(p + 12));
+void merc_handle_costs(MercManager& m, const net::messages::MercenaryNotice& n, MercHooks& h) {
+
+    m.active.purchase_cost = n.purchase_cost;
+    m.active.alt_purchase_cost = n.alt_purchase_cost;
+    m.active.upkeep_cost = n.upkeep_cost;
+    m.active.alt_upkeep_cost = n.alt_upkeep_cost;
     h.event(0x1a, 0);
 }
 
-void merc_handle_command(MercManager&, const std::uint8_t* p, MercHooks& h) {
-    h.event(0x10, p ? static_cast<std::int32_t>(le32(p)) : 0);
+void merc_handle_command(MercManager&, const net::messages::MercenaryNotice& n, MercHooks& h) {
+    h.event(0x10, static_cast<std::int32_t>(n.result));
 }
 
-void merc_handle_switch(MercManager& m, const std::uint8_t* p, MercHooks& h) {
-    if (!p) return;
-    std::int32_t seconds = static_cast<std::int32_t>(le32(p + 4));
-    std::uint32_t result = le32(p + 8);
+void merc_handle_switch(MercManager& m, const net::messages::MercenaryNotice& n, MercHooks& h) {
+
+    std::int32_t seconds = static_cast<std::int32_t>(n.seconds);
+    std::uint32_t result = n.result;
     auto say = [&](const std::string& text) { h.chat(text, 15); };
     switch (result) {
     case 0:
@@ -363,53 +268,50 @@ void merc_handle_switch(MercManager& m, const std::uint8_t* p, MercHooks& h) {
     if (result != 0) h.event(0xc, 0);
 }
 
-void merc_handle_dismiss(MercManager& m, const std::uint8_t*, MercHooks& h) { merc_dismiss_locally(m, h); }
+void merc_handle_dismiss(MercManager& m, const net::messages::MercenaryNotice& n, MercHooks& h) { merc_dismiss_locally(m, h); }
 
 // ---------------------------------------------------------------- senders
 
 void merc_request_timer_and_data(MercManager& m, MercHooks& h) {
     merc_reset(m, h.fast_time());
-    h.send(kOpMercTimerRequest, {});
-    h.send(kOpMercZoneIn, u32_payload(8));
+    h.send({net::messages::MercenaryAction::RequestTimer});
+    h.send({net::messages::MercenaryAction::ZoneEntered});
 }
 
-void merc_send_data_request(MercManager& m, MercHooks& h) { h.send(kOpMercDataRequest, u32_payload(m.liaison_id)); }
+void merc_send_data_request(MercManager& m, MercHooks& h) { h.send({.action = net::messages::MercenaryAction::RequestMerchantList, .liaison_id = m.liaison_id}); }
 
-void merc_send_data_update_request(MercHooks& h) { h.send(kOpMercDataUpdateRequest, {}); }
+void merc_send_data_update_request(MercHooks& h) { h.send({net::messages::MercenaryAction::RequestOwnedList}); }
 
 void merc_send_hire(MercManager& m, std::uint32_t merc_id, MercHooks& h) {
-    std::vector<std::uint8_t> p = u32_payload(m.selected.id);
-    for (std::uint32_t v : {merc_id, m.liaison_id})
-        for (std::uint8_t b : u32_payload(v)) p.push_back(b);
-    for (int k = 0; k < 4; ++k) p.push_back(0); // u8 0, then three bytes the original leaves uninitialised
-    h.send(kOpMercHire, std::move(p));
+    h.send({.action = net::messages::MercenaryAction::Hire, .merc_id = merc_id,
+            .liaison_id = m.liaison_id, .owner_id = m.selected.id});
 }
 
-void merc_send_suspend(MercHooks& h) { h.send(kOpMercSuspendRequest, {'0'}); }
+void merc_send_suspend(MercHooks& h) { h.send({net::messages::MercenaryAction::Suspend}); }
 
 void merc_send_dismiss(MercManager& m, bool confirm, bool send, MercHooks& h) {
     if (confirm) {
         h.confirm(7612, 2, 10000);
         return;
     }
-    if (send) h.send(kOpMercDismiss, {});
+    if (send) h.send({net::messages::MercenaryAction::Dismiss});
     merc_dismiss_locally(m, h);
 }
 
 void merc_send_assist_mode(MercManager& m, std::uint8_t on, MercHooks& h) {
     m.active.assist_mode = on;
     h.event(0x15, on);
-    h.send(kOpMercAssistMode, {on});
+    h.send({.action = net::messages::MercenaryAction::SetAssist, .enabled = on != 0});
 }
 
-void merc_send_call_for_assist(MercHooks& h) { h.send(kOpMercCallForAssist, {'0'}); }
+void merc_send_call_for_assist(MercHooks& h) { h.send({net::messages::MercenaryAction::CallForAssist}); }
 
 void merc_send_switch(MercManager& m, std::int32_t index, MercHooks& h) {
     if (index >= static_cast<std::int32_t>(m.owned.size()) || index == m.current_index) {
         h.chat("Already using that mercenary!", 15);
         return;
     }
-    h.send(kOpMercSwitch, u32_payload(static_cast<std::uint32_t>(index)));
+    h.send({.action = net::messages::MercenaryAction::Switch, .index = index});
 }
 
 void merc_request_set_owner(MercManager& m, int target, std::uint32_t my_spawn_id, std::uint32_t target_spawn_id,
@@ -417,10 +319,7 @@ void merc_request_set_owner(MercManager& m, int target, std::uint32_t my_spawn_i
     if (m.has_mercenary == 0) return h.chat("You must own a mercenary in order to set a new mercenary owner!\n", 15);
     if (target == 0) return h.chat("You must target a player in order to set a new mercenary owner!\n", 15);
     if (target == 1) return h.chat("You already own this mercenary!\n", 15);
-    std::vector<std::uint8_t> p = u32_payload(my_spawn_id);
-    for (std::uint8_t b : u32_payload(target_spawn_id)) p.push_back(b);
-    p.resize(28, 0);
-    h.send(kOpMercSetOwner, std::move(p));
+    h.send({.action = net::messages::MercenaryAction::SetOwner, .owner_id = my_spawn_id, .target_id = target_spawn_id});
 }
 
 // ---------------------------------------------------------------- commands

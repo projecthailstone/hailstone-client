@@ -5,7 +5,7 @@
 // CBarterSearchWnd (/barter: other buyers' lines) and CBarterMerchantWnd (a buyer's lines, from a right click).
 // Follows the original's 0x420e10..0x423850, CBarterWnd, CBarterSearchWnd, CBarterMerchantWnd and the
 // CBarter*Wnd_* helpers at 0x629c00..0x6318f0; addresses at each function. The packets
-// are net/market_packets.h's, the rules that send them net/game_connection_market.cpp's.
+// are net/protocol/rof2/packets/market_packets.h's, the rules that send them net/connection/game_connection_market.cpp's.
 
 #include <array>
 #include <cstdint>
@@ -15,8 +15,8 @@
 #include <string_view>
 #include <vector>
 
-#include "net/item_packets.h"
-#include "net/market_packets.h"
+#include "net/messages/item.h"
+#include "net/messages/market.h"
 
 namespace hailstone {
 class IniFile;

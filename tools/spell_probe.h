@@ -19,10 +19,10 @@
 #include <string>
 
 #include "game/spells.h"
-#include "net/game_connection.h"
-#include "net/opcodes.h"
-#include "net/spell_packets.h"
-#include "net/zone_packets.h"
+#include "net/connection/game_connection.h"
+#include "net/protocol/rof2/opcode_map.h"
+#include "net/protocol/rof2/packets/spell_packets.h"
+#include "net/protocol/rof2/packets/zone_packets.h"
 
 namespace hailstone::probe {
 
@@ -43,51 +43,51 @@ public:
 
     void tap(const net::AppPacket& p) {
         if (!enabled_ || phase_ == Phase::Idle) return;
-        net::Op op = net::from_wire(p.opcode);
+        net::rof2::Op op = net::rof2::from_wire(p.opcode);
         double t = std::chrono::duration<double>(Clock::now() - mark_).count();
         switch (op) {
-        case net::Op::BeginCast:
+        case net::rof2::Op::BeginCast:
             if (auto b = net::decode_begin_cast(p)) std::printf("  SPELLS +%.2fs: OP_BeginCast spell %u caster %u time %u ms\n", t, b->spell_id, b->caster_id, b->cast_time);
             break;
-        case net::Op::ManaChange:
+        case net::rof2::Op::ManaChange:
             if (auto m = net::decode_mana_change(p))
                 std::printf("  SPELLS +%.2fs: OP_ManaChange mana %u end %u spell %d keep %u slot %d\n", t, m->mana, m->endurance,
                             static_cast<int>(m->spell_id), m->keep_casting, m->slot);
             break;
-        case net::Op::MemorizeSpell:
+        case net::rof2::Op::MemorizeSpell:
             if (auto m = net::decode_memorize_spell(p))
                 std::printf("  SPELLS +%.2fs: OP_MemorizeSpell slot %u spell %u scribing %u reduction %u\n", t, m->slot, m->spell_id, m->scribing, m->reduction);
             break;
-        case net::Op::InterruptCast:
+        case net::rof2::Op::InterruptCast:
             if (auto ic = net::decode_interrupt_cast(p))
                 std::printf("  SPELLS +%.2fs: OP_InterruptCast spawn %u message %u (%zu args)\n", t, ic->spawn_id, ic->message_id, ic->args.size());
             break;
-        case net::Op::Buff:
+        case net::rof2::Op::Buff:
             if (auto b = net::decode_buff(p))
                 std::printf("  SPELLS +%.2fs: OP_Buff entity %u slot %u spell %d tics %u fade %u\n", t, b->entity_id, b->slot,
                             static_cast<int>(b->buff.spell_id), b->buff.duration, b->fade);
             break;
-        case net::Op::BuffCreate:
-        case net::Op::TargetBuffs:
+        case net::rof2::Op::BuffCreate:
+        case net::rof2::Op::TargetBuffs:
             if (auto b = net::decode_buff_icons(p)) {
-                std::printf("  SPELLS +%.2fs: OP_%s entity %u all %u type %u:", t, net::op_name(op), b->entity_id, b->all_buffs, b->type);
+                std::printf("  SPELLS +%.2fs: OP_%s entity %u all %u type %u:", t, net::rof2::op_name(op), b->entity_id, b->all_buffs, b->type);
                 for (const auto& e : b->entries) std::printf(" [slot %u spell %d tics %u '%s']", e.slot, static_cast<int>(e.spell_id), e.tics, e.caster.c_str());
                 std::printf("\n");
             }
             break;
-        case net::Op::Action:
+        case net::rof2::Op::Action:
             if (auto a = net::decode_action(p))
                 std::printf("  SPELLS +%.2fs: OP_Action %u -> %u type %u spell %u flag %u level %u\n", t, a->source, a->target, a->type, a->spell_id, a->effect_flag, a->level);
             break;
-        case net::Op::Damage:
+        case net::rof2::Op::Damage:
             if (auto d = net::decode_combat_damage(p); d && d->type == 231)
                 std::printf("  SPELLS +%.2fs: OP_Damage spell %u %u -> %u damage %d\n", t, d->spell_id, d->source, d->target, d->damage);
             break;
-        case net::Op::LinkedReuse:
-        case net::Op::ColoredText:
-        case net::Op::Stamina:
-        case net::Op::SpellEffect:
-            std::printf("  SPELLS +%.2fs: OP_%s (%zu bytes)\n", t, net::op_name(op), p.data.size());
+        case net::rof2::Op::LinkedReuse:
+        case net::rof2::Op::ColoredText:
+        case net::rof2::Op::Stamina:
+        case net::rof2::Op::SpellEffect:
+            std::printf("  SPELLS +%.2fs: OP_%s (%zu bytes)\n", t, net::rof2::op_name(op), p.data.size());
             break;
         default:
             break;

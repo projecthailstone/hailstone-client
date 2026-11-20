@@ -1,4 +1,4 @@
-// The gameplay slash commands of net/game_connection_game_commands.cpp and net/game_connection_player.cpp:
+// The gameplay slash commands of net/connection/game_connection_game_commands.cpp and net/connection/game_connection_player.cpp:
 // /targetgroupbuff (/tgb), /spellscribe, /offlinemode, /aggrometer, /aggrolock, /claim and /bugreport, against the
 // mock EQEmu, and /spellscribe's packet.
 
@@ -15,8 +15,8 @@
 #include "game/mechanics/character.h"
 #include "mock_server/harness.h"
 #include "mq_test_world.h"
-#include "net/player_packets.h"
-#include "net/zone_packets.h"
+#include "net/protocol/rof2/packets/player_packets.h"
+#include "net/protocol/rof2/packets/zone_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::net;
@@ -29,7 +29,7 @@ namespace {
 std::vector<std::uint32_t> tgb_values(const std::vector<AppPacket>& log) {
     std::vector<std::uint32_t> out;
     for (const auto& p : log)
-        if (from_wire(p.opcode) == Op::TGB && p.data.size() == 4) {
+        if (rof2::from_wire(p.opcode) == rof2::Op::TGB && p.data.size() == 4) {
             std::uint32_t v = 0;
             std::memcpy(&v, p.data.data(), 4);
             out.push_back(v);
@@ -121,9 +121,9 @@ TEST_CASE("mock server: /tgb, /spellscribe, /offlinemode and the window commands
         }
 
     // /offlinemode: saves (OP_Save), then not a trader nor a buyer: 771, and no 0x53d3.
-    const int saves = MockEqServer::count(server.zone_log, Op::Save);
+    const int saves = MockEqServer::count(server.zone_log, rof2::Op::Save);
     conn.send_command("/offlinemode");
-    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, Op::Save) == saves + 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, rof2::Op::Save) == saves + 1; }));
     CHECK(has_line(rig.chat(), "[771]"));
     CHECK_FALSE(conn.confirmation());
     CHECK(raw_count(server.zone_log, kOpOfflineMode) == 0);
@@ -209,11 +209,11 @@ TEST_CASE("mock server: a GM-only command follows the player spawn's GM flag, as
     CHECK(has_line(rig.chat(), "[12380]"));
     // #gm on mid-session: EQEmu sends SpawnAppearance 20 = 1 for the player; the profile's flag stays as it was.
     const auto own = static_cast<std::uint16_t>(conn.world().player_id);
-    conn.receive_zone_packet_for_test(encode(SpawnAppearance{own, 20, 1}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::SpawnAppearance, SpawnAppearance{own, 20, 1}});
     REQUIRE(conn.world().player()->gm);
     conn.send_command("/goto");
     CHECK_FALSE(has_line(rig.chat(), "[12380]"));
-    conn.receive_zone_packet_for_test(encode(SpawnAppearance{own, 20, 0}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::SpawnAppearance, SpawnAppearance{own, 20, 0}});
     conn.send_command("/goto");
     CHECK(has_line(rig.chat(), "[12380]"));
 }

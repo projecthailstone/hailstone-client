@@ -3,8 +3,9 @@
 #include "app/lua_ui.h"
 #include "mock_server/harness.h"
 #include "mq_test_world.h"
-#include "net/packet_io.h"
-#include "net/trade_packets.h"
+#include "net/protocol/rof2/wire_io.h"
+#include "net/messages/trade.h"
+#include "net/protocol/rof2/packets/trade_packets.h"
 
 using namespace hailstone;
 
@@ -24,10 +25,10 @@ void open_trade(net::GameConnection& c, bool incoming = false) {
     add_partner(c);
     if (incoming) {
         c.set_auto_attack(false);
-        c.receive_zone_packet_for_test(net::encode_trade_request({c.world().player_id, kPartner}));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::TradeRequest, net::TradeInvitation{c.world().player_id, kPartner}});
     } else {
         c.give_to(kPartner);
-        c.receive_zone_packet_for_test(net::encode_trade_request_ack({c.world().player_id, kPartner}));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::TradeRequestAck, net::TradeInvitation{c.world().player_id, kPartner}});
     }
     REQUIRE(c.trade());
     REQUIRE(c.trade()->open);
@@ -45,7 +46,7 @@ TEST_CASE("player trade distance: both activation paths use the partner's height
         for (bool move_partner : {false, true}) {
             CAPTURE(incoming);
             CAPTURE(move_partner);
-            mq_test::World world("player_trade_distance");
+            mq_test::World world("player_trade_distance", {}, true);
             auto& c = *world.conn;
             open_trade(c, incoming);
             c.world_for_test().spawns[c.world().player_id].heights.avatar_height = 100;
@@ -69,7 +70,7 @@ TEST_CASE("player trade distance: both activation paths use the partner's height
 }
 
 TEST_CASE("player trade distance: checks wait for their deadline and schedule another 500 ms") {
-    mq_test::World world("player_trade_distance_timer");
+    mq_test::World world("player_trade_distance_timer", {}, true);
     auto& c = *world.conn;
     open_trade(c);
     auto& next = net::GameConnectionTestAccess::npc_checks(c).trade;
@@ -91,7 +92,7 @@ TEST_CASE("player trade distance: checks wait for their deadline and schedule an
 TEST_CASE("player trade distance: a missing or dead partner closes an open trade") {
     for (bool missing : {false, true}) {
         CAPTURE(missing);
-        mq_test::World world("player_trade_distance_partner");
+        mq_test::World world("player_trade_distance_partner", {}, true);
         auto& c = *world.conn;
         open_trade(c);
         if (missing) c.world_for_test().spawns.erase(kPartner);
@@ -102,7 +103,7 @@ TEST_CASE("player trade distance: a missing or dead partner closes an open trade
 }
 
 TEST_CASE("player trade distance: a request waiting for its answer is not checked") {
-    mq_test::World world("player_trade_distance_request");
+    mq_test::World world("player_trade_distance_request", {}, true);
     auto& c = *world.conn;
     add_partner(c);
     c.give_to(kPartner);
@@ -142,9 +143,9 @@ TEST_CASE("player trade distance: separation cancels once and items and coin ret
     c.trade_accept();
     REQUIRE(c.trade()->my_ready);
     REQUIRE(rig.until([&] {
-        return test::MockEqServer::count(rig.server.zone_log, net::Op::MoveItem) >= 1 &&
-               test::MockEqServer::count(rig.server.zone_log, net::Op::MoveCoin) >= 2 &&
-               test::MockEqServer::count(rig.server.zone_log, net::Op::TradeAcceptClick) == 1;
+        return test::MockEqServer::count(rig.server.zone_log, net::rof2::Op::MoveItem) >= 1 &&
+               test::MockEqServer::count(rig.server.zone_log, net::rof2::Op::MoveCoin) >= 2 &&
+               test::MockEqServer::count(rig.server.zone_log, net::rof2::Op::TradeAcceptClick) == 1;
     }));
 
     c.world_for_test().spawns[kPartner].position = c.world().player()->position + glm::vec3{0, 27, 0};
@@ -153,9 +154,9 @@ TEST_CASE("player trade distance: separation cancels once and items and coin ret
     CHECK_FALSE(c.inventory().at(trade_slot));
     CHECK_FALSE(c.inventory().cursor()); // cancellation itself must not invent the returned item or money
     CHECK(c.coins().gold == original.gold - 2);
-    REQUIRE(rig.until([&] { return test::MockEqServer::count(rig.server.zone_log, net::Op::CancelTrade) == 1; }));
+    REQUIRE(rig.until([&] { return test::MockEqServer::count(rig.server.zone_log, net::rof2::Op::CancelTrade) == 1; }));
     for (const auto& p : rig.server.zone_log) {
-        if (!net::is_op(p, net::Op::CancelTrade)) continue;
+        if (!net::is_op(p, net::rof2::Op::CancelTrade)) continue;
         auto cancel = net::decode_cancel_trade(p);
         REQUIRE(cancel);
         CHECK(cancel->from_id == kPartner);
@@ -176,8 +177,8 @@ TEST_CASE("player trade distance: separation cancels once and items and coin ret
     // A later reliable packet proves all the client's cancellation work reached the mock in order.
     for (int i = 0; i < 4; ++i) check_now(c);
     c.send_command("/say trade distance check complete");
-    REQUIRE(rig.until([&] { return test::MockEqServer::count(rig.server.zone_log, net::Op::ChannelMessage) >= 1; }));
-    CHECK(test::MockEqServer::count(rig.server.zone_log, net::Op::CancelTrade) == 1);
+    REQUIRE(rig.until([&] { return test::MockEqServer::count(rig.server.zone_log, net::rof2::Op::ChannelMessage) >= 1; }));
+    CHECK(test::MockEqServer::count(rig.server.zone_log, net::rof2::Op::CancelTrade) == 1);
     CHECK_FALSE(c.trade());
 }
 
@@ -185,7 +186,7 @@ TEST_CASE("trade windows: hiding the window not showing the trade leaves it open
     // CTradeWnd::AboutToHide / the Give window's hiding cancel the trade they show; a window that is not shown has
     // nothing to hide. Hiding the player trade window (a layout, a script's hs.ShowWindow) while giving to an NPC
     // used to cancel the hand-in all the same.
-    mq_test::World world("trade_window_hide");
+    mq_test::World world("trade_window_hide", {}, true);
     auto& c = *world.conn;
     game::Spawn npc;
     npc.id = kPartner;
@@ -195,7 +196,8 @@ TEST_CASE("trade windows: hiding the window not showing the trade leaves it open
     npc.heights.avatar_height = 6;
     c.world_for_test().spawns[kPartner] = npc;
     c.give_to(kPartner);
-    c.receive_zone_packet_for_test(net::encode_trade_request_ack({c.world().player_id, kPartner}));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::TradeRequestAck,
+        net::TradeInvitation{c.world().player_id, kPartner}});
     REQUIRE(c.trade());
     REQUIRE(c.trade()->open);
     REQUIRE(c.trade()->with_npc);

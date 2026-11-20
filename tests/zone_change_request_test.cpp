@@ -2,9 +2,7 @@
 // connection a teleport handler: a #goto in the player's own zone moves the player instead of zoning.
 #include <doctest/doctest.h>
 
-#include "core/byte_io.h"
-#include "net/packet_io.h"
-#include "net/zone_packets.h"
+#include "net/messages/zone.h"
 #include "mq_test_world.h"
 
 using namespace hailstone;
@@ -15,17 +13,16 @@ TEST_CASE("OP_RequestClientZoneChange hands DoTeleportB the zone dword, world x 
     std::optional<game::TeleportBArgs> got;
     c.set_teleport_handler([&](const game::TeleportBArgs& a) { got = a; });
 
-    ByteWriter b;
-    b.le<std::uint16_t>(1);            // zone
-    b.le<std::uint16_t>(2);            // instance
-    b.le<std::uint32_t>(0xffffffffu);  // +4
-    b.f32(-186.0f);                    // y (the server's)
-    b.f32(-371.0f);                    // x
-    b.f32(4.0f);
-    b.f32(128.0f);
-    b.le<std::uint32_t>(1);            // type
-    for (int i = 0; i < 144 / 4 + 1; ++i) b.le<std::uint32_t>(0);
-    c.receive_zone_packet_for_test(net::make_packet(net::Op::RequestClientZoneChange, std::move(b)));
+    net::RequestClientZoneChange request;
+    request.zone_id = 1;
+    request.instance_id = 2;
+    request.unknown004 = 0xffffffffu;
+    request.y = -186.0f;
+    request.x = -371.0f;
+    request.z = 4.0f;
+    request.heading = 128.0f;
+    request.type = 1;
+    c.receive_zone_message_for_test({net::messages::GameOpcode::RequestClientZoneChange, request});
 
     REQUIRE(got);
     CHECK(got->zone == (1 | (2 << 16)));
@@ -40,13 +37,11 @@ TEST_CASE("OP_RequestClientZoneChange hands DoTeleportB the zone dword, world x 
 TEST_CASE("The zone dword carries the player profile's instance: a summon inside an instance moves, not zones") {
     mq_test::World w("hailstone_zone_change_instance_test");
     net::GameConnection& c = *w.conn;
-    // OP_NewZone as stock EQEmu sends it: the zone id, the instance left at 0.
-    ByteWriter nz;
-    for (std::size_t i = 0; i < 852; ++i) nz.le<std::uint8_t>(0);
-    nz.le<std::uint16_t>(89); // zone id
-    nz.le<std::uint16_t>(0);  // instance
-    while (nz.data().size() < net::kNewZoneSize) nz.le<std::uint8_t>(0);
-    c.receive_zone_packet_for_test(net::make_packet(net::Op::NewZone, std::move(nz)));
+    // An incoming NewZone reports the zone ID and the zero instance.
+    net::NewZone zone;
+    zone.zone_id = 89;
+    zone.zone_type = 0;
+    c.receive_zone_message_for_test({net::messages::GameOpcode::NewZone, zone});
     REQUIRE(c.zone_id() == 89);
     CHECK(c.current_zone_dword() == 89u);
     // The profile says which instance (PlayerProfile zoneInstance).
@@ -66,19 +61,16 @@ TEST_CASE("OP_NewZone's suspend_buffs (+876) says whether the zone holds the sus
     mq_test::World w("hailstone_zone_suspend_buffs_test");
     net::GameConnection& c = *w.conn;
     auto new_zone = [](std::uint32_t suspend) {
-        ByteWriter nz;
-        for (std::size_t i = 0; i < 852; ++i) nz.le<std::uint8_t>(0);
-        nz.le<std::uint16_t>(202); // zone id
-        nz.le<std::uint16_t>(0);
-        while (nz.data().size() < 876) nz.le<std::uint8_t>(0);
-        nz.le<std::uint32_t>(suspend);
-        while (nz.data().size() < net::kNewZoneSize) nz.le<std::uint8_t>(0);
-        return net::make_packet(net::Op::NewZone, std::move(nz));
+        net::NewZone zone;
+        zone.zone_id = 202;
+        zone.zone_type = 0;
+        zone.suspend_buffs = suspend;
+        return zone;
     };
     CHECK_FALSE(c.spell_state().zone_suspends_buffs);
-    c.receive_zone_packet_for_test(new_zone(1));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::NewZone, new_zone(1)});
     CHECK(c.spell_state().zone_suspends_buffs);
-    c.receive_zone_packet_for_test(new_zone(0));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::NewZone, new_zone(0)});
     CHECK_FALSE(c.spell_state().zone_suspends_buffs);
 }
 
@@ -104,12 +96,12 @@ TEST_CASE("OP_NewZone: a short name that is a path is not used for the zone's fi
     nz.zone_long_name = "Nowhere";
     for (const char* bad : {"../../../EverQuest/spells_us", "/home/user/notes", "C:\\EQ\\spells_us", "nul"}) {
         nz.zone_short_name = bad;
-        c.receive_zone_packet_for_test(net::encode(nz));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::NewZone, nz});
         CHECK(c.world().zone_short_name.empty());
         CHECK(c.take_zone_to_load() == std::optional<std::string>(""));
     }
     nz.zone_short_name = "qeynos2";
-    c.receive_zone_packet_for_test(net::encode(nz));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::NewZone, nz});
     CHECK(c.world().zone_short_name == "qeynos2");
     CHECK(c.take_zone_to_load() == std::optional<std::string>("qeynos2"));
 }

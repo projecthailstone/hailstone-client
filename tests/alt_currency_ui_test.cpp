@@ -13,8 +13,8 @@
 #include "app/lua_ui.h"
 #include "app/lua_ui_windows.h"
 #include "core/game_dir.h"
-#include "net/game_connection.h"
-#include "net/merchant_packets.h"
+#include "net/connection/game_connection.h"
+#include "net/messages/merchant.h"
 #include "scratch_dir.h"
 
 using namespace hailstone;
@@ -53,9 +53,9 @@ TEST_CASE("Alt. currency page: hs.ListClick selects by hs.AltCurrencies' order, 
         // 31 held, 32 none of, 33 held: without Display Missing the rows are 31, 33
         std::vector<net::AltCurrencyEntry> entries{
             {31, 22000, 1500, 1000, true}, {32, 22001, 1501, 500, true}, {33, 22002, 1502, 20, true}};
-        conn.receive_zone_packet_for_test(net::encode_alt_currency_populate(entries));
-        conn.receive_zone_packet_for_test(net::encode_alt_currency_update({31, 7}));
-        conn.receive_zone_packet_for_test(net::encode_alt_currency_update({33, 3}));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::AltCurrency, net::AltCurrencyPacket{entries, std::nullopt}});
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::AltCurrency, net::AltCurrencyPacket{{}, net::AltCurrencyUpdate{31, 7}}});
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::AltCurrency, net::AltCurrencyPacket{{}, net::AltCurrencyUpdate{33, 3}}});
         CHECK(run(L, "return #hs.AltCurrencies()") == "2");
 
         const std::string inv = "'InventoryWindow'", list = "'AltCurr_PointList'";
@@ -102,9 +102,9 @@ TEST_CASE("Alt. currency page: names come from dbstr type 18, the number when th
         lua_setglobal(L, "hs");
 
         std::vector<net::AltCurrencyEntry> entries{{31, 22000, 1500, 1000, true}, {33, 22002, 1502, 20, true}};
-        conn.receive_zone_packet_for_test(net::encode_alt_currency_populate(entries));
-        conn.receive_zone_packet_for_test(net::encode_alt_currency_update({31, 7}));
-        conn.receive_zone_packet_for_test(net::encode_alt_currency_update({33, 3}));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::AltCurrency, net::AltCurrencyPacket{entries, std::nullopt}});
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::AltCurrency, net::AltCurrencyPacket{{}, net::AltCurrencyUpdate{31, 7}}});
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::AltCurrency, net::AltCurrencyPacket{{}, net::AltCurrencyUpdate{33, 3}}});
         CHECK(run(L, "return hs.AltCurrencies()[1].name") == "Doubloons");
         CHECK(run(L, "return hs.AltCurrencies()[2].name") == "Currency 33");
         const std::string at = "'InventoryWindow', 'AltCurr_PointList'";

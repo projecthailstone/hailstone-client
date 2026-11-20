@@ -8,6 +8,7 @@
 // as "xx" must be 0 from the client. Then the player fields and globals written are compared.
 #include <doctest/doctest.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <map>
@@ -15,6 +16,7 @@
 #include <vector>
 
 #include "game/mechanics/use_skill.h"
+#include "net/protocol/rof2/packets/ability_packets.h"
 #include "vector_files.h"
 
 using hailstone::test::Json;
@@ -276,12 +278,22 @@ public:
         arg(c, "skill", skill);
         arg(c, "can_use", can_use);
     }
-    bool send(std::int32_t channel, std::uint16_t opcode, const std::vector<std::uint8_t>& payload) override {
+    bool send(std::int32_t channel, const hailstone::game::mechanics::SkillSend& action) override {
         auto* c = take("send");
         arg(c, "channel", channel);
-        arg(c, "opcode", opcode);
-        arg(c, "size", static_cast<std::int64_t>(payload.size() + 2));
+        // UseSkill emits a typed intent. Serialize at the RoF2 codec boundary only
+        // to check the original packet vectors; gameplay does not own wire opcodes.
+        const auto packet = hailstone::net::encode_skill_send(action);
+        if (!packet) {
+            error = "unsupported skill action";
+            return false;
+        }
+        arg(c, "opcode", packet->opcode);
+        arg(c, "size", static_cast<std::int64_t>(packet->data.size() + 2));
         if (c && error.empty()) {
+            std::vector<std::uint8_t> payload;
+            payload.reserve(packet->data.size());
+            for (const auto byte : packet->data) payload.push_back(std::to_integer<std::uint8_t>(byte));
             std::string want = (*c)["payload"].text;
             for (std::size_t i = 0; i + 1 < want.size(); i += 2)
                 if (want[i] == 'x') {

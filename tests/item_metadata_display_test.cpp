@@ -18,7 +18,7 @@
 #include "game/item_display.h"
 #include "game/server_ext.h"
 #include "game/spells.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "scratch_dir.h"
 #include "ui/item_windows.h"
 

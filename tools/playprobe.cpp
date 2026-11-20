@@ -59,8 +59,9 @@
 #include "game/revamped_zone.h"
 #include "game/zone_lines.h"
 #include "core/log.h"
-#include "net/game_connection.h"
-#include "net/login.h"
+#include "net/connection/game_connection.h"
+#include "net/connection/login_client.h"
+#include "net/protocol/diagnostic_port.h"
 #include "item_probe.h"
 #include "spell_probe.h"
 #include "group_probe.h"
@@ -255,8 +256,13 @@ int main(int argc, char** argv) {
     ne.print = [](const std::string& t, std::uint32_t) { std::printf("  PLUGIN: %s\n", t.c_str()); };
     ne.run = [&conn](const std::string& line) { conn.send_command(line); };
     ne.send = [&conn](plugin::Stream st, const net::AppPacket& p) {
-        if (st == plugin::Stream::World) conn.send_world_packet(p);
-        else conn.send_zone_packet(p);
+        const auto scope = st == plugin::Stream::World ? net::messages::ServiceScope::World
+                                                       : net::messages::ServiceScope::Zone;
+        if (auto* port = conn.diagnostic_port(scope)) {
+            auto result = port->inject_wire(p);
+            if (!result) std::fprintf(stderr, "plugin diagnostic send rejected: %s\n",
+                                      result.error()->detail.c_str());
+        }
     };
     ne.extensions = extensions.get();
     ne.connection = [&conn] { return &conn; };

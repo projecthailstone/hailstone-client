@@ -4,7 +4,7 @@
 #include <type_traits>
 
 #include "app/login_token_session.h"
-#include "net/login.h"
+#include "net/messages/login.h"
 
 using namespace hailstone;
 
@@ -51,14 +51,14 @@ TEST_CASE("login token session: an empty or invalid replacement clears the earli
     app::LoginTokenSession session;
     std::string taken;
     for (const auto& invalid : {std::string(), std::string("one\0two", 7),
-                                std::string(net::login_codec::kMaxLoginTokenBytes + 1, 'x')}) {
+                                std::string(net::messages::kMaxLoginTokenBytes + 1, 'x')}) {
         REQUIRE(session.remember("login.example", 5999, "earlier-token"));
         CHECK_FALSE(session.remember("login.example", 5999, invalid));
         CHECK_FALSE(session.available("login.example", 5999));
         CHECK_FALSE(session.take("login.example", 5999, taken));
         CHECK(taken.empty());
     }
-    const std::string maximum(net::login_codec::kMaxLoginTokenBytes, 'x');
+    const std::string maximum(net::messages::kMaxLoginTokenBytes, 'x');
     REQUIRE(session.remember("login.example", 5999, maximum));
     CHECK(session.take("login.example", 5999, taken));
     CHECK(taken == maximum);

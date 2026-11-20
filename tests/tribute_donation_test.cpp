@@ -1,11 +1,14 @@
 #include <doctest/doctest.h>
 
+#include <any>
+
 #include "core/byte_io.h"
 #include "game/merchant.h"
 #include "manual_clock.h"
 #include "mock_server/harness.h"
 #include "mq_test_world.h"
-#include "net/tribute_packets.h"
+#include "net/protocol/rof2/packets/tribute_packets.h"
+#include "net/session/soe/options.h"
 #include "scratch_dir.h"
 
 using namespace hailstone;
@@ -47,7 +50,7 @@ void open_master(Rig& rig, bool guild) {
     rig.conn.world_for_test().spawns[77] = master;
     auto packet = net::encode(net::StartTribute{rig.conn.world().player_id, 77, 1});
     if (guild)
-        packet.opcode = net::to_wire(net::Op::OpenGuildTributeMaster);
+        packet.opcode = net::rof2::to_wire(net::rof2::Op::OpenGuildTributeMaster);
     rig.server.zone.send_reliable(packet);
     REQUIRE(
         rig.until([&] { return (guild ? rig.conn.guild_tribute().master_id : rig.conn.tribute().master_id) == 77; }));
@@ -61,12 +64,21 @@ std::uint32_t answers(const net::GameConnection& c, bool guild) {
     return guild ? c.guild_tribute().donation_answers : c.tribute().donation_answers;
 }
 
-net::Op item_opcode(bool guild) { return guild ? net::Op::GuildTributeDonateItem : net::Op::TributeItem; }
+net::rof2::Op item_opcode(bool guild) { return guild ? net::rof2::Op::GuildTributeDonateItem : net::rof2::Op::TributeItem; }
 
 net::AppPacket reply(bool guild, std::uint32_t quantity = 5, std::uint32_t favor = 10) {
     const auto slot = net::ItemSlot::possessions(net::kSlotCursor);
     return guild ? net::encode(net::GuildTributeDonation{slot, quantity, favor})
                  : net::encode(net::TributeItem{slot, quantity, 77, static_cast<std::int32_t>(favor)});
+}
+
+net::messages::GameMessage donation_reply(bool guild, std::uint32_t quantity = 5,
+                                          std::uint32_t favor = 10) {
+    const auto slot = net::ItemSlot::possessions(net::kSlotCursor);
+    if (guild) return {net::messages::GameOpcode::GuildTributeDonateItem,
+                       net::GuildTributeDonation{slot, quantity, favor}};
+    return {net::messages::GameOpcode::TributeItem,
+            net::TributeItem{slot, quantity, 77, static_cast<std::int32_t>(favor)}};
 }
 
 net::AppPacket platinum_reply(std::uint32_t platinum, std::uint32_t favor) {
@@ -75,7 +87,7 @@ net::AppPacket platinum_reply(std::uint32_t platinum, std::uint32_t favor) {
     w.le(platinum);
     w.le<std::uint32_t>(0);
     w.le(favor);
-    return {net::to_wire(net::Op::GuildTributeDonatePlat), w.take()};
+    return {net::rof2::to_wire(net::rof2::Op::GuildTributeDonatePlat), w.take()};
 }
 
 void take_rations(net::GameConnection& c) {
@@ -88,7 +100,7 @@ void deliver_item(net::GameConnection& c, const net::Item& item) {
     net::ItemPacket packet;
     packet.type = net::kItemPacketCharInventory;
     packet.item = item;
-    c.receive_zone_packet_for_test(net::encode_item_packet(false, packet));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::ItemPacket, packet});
 }
 } // namespace
 
@@ -123,7 +135,7 @@ TEST_CASE("tribute replies follow the donated instance and preserve a "
                                         // outstanding cursor request
 
         const auto before = answers(c, guild);
-        c.receive_zone_packet_for_test(reply(guild, 4)); // wrong quantity is not this request's answer
+        c.receive_zone_message_for_test(donation_reply(guild, 4)); // wrong quantity is not this request's answer
         CHECK(answers(c, guild) == before);
         CHECK(c.inventory().cursor()->serial == replacement);
         REQUIRE(c.inventory().at(net::ItemSlot::possessions(25)));
@@ -134,7 +146,7 @@ TEST_CASE("tribute replies follow the donated instance and preserve a "
         CHECK(c.inventory().cursor()->serial == replacement);
         CHECK(c.inventory().cursor()->stack_count == 5);
 
-        c.receive_zone_packet_for_test(reply(guild)); // an unsolicited repeat cannot delete the replacement
+        c.receive_zone_message_for_test(donation_reply(guild)); // an unsolicited repeat cannot delete the replacement
         CHECK(answers(c, guild) == before + 1);
         CHECK(c.inventory().cursor()->serial == replacement);
         CHECK(donate(c, !guild)); // the matching answer, including zero guild
@@ -193,7 +205,7 @@ TEST_CASE("a personal tribute refusal retains its item and ends the "
     take_rations(c);
     const std::string serial = c.inventory().cursor()->serial;
     REQUIRE(donate(c, false));
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::Op::TributeItem) == 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::rof2::Op::TributeItem) == 1; }));
     const auto before = answers(c, false);
     rig.server.zone.send_reliable(reply(false, 5, 0));
     REQUIRE(rig.until([&] { return answers(c, false) == before + 1; }));
@@ -218,7 +230,7 @@ TEST_CASE("a guild tribute reply preserves contents added to the donated bag") {
     c.click_slot(net::ItemSlot::possessions(26), true, false);
     REQUIRE(c.inventory().cursor());
     REQUIRE(donate(c, true));
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::Op::GuildTributeDonateItem) == 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::rof2::Op::GuildTributeDonateItem) == 1; }));
     auto changed = *c.inventory().cursor();
     changed.contents.push_back({0, make_item(5002, "New bag content", 26)});
     deliver_item(c, changed);
@@ -301,36 +313,38 @@ TEST_CASE("zone and disconnect discard old tribute reply identities") {
             take_rations(c);
             REQUIRE(donate(c, guild));
             REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, item_opcode(guild)) == 1; }));
+            const int previous_zone_entries = rig.server.zone_entries;
             if (!disconnect) {
-                c.receive_world_packet_for_test(net::encode(net::ZoneServerInfo{"127.0.0.1", 9000}));
-            } else
+                net::ZoneChange accepted_zone;
+                accepted_zone.success = 1;
+                c.receive_zone_message_for_test({net::messages::GameOpcode::ZoneChange, accepted_zone});
+            } else {
                 c.disconnect();
+            }
             const auto before = answers(c, guild);
             REQUIRE(c.inventory().cursor());
             const auto serial = c.inventory().cursor()->serial;
-            c.receive_zone_packet_for_test(reply(guild));
+            c.receive_zone_message_for_test(donation_reply(guild));
             CHECK(answers(c, guild) == before);
             REQUIRE(c.inventory().cursor());
             CHECK(c.inventory().cursor()->serial == serial);
 
-            // Set up the next session without a live reconnect: the prior request
-            // cannot keep its donation fence.
-            net::GameConnectionTestAccess::state(c) = net::ConnectionState::InZone;
-            auto& world = c.world_for_test();
-            if (!world.player()) {
-                game::Spawn player;
-                player.id = 1;
-                world.player_id = player.id;
-                world.spawns[player.id] = player;
+            // The previous transport is gone. A second donation must be admitted
+            // through an actual replacement SOE session, not a forged InZone state.
+            if (disconnect) {
+                REQUIRE(rig.to_zone());
+            } else {
+                REQUIRE(rig.until([&] {
+                    return rig.server.zone_entries > previous_zone_entries &&
+                           c.state() == net::ConnectionState::InZone;
+                }));
+                REQUIRE(rig.until([&] { return c.player_status().max_hp != 0; }));
             }
-            auto master = *world.player();
-            master.id = 77;
-            master.is_npc = true;
-            world.spawns[master.id] = master;
-            auto open = net::encode(net::StartTribute{0, 77, 1});
-            if (guild)
-                open.opcode = net::to_wire(net::Op::OpenGuildTributeMaster);
-            c.receive_zone_packet_for_test(open);
+            open_master(rig, guild);
+            if (!c.inventory().cursor()) {
+                put_coin_away(c);
+                take_rations(c);
+            }
             CHECK(donate(c, guild));
         }
     }
@@ -354,7 +368,7 @@ TEST_CASE("tribute: a donation reply after walking away still reconciles the don
         net::GameConnectionTestAccess::npc_checks(c).tribute = 0;
         c.update();
         CHECK((guild ? c.guild_tribute().master_id : c.tribute().master_id) == 0);
-        c.receive_zone_packet_for_test(reply(guild));
+        c.receive_zone_message_for_test(donation_reply(guild));
         CHECK(answers(c, guild) == before + 1);
         CHECK_FALSE(c.inventory().cursor());
     }
@@ -370,9 +384,9 @@ TEST_CASE("an unanswered tribute donation stops blocking when the master is open
             CAPTURE(reopen);
             ScratchDir files("tribute_reply_missing");
             auto options = tribute_options(files);
-            options.session.idle_timeout = 10min; // only the donation's wait is under test
+            std::any_cast<net::soe::Options&>(options.world_protocol.session_config.parameters).idle_timeout = 10min; std::any_cast<net::soe::Options&>(options.zone_protocol.session_config.parameters).idle_timeout = 10min; // only the donation's wait is under test
             ManualClock clock;
-            options.session.clock = clock.source();
+            options.world_protocol.session_config.clock = clock.source(); options.zone_protocol.session_config.clock = clock.source();
             Rig rig(tribute_config(), options);
             REQUIRE(rig.to_zone());
             clock.hold();
@@ -402,9 +416,9 @@ TEST_CASE("a tribute batch that timed out without an answer frees donations afte
     using namespace std::chrono_literals;
     ScratchDir files("tribute_batch_missing");
     auto options = tribute_options(files);
-    options.session.idle_timeout = 10min;
+    std::any_cast<net::soe::Options&>(options.world_protocol.session_config.parameters).idle_timeout = 10min; std::any_cast<net::soe::Options&>(options.zone_protocol.session_config.parameters).idle_timeout = 10min;
     ManualClock clock;
-    options.session.clock = clock.source();
+    options.world_protocol.session_config.clock = clock.source(); options.zone_protocol.session_config.clock = clock.source();
     Rig rig(tribute_config(), options);
     REQUIRE(rig.to_zone());
     clock.hold();
@@ -413,7 +427,7 @@ TEST_CASE("a tribute batch that timed out without an answer frees donations afte
     open_master(rig, false);
     using M = net::GameConnection::ItemJobMode;
     REQUIRE(c.start_bulk_job(M::Tribute, {net::ItemSlot::possessions(23)}).empty());
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::Op::TributeItem) == 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::rof2::Op::TributeItem) == 1; }));
     net::GameConnectionTestAccess::update_bulk_job(c, net::GameConnection::now_ms() + 6000);
     REQUIRE_FALSE(c.item_job());
     CHECK(c.start_bulk_job(M::Tribute, {net::ItemSlot::possessions(23)}) ==
@@ -441,28 +455,28 @@ TEST_CASE("guild platinum donations wait for a matching reply and debit each acc
     CHECK_FALSE(c.guild_tribute_donate_platinum(21));
     REQUIRE(c.guild_tribute_donate_platinum(3));
     CHECK_FALSE(c.guild_tribute_donate_platinum(7)); // cannot overwrite the 3-platinum request
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::Op::GuildTributeDonatePlat) == 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::rof2::Op::GuildTributeDonatePlat) == 1; }));
     check_coins(); // no local debit before the server's answer
 
     auto malformed = platinum_reply(3, 30);
     malformed.data.resize(11);
-    c.receive_zone_packet_for_test(malformed);
-    c.receive_zone_packet_for_test(platinum_reply(7, 70));
+    CHECK_FALSE(net::decode_guild_donate_platinum(malformed));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::GuildTributeDonatePlat, net::GuildTributePlatinum{7, 70}});
     check_coins();
     CHECK(c.guild_tribute().last_donation == 0);
     CHECK_FALSE(c.guild_tribute_donate_platinum(7));
 
-    c.receive_zone_packet_for_test(platinum_reply(3, 30));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::GuildTributeDonatePlat, net::GuildTributePlatinum{3, 30}});
     REQUIRE(game::take_money(expected, 3000));
     check_coins();
     CHECK(c.guild_tribute().last_donation == 30);
-    c.receive_zone_packet_for_test(platinum_reply(3, 30)); // repeat cannot debit again
+    c.receive_zone_message_for_test({net::messages::GameOpcode::GuildTributeDonatePlat, net::GuildTributePlatinum{3, 30}}); // repeat cannot debit again
     check_coins();
 
     REQUIRE(c.guild_tribute_donate_platinum(7));
-    c.receive_zone_packet_for_test(platinum_reply(3, 30)); // old reply cannot consume the new request
+    c.receive_zone_message_for_test({net::messages::GameOpcode::GuildTributeDonatePlat, net::GuildTributePlatinum{3, 30}}); // old reply cannot consume the new request
     check_coins();
-    c.receive_zone_packet_for_test(platinum_reply(7, 0)); // a guild reply can consume coins even with zero favor
+    c.receive_zone_message_for_test({net::messages::GameOpcode::GuildTributeDonatePlat, net::GuildTributePlatinum{7, 0}}); // a guild reply can consume coins even with zero favor
     REQUIRE(game::take_money(expected, 7000));
     check_coins();
     CHECK(c.guild_tribute().last_donation == 0);
@@ -476,31 +490,36 @@ TEST_CASE("guild platinum donation fences retire on a later master-open reply or
         REQUIRE(rig.to_zone());
         auto& c = rig.conn;
         open_master(rig, true);
-        const auto player = *c.world().player();
-        const auto master = c.world().spawns.at(77);
+        const int previous_zone_entries = rig.server.zone_entries;
         net::GameConnectionTestAccess::coins(c) = {20, 0, 0, 0};
         REQUIRE(c.guild_tribute_donate_platinum(3));
-        REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::Op::GuildTributeDonatePlat) == 1; }));
-        if (reset == 1)
-            c.receive_world_packet_for_test(net::encode(net::ZoneServerInfo{"127.0.0.1", 9000}));
-        else if (reset == 2)
+        REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::rof2::Op::GuildTributeDonatePlat) == 1; }));
+        if (reset == 1) {
+            net::ZoneChange accepted_zone;
+            accepted_zone.success = 1;
+            c.receive_zone_message_for_test({net::messages::GameOpcode::ZoneChange, accepted_zone});
+        } else if (reset == 2)
             c.disconnect();
         if (reset != 0) {
             // Check the reset itself, before a new master-open answer can independently clear the fence.
-            c.receive_zone_packet_for_test(platinum_reply(3, 30));
+            c.receive_zone_message_for_test({net::messages::GameOpcode::GuildTributeDonatePlat, net::GuildTributePlatinum{3, 30}});
             CHECK(c.coins().platinum == 20);
             CHECK(c.guild_tribute().last_donation == 0);
         }
-        // A new master's open reply follows every earlier donation answer on the ordered zone connection. It counts
-        // only with the master in range, so put the player and the master back after the zone change or disconnect.
-        net::GameConnectionTestAccess::state(c) = net::ConnectionState::InZone;
-        c.world_for_test().player_id = player.id;
-        c.world_for_test().spawns[player.id] = player;
-        c.world_for_test().spawns[77] = master;
-        auto opened = net::encode(net::StartTribute{0, 77, 1});
-        opened.opcode = net::to_wire(net::Op::OpenGuildTributeMaster);
-        c.receive_zone_packet_for_test(opened);
-        c.receive_zone_packet_for_test(platinum_reply(3, 30));
+        // An open-master reply can clear the fence only on a connected zone
+        // session. Re-enter through the real world/zone handshake after a reset.
+        if (reset == 1) {
+            REQUIRE(rig.until([&] {
+                return rig.server.zone_entries > previous_zone_entries &&
+                       c.state() == net::ConnectionState::InZone;
+            }));
+            REQUIRE(rig.until([&] { return c.player_status().max_hp != 0; }));
+        } else if (reset == 2) {
+            REQUIRE(rig.to_zone());
+        }
+        if (reset != 0) net::GameConnectionTestAccess::coins(c) = {20, 0, 0, 0};
+        open_master(rig, true);
+        c.receive_zone_message_for_test({net::messages::GameOpcode::GuildTributeDonatePlat, net::GuildTributePlatinum{3, 30}});
         CHECK(c.coins().platinum == 20);
         CHECK(c.guild_tribute_donate_platinum(7));
     }
@@ -520,7 +539,7 @@ TEST_CASE("guild platinum donations need carried platinum; the accepted debit ma
     CHECK_FALSE(c.guild_tribute_donate_platinum(2));
     REQUIRE(c.guild_tribute_donate_platinum(1));
     // EQEmu's TakeMoneyFromPP takes copper first and sends no coin update; the purse follows it.
-    c.receive_zone_packet_for_test(platinum_reply(1, 10));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::GuildTributeDonatePlat, net::GuildTributePlatinum{1, 10}});
     CHECK(game::total_copper(c.coins()) == 1000 + 2000 + 5 - 1000);
     CHECK_FALSE(c.guild_platinum_pending());
 }
@@ -534,7 +553,7 @@ TEST_CASE("a guild platinum reply of -1 clears the pending donation without a de
     net::GameConnectionTestAccess::coins(c) = {20, 0, 0, 0};
     REQUIRE(c.guild_tribute_donate_platinum(3));
     // Tribute_HandleGuildDonationAccepted @0x483cd0: quantity -1 debits nothing and clears the pending flag.
-    c.receive_zone_packet_for_test(platinum_reply(0xffffffffu, 0));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::GuildTributeDonatePlat, net::GuildTributePlatinum{0xffffffffu, 0}});
     CHECK_FALSE(c.guild_platinum_pending());
     CHECK(c.coins().platinum == 20);
     CHECK(c.guild_tribute().last_donation == 0);

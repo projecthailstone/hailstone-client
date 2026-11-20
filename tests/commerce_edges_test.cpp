@@ -1,7 +1,8 @@
 #include <doctest/doctest.h>
 
 #include "mock_server/harness.h"
-#include "net/tribute_packets.h"
+#include "net/protocol/rof2/packets/tribute_packets.h"
+#include "net/protocol/rof2/packets/market_packets.h"
 #include "scratch_dir.h"
 #include "mq_test_world.h"
 
@@ -52,14 +53,14 @@ TEST_CASE("commerce: Keep blocks both barter sale paths, including a changed qua
     line.zone = c.zone_id();
     search.lines.push_back(line);
     REQUIRE(c.barter_search_sell_start(0));
-    const int before = MockEqServer::count(rig.server.zone_log, net::Op::BuyerItems);
+    const int before = MockEqServer::count(rig.server.zone_log, net::rof2::Op::BuyerItems);
     c.set_item_kept(1002, "Rations", true);
     CHECK_FALSE(c.barter_merchant_sell_start());
     CHECK_FALSE(c.barter_search_sell_start(0));
     c.barter_merchant_sell(1);
     c.barter_search_sell(1);
     rig.run_for(std::chrono::milliseconds(70));
-    CHECK(MockEqServer::count(rig.server.zone_log, net::Op::BuyerItems) == before);
+    CHECK(MockEqServer::count(rig.server.zone_log, net::rof2::Op::BuyerItems) == before);
     CHECK(merchant.pending == 0);
     CHECK(search.pending == 0);
     REQUIRE(c.inventory().at(net::ItemSlot::possessions(23)));
@@ -93,7 +94,7 @@ TEST_CASE("commerce: marking an offered item Keep withdraws the trader offer and
     rig.run_for(std::chrono::milliseconds(70));
     // The only new packet can be the already-queued End; Add cannot publish a price for the kept item.
     for (const auto& p : rig.server.zone_log)
-        if (p.opcode == net::to_wire(net::Op::Trader)) {
+        if (p.opcode == net::rof2::to_wire(net::rof2::Op::Trader)) {
             if (auto update = net::decode_trader_price(p)) CHECK(update->price == 0);
         }
 }
@@ -110,10 +111,10 @@ TEST_CASE("commerce: a late buyer-start answer cannot publish newly kept compens
     c.barter_start_stop();
     REQUIRE_FALSE(buyer.buyer_mode);
     c.set_item_kept(1002, "Rations", true);
-    c.receive_zone_packet_for_test(net::encode_buyer_mode(true));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::Barter, net::MarketEvent{net::kBuyerModeOn, {}}});
     CHECK_FALSE(buyer.buyer_mode);
     rig.run_for(std::chrono::milliseconds(70));
-    CHECK(MockEqServer::count(rig.server.zone_log, net::Op::BuyerItems) == 0);
+    CHECK(MockEqServer::count(rig.server.zone_log, net::rof2::Op::BuyerItems) == 0);
 }
 
 TEST_CASE("commerce: bulk Keep changes one revision and donation guards respect it") {
@@ -135,7 +136,7 @@ TEST_CASE("commerce: bulk Keep changes one revision and donation guards respect 
     c.world_for_test().spawns[77] = master;
     auto personal = net::encode(net::StartTribute{c.world().player_id, 77, 1});
     auto guild = personal;
-    guild.opcode = net::to_wire(net::Op::OpenGuildTributeMaster);
+    guild.opcode = net::rof2::to_wire(net::rof2::Op::OpenGuildTributeMaster);
     rig.server.zone.send_reliable(personal);
     rig.server.zone.send_reliable(guild);
     REQUIRE(rig.until([&] { return c.tribute().master_id == 77 && c.guild_tribute().master_id == 77; }));
@@ -157,16 +158,16 @@ TEST_CASE("commerce: kept compensation cannot start a buyer or enable an active 
     line.trade_items.push_back({1002, 1, 0, "Rations"});
     c.set_item_kept(1002, "Rations", true);
     rig.run_for(std::chrono::milliseconds(70));
-    const int modes = MockEqServer::count(rig.server.zone_log, net::Op::Barter);
-    const int lines = MockEqServer::count(rig.server.zone_log, net::Op::BuyerItems);
+    const int modes = MockEqServer::count(rig.server.zone_log, net::rof2::Op::Barter);
+    const int lines = MockEqServer::count(rig.server.zone_log, net::rof2::Op::BuyerItems);
     c.barter_start_stop();
     buyer.buyer_mode = true;
     buyer.line_sel = 0;
     line.toggle = false;
     c.barter_toggle_line();
     rig.run_for(std::chrono::milliseconds(70));
-    CHECK(MockEqServer::count(rig.server.zone_log, net::Op::Barter) == modes);
-    CHECK(MockEqServer::count(rig.server.zone_log, net::Op::BuyerItems) == lines);
+    CHECK(MockEqServer::count(rig.server.zone_log, net::rof2::Op::Barter) == modes);
+    CHECK(MockEqServer::count(rig.server.zone_log, net::rof2::Op::BuyerItems) == lines);
     CHECK_FALSE(line.toggle);
 }
 
@@ -253,7 +254,7 @@ TEST_CASE("commerce: bulk destroy rechecks an empty bag after it acquires conten
     CHECK_FALSE(inventory.cursor());
     rig.run_for(std::chrono::milliseconds(70));
     for (const auto& packet : rig.server.zone_log)
-        if (packet.opcode == net::to_wire(net::Op::MoveItem))
+        if (packet.opcode == net::rof2::to_wire(net::rof2::Op::MoveItem))
             if (auto move = net::decode_move_item(packet)) CHECK(move->to.type >= 0);
 }
 
@@ -273,12 +274,12 @@ TEST_CASE("commerce: bulk guild tribute waits for the guild answer and uses guil
     master.is_npc = true;
     c.world_for_test().spawns[77] = master;
     auto open = net::encode(net::StartTribute{c.world().player_id, 77, 1});
-    open.opcode = net::to_wire(net::Op::OpenGuildTributeMaster);
+    open.opcode = net::rof2::to_wire(net::rof2::Op::OpenGuildTributeMaster);
     rig.server.zone.send_reliable(open);
     REQUIRE(rig.until([&] { return c.guild_tribute().master_id == 77; }));
     using M = net::GameConnection::ItemJobMode;
     REQUIRE(c.start_bulk_job(M::Tribute, {net::ItemSlot::possessions(24)}).empty());
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::Op::GuildTributeDonateItem) == 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::rof2::Op::GuildTributeDonateItem) == 1; }));
     REQUIRE(c.inventory().cursor());
     rig.run_for(std::chrono::milliseconds(100));
     REQUIRE(c.item_job());

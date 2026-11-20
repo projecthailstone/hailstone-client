@@ -4,7 +4,7 @@
 // slots filled from the Trader's Satchels, their prices from the
 // BZR_<name>_<server>.ini file, trader mode), the bazaar search window
 // (CBazaarSearchWnd: the trader list and the results) and the window's text
-// log. GameConnection (net/game_connection_market.cpp) sends and receives;
+// log. GameConnection (net/connection/game_connection_market.cpp) sends and receives;
 // the rules here are the original's (addresses below).
 
 #include <array>
@@ -17,8 +17,8 @@
 
 #include "core/ini_file.h"
 #include "game/inventory.h"
-#include "net/item_packets.h"
-#include "net/market_packets.h"
+#include "net/messages/item.h"
+#include "net/messages/market.h"
 
 namespace hailstone::game {
 

@@ -48,14 +48,8 @@ bool track_less(int order, const TrackEntry& a, const TrackEntry& b);
 // original puts them.
 void track_sort(std::span<TrackEntry> entries, int order);
 
-// CTrackingWnd::SetTrackingList: every entry reset (id 0, empty name, distance -1, position -1, flags 0; the level
-// kept), then the reply's entries from slot 0 (a field is read only when it fits in `data`; a name that does not
-// fit is left empty and not skipped; is_npc / is_pet / is_merc of a cut entry are the previous entry's), then the
-// sort: a ranger's /tracksort order (0..6; above 6 no sort), else order 0. `trim` gives an entry's sort name.
-// Returns whether it sorted (DoTrackFilter(0) and AddToList(1) follow either way).
-bool set_tracking_list(TrackList& list, std::span<const std::uint8_t> data, bool ranger, std::uint32_t sort_order,
-                       std::string (*trim)(const std::string&));
-
+// RoF2 tracking record decoding lives in protocol/rof2/packets/tracking_packets.*.
+// This module retains protocol-neutral sort, con-colour and filtering rules.
 // CTrackingWnd::GetTrackColor: the chat colour of an entry: a player 12 in our group, else 7; otherwise by the
 // first con bit of 0x01 (2), 0x02 (4), 0x20 (18), 0x40 (6), 0x04 (10), then 15 with 0x08, else 13.
 std::uint32_t track_color(const TrackEntry& e, std::span<const std::int32_t> group_spawn_ids);

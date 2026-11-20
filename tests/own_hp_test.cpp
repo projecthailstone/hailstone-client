@@ -13,7 +13,7 @@
 #include "game/mechanics/character.h"
 #include "game/mechanics/tables.h"
 #include "mock_server/harness.h"
-#include "net/zone_packets.h"
+#include "net/protocol/rof2/packets/zone_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::test;
@@ -69,7 +69,7 @@ TEST_CASE("Own HP: the windows add the items' HP that EQEmu's HP update leaves o
     u.spawn_id = static_cast<std::int16_t>(conn.world().player_id);
     u.cur_hp = 100;
     u.max_hp = 200;
-    conn.receive_zone_packet_for_test(net::encode(u));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::HPUpdate, u});
 
     app::UiHost host;
     host.in_game = host.ui_ready = true;

@@ -1,5 +1,5 @@
 // The Find window (a Hailstone addition, docs/navigation.md "Find"): the useful NPCs of a zone by class and by the
-// server's findable list (game/useful_npcs.h), OP_SendFindableNPCs (net/movement_packets.h) as GameConnection keeps
+// server's findable list (game/useful_npcs.h), OP_SendFindableNPCs (net/protocol/rof2/packets/movement_packets.h) as GameConnection keeps
 // it, and the hs.Find* calls the packs draw it with (app/lua_ui_find.cpp).
 #include <doctest/doctest.h>
 
@@ -14,10 +14,10 @@
 #include "core/process_serial.h"
 #include "game/useful_npcs.h"
 #include "game/world_state.h"
-#include "net/game_connection.h"
-#include "net/movement_packets.h"
-#include "net/quest_npc_packets.h"
-#include "net/world_packets.h"
+#include "net/connection/game_connection.h"
+#include "net/protocol/rof2/packets/movement_packets.h"
+#include "net/protocol/extensions/hailstone/quest_npc_packets.h"
+#include "net/protocol/rof2/packets/world_packets.h"
 #include "scratch_dir.h"
 #include "mq_test_world.h"
 
@@ -140,16 +140,16 @@ TEST_CASE("Find: OP_SendFindableNPCs reads as Handle_OP_SendFindableNPCs does, a
     hailstone::test::ScratchDir scratch("useful_npcs_conn");
     GameDir game(scratch.path());
     net::GameConnection conn(game, {});
-    conn.receive_zone_packet_for_test(net::encode_findable_npc(n));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::SendFindableNPCs, n});
     n.spawn_id = 322;
-    conn.receive_zone_packet_for_test(net::encode_findable_npc(n));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::SendFindableNPCs, n});
     CHECK(conn.findable_npcs().size() == 2);
     n.remove = true;
-    conn.receive_zone_packet_for_test(net::encode_findable_npc(n));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::SendFindableNPCs, n});
     REQUIRE(conn.findable_npcs().size() == 1);
     CHECK(conn.findable_npcs().contains(321));
     // zoning forgets the old zone's ids
-    conn.receive_world_packet_for_test(net::encode(net::ZoneServerInfo{"127.0.0.1", 7001}));
+    net::GameConnectionTestAccess::retire_zone_observations(conn);
     CHECK(conn.findable_npcs().empty());
 }
 
@@ -178,7 +178,7 @@ TEST_CASE("Find: hs.FindNpcs lists the zone's NPCs for the packs; FindNpcTarget 
     ++w.spawn_set_serial;
     net::FindableNpc f;
     f.spawn_id = 4;
-    conn.receive_zone_packet_for_test(net::encode_findable_npc(f));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::SendFindableNPCs, f});
 
     CHECK(run(L, "return #hs.FindNpcs()") == "3");
     CHECK(run(L, "local r = hs.FindNpcs()[1] return r.name .. '|' .. r.category .. '|' .. r.label") ==
@@ -266,10 +266,10 @@ TEST_CASE("Find: quest givers come from the server script's list, matched by the
     hailstone::test::ScratchDir scratch("useful_npcs_quests");
     GameDir game(scratch.path());
     net::GameConnection conn(game, {});
-    conn.receive_zone_packet_for_test(net::encode_quest_npcs(sent));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::HsQuestNpcs, sent});
     REQUIRE(conn.quest_npcs().size() == 2);
     CHECK(conn.quest_npcs().at("guard gehnus") == 3);
     CHECK(conn.quest_npcs().at("old man") == 2);
-    conn.receive_world_packet_for_test(net::encode(net::ZoneServerInfo{"127.0.0.1", 7001}));
+    net::GameConnectionTestAccess::retire_zone_observations(conn);
     CHECK(conn.quest_npcs().empty());
 }

@@ -1,7 +1,7 @@
 #include "game/item_links.h"
 
 #include "game/mechanics/item_stats.h"
-#include "net/achievement_packets.h"
+#include "net/messages/achievement.h"
 
 #include <algorithm>
 #include <cstdio>

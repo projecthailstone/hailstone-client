@@ -18,8 +18,10 @@
 #include "mock_server/harness.h"
 #include "mq/commands.h"
 #include "mq/tlo.h"
-#include "net/game_connection.h"
-#include "net/social_packets.h"
+#include "net/connection/game_connection.h"
+#include "net/messages/social.h"
+#include "net/messages/guild_banner.h"
+#include "net/messages/zone.h"
 #include "plugin/hooks.h"
 #include "scratch_dir.h"
 
@@ -38,7 +40,7 @@ std::string run(lua_State* L, const std::string& code) {
     return out;
 }
 
-net::AppPacket roster(std::initializer_list<const char*> names) {
+net::GuildMemberList roster(std::initializer_list<const char*> names) {
     net::GuildMemberList l;
     l.player_name = "Tester";
     l.guild_id = 3;
@@ -50,7 +52,7 @@ net::AppPacket roster(std::initializer_list<const char*> names) {
         m.zone_id = 2;
         l.members.push_back(m);
     }
-    return net::encode(l);
+    return l;
 }
 
 } // namespace
@@ -72,7 +74,7 @@ TEST_CASE("guild window: the roster list is built once a frame, and again after 
         lua_setglobal(L, "hs");
 
         const std::string list = "'GuildManagementWnd', 'MemberList'";
-        conn.receive_zone_packet_for_test(roster({"Alice", "Bob", "Carl"}));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::GuildMemberList, roster({"Alice", "Bob", "Carl"})});
         api.begin_frame();
         CHECK(run(L, "return (hs.ListInfo(" + list + "))") == "3");
         CHECK(run(L, "return hs.ListRow(" + list + ", 1)[1]") == "Bob");
@@ -81,7 +83,7 @@ TEST_CASE("guild window: the roster list is built once a frame, and again after 
         CHECK(run(L, "return hs.ListClick(" + list + ", 2, 'left')") == "true");
         CHECK(run(L, "return (select(3, hs.ListInfo(" + list + ")))") == "2");
         // A new roster shows from the next frame, the selection kept by name.
-        conn.receive_zone_packet_for_test(roster({"Aaron", "Alice", "Bob", "Carl"}));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::GuildMemberList, roster({"Aaron", "Alice", "Bob", "Carl"})});
         api.begin_frame();
         CHECK(run(L, "return (hs.ListInfo(" + list + "))") == "4");
         CHECK(run(L, "return hs.ListRow(" + list + ", 0)[1]") == "Aaron");
@@ -132,8 +134,10 @@ TEST_CASE("guild window: Go to URL and Join Channel send the guild's text as it 
             return run(L, std::string("return hs.ClickChild('GuildManagementWnd', '") + button + "', 'left')");
         };
         auto set = [&](std::uint32_t action, const std::string& text) {
-            net::AppPacket p = net::encode_guild_update_text(action, text);
-            conn.receive_zone_packet_for_test(p);
+            net::GuildUpdate update;
+            update.action = action;
+            update.text = text;
+            conn.receive_zone_message_for_test({net::messages::GameOpcode::GuildUpdate, update});
         };
 
         // An officer's text holding ${...}: sent as it is, not filled in with the clicker's state.
@@ -170,14 +174,16 @@ TEST_CASE("mock server: guild banner page selects kits, edits a draft, and saves
     zone.start_z = 4.0f;
     ManualClock clock;
     auto options = quick_options();
-    options.session.clock = clock.source();
+    options.world_protocol.session_config.clock = clock.source();
+    options.zone_protocol.session_config.clock = clock.source();
     Rig rig(std::move(config), std::move(options));
     REQUIRE(rig.to_zone());
     constexpr std::uint32_t guild_id = 3, rank = 5;
-    rig.conn.receive_zone_packet_for_test(net::encode(net::SpawnAppearance{0, 22, guild_id}));
-    rig.conn.receive_zone_packet_for_test(net::encode(net::SpawnAppearance{0, 23, rank}));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::SpawnAppearance, net::SpawnAppearance{0, 22, guild_id}});
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::SpawnAppearance, net::SpawnAppearance{0, 23, rank}});
     for (std::uint32_t permission : {1u, 2u, 3u})
-        rig.conn.receive_zone_packet_for_test(net::encode_guild_rank_permission(rank, permission, true, guild_id));
+        rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::GuildUpdate,
+            net::GuildUpdate{5, guild_id, rank, permission, true}});
 
     ScratchDir scratch("guild_banner_categories");
     std::filesystem::create_directories(scratch.path() / "Resources");
@@ -205,7 +211,7 @@ TEST_CASE("mock server: guild banner page selects kits, edits a draft, and saves
         CHECK(run(L, "return hs.ComboSelect(g, 'BannerFilter', 1)") == "true");
         const auto filtered = [&] {
             return std::ranges::any_of(rig.server.zone_log, [](const auto& packet) {
-                if (packet.opcode != net::to_wire(net::Op::GuildBannerKitRequest) || packet.data.size() != 141) return false;
+                if (packet.opcode != net::rof2::to_wire(net::rof2::Op::GuildBannerKitRequest) || packet.data.size() != 141) return false;
                 ByteReader reader(packet.data);
                 reader.seek(137);
                 return reader.le<std::uint32_t>() == (1u << 7);
@@ -214,38 +220,23 @@ TEST_CASE("mock server: guild banner page selects kits, edits a draft, and saves
         REQUIRE(rig.until(filtered));
         clock.hold();
 
-        ByteWriter kits;
-        kits.zeros(4);
-        kits.le<std::uint32_t>(2);
-        kits.le<std::uint32_t>(5);
-        kits.le<std::uint32_t>(3);
-        kits.le<std::uint32_t>(50);
-        kits.fixed_string("Fixture available kit", 128);
-        kits.le<std::uint8_t>(1);
-        kits.le<std::uint32_t>(100);
-        kits.le<std::uint32_t>(60);
-        kits.fixed_string("Fixture unavailable kit", 128);
-        kits.le<std::uint8_t>(0);
-        kits.le<std::uint32_t>(101);
-        rig.conn.receive_zone_packet_for_test({net::to_wire(net::Op::GuildBannerKitList), kits.take()});
-        const auto status_packet = [](std::uint32_t mode) {
-            ByteWriter status;
-            status.zeros(4);
-            status.le(mode);
-            status.zeros(4);
-            status.le<std::uint32_t>(40);
-            status.le<std::uint32_t>(102);
-            status.le<std::int32_t>(3661000);
-            status.fixed_string("Fixture active banner", 128);
-            status.zeros(16);
-            status.le<std::uint32_t>(40);
-            status.le<std::uint32_t>(4);
-            status.le<std::uint32_t>(1);
-            status.le<std::uint32_t>(0x102030);
-            status.le<std::uint32_t>(0xabcdef);
-            return net::AppPacket{net::to_wire(net::Op::GuildBannerStatus), status.take()};
+        net::GuildBannerKitList kits;
+        kits.background_count = 5;
+        kits.emblem_count = 3;
+        kits.kits = {{50, "Fixture available kit", 100, true},
+                     {60, "Fixture unavailable kit", 101, false}};
+        rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::GuildBannerKitList, kits});
+        const auto status_message = [](std::uint32_t mode) {
+            net::GuildBannerStatus status;
+            status.kind = mode;
+            status.kit_id = status.planted_kit_id = 40;
+            status.description_id = 102;
+            status.remaining_ms = 3661000;
+            status.name = "Fixture active banner";
+            status.style = {4, 1, 0xff102030u, 0xffabcdefu};
+            return net::messages::GameMessage{net::messages::GameOpcode::GuildBannerStatus, status};
         };
-        rig.conn.receive_zone_packet_for_test(status_packet(0));
+        rig.conn.receive_zone_message_for_test(status_message(0));
         api.begin_frame();
 
         CHECK(run(L, "return hs.ChildShown(g, 'BannerData')") == "true");
@@ -261,10 +252,10 @@ TEST_CASE("mock server: guild banner page selects kits, edits a draft, and saves
         CHECK(run(L, "return click('PlantBannerButton')") == "true");
         REQUIRE(rig.until([&] {
             clock.advance(2ms);
-            return MockEqServer::count(rig.server.zone_log, net::Op::GuildBannerPlant) == 1;
+            return MockEqServer::count(rig.server.zone_log, net::rof2::Op::GuildBannerPlant) == 1;
         }));
         const auto plant = std::ranges::find_if(rig.server.zone_log, [](const auto& packet) {
-            return packet.opcode == net::to_wire(net::Op::GuildBannerPlant);
+            return packet.opcode == net::rof2::to_wire(net::rof2::Op::GuildBannerPlant);
         });
         REQUIRE(plant != rig.server.zone_log.end());
         ByteReader placement(plant->data);
@@ -279,9 +270,9 @@ TEST_CASE("mock server: guild banner page selects kits, edits a draft, and saves
         const auto allowed = *rig.conn.zone_info();
         auto prohibited = allowed;
         prohibited.banner_placement = net::BannerPlacement::CannotPlace;
-        rig.conn.receive_zone_packet_for_test(net::encode(prohibited));
+        rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::NewZone, prohibited});
         CHECK(run(L, "return enabled('PlantBannerButton')") == "false");
-        rig.conn.receive_zone_packet_for_test(net::encode(allowed));
+        rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::NewZone, allowed});
         CHECK(run(L, "return enabled('PlantBannerButton')") == "true");
         CHECK(run(L, "return hs.ListClick(g, list, 2, 'left')") == "true");
         CHECK(run(L, "return enabled('PlantBannerButton')") == "false");
@@ -289,8 +280,8 @@ TEST_CASE("mock server: guild banner page selects kits, edits a draft, and saves
         // The status handler @0x685670 asks again (RequestBannerKitList @0x684ad0: kit list and status requests)
         // after a mode 2 reply only while the editor is open.
         const auto requests = [&] {
-            return std::pair{MockEqServer::count(rig.server.zone_log, net::Op::GuildBannerKitRequest),
-                             MockEqServer::count(rig.server.zone_log, net::Op::GuildBannerStatusRequest)};
+            return std::pair{MockEqServer::count(rig.server.zone_log, net::rof2::Op::GuildBannerKitRequest),
+                             MockEqServer::count(rig.server.zone_log, net::rof2::Op::GuildBannerStatusRequest)};
         };
         const auto settle = [&] {
             int frames = 0;
@@ -301,11 +292,11 @@ TEST_CASE("mock server: guild banner page selects kits, edits a draft, and saves
         };
         settle();
         const auto before = requests();
-        rig.conn.receive_zone_packet_for_test(status_packet(2));
+        rig.conn.receive_zone_message_for_test(status_message(2));
         settle();
         CHECK(requests() == before);
         CHECK(run(L, "return click('EditBannerButton')") == "true");
-        rig.conn.receive_zone_packet_for_test(status_packet(2));
+        rig.conn.receive_zone_message_for_test(status_message(2));
         REQUIRE(rig.until([&] {
             clock.advance(2ms);
             return requests() == std::pair{before.first + 1, before.second + 1};
@@ -326,29 +317,25 @@ TEST_CASE("mock server: guild banner page selects kits, edits a draft, and saves
         REQUIRE(rig.conn.confirmation());
         CHECK(rig.conn.confirmation()->text ==
               "You must have a: guild banner modification item to save change to banner settings.");
-        const auto token_packet = [](std::uint32_t id) {
-            ByteWriter token;
-            token.zeros(8);
-            token.le(id);
-            token.zeros(4);
-            token.fixed_string("Fixture modification token", 64);
-            return net::AppPacket{net::to_wire(net::Op::GuildBannerModificationToken), token.take()};
+        const auto token_message = [](std::uint32_t id) {
+            return net::messages::GameMessage{net::messages::GameOpcode::GuildBannerModificationToken,
+                net::GuildBannerModificationToken{id, "Fixture modification token"}};
         };
         // SaveBannerSettings @0x6833a0 refuses only item ID -1, naming the item; ID 0 is sent like any other.
-        rig.conn.receive_zone_packet_for_test(token_packet(net::kNoBannerKit));
+        rig.conn.receive_zone_message_for_test(token_message(net::kNoBannerKit));
         CHECK(run(L, "click('SaveBannerSettings'); return hs.ChildShown(g, 'SaveBannerSettings')") == "true");
         REQUIRE(rig.conn.confirmation());
         CHECK(rig.conn.confirmation()->text ==
               "You must have a: Fixture modification token to save change to banner settings.");
-        rig.conn.receive_zone_packet_for_test(token_packet(0));
+        rig.conn.receive_zone_message_for_test(token_message(0));
         CHECK(run(L, "click('SaveBannerSettings'); return hs.ChildShown(g, 'SaveBannerSettings')") == "false");
         CHECK(run(L, "return value('BannerEmblemPattern')") == "1"); // saved draft yields to server-authoritative preview
         REQUIRE(rig.until([&] {
             clock.advance(2ms);
-            return MockEqServer::count(rig.server.zone_log, net::Op::GuildBannerSave) == 1;
+            return MockEqServer::count(rig.server.zone_log, net::rof2::Op::GuildBannerSave) == 1;
         }));
         const auto save = std::ranges::find_if(rig.server.zone_log, [](const auto& packet) {
-            return packet.opcode == net::to_wire(net::Op::GuildBannerSave);
+            return packet.opcode == net::rof2::to_wire(net::rof2::Op::GuildBannerSave);
         });
         REQUIRE(save != rig.server.zone_log.end());
         ByteReader style(save->data);
@@ -360,10 +347,10 @@ TEST_CASE("mock server: guild banner page selects kits, edits a draft, and saves
         CHECK(style.le<std::uint32_t>() == 0);
         REQUIRE(rig.until([&] {
             clock.advance(2ms);
-            return MockEqServer::count(rig.server.zone_log, net::Op::GuildBannerPlant) == 2;
+            return MockEqServer::count(rig.server.zone_log, net::rof2::Op::GuildBannerPlant) == 2;
         }));
         const auto reapply = std::ranges::find_if(rig.server.zone_log.rbegin(), rig.server.zone_log.rend(),
-            [](const auto& packet) { return packet.opcode == net::to_wire(net::Op::GuildBannerPlant); });
+            [](const auto& packet) { return packet.opcode == net::rof2::to_wire(net::rof2::Op::GuildBannerPlant); });
         REQUIRE(reapply != rig.server.zone_log.rend());
         ByteReader reapply_request(reapply->data);
         CHECK(reapply_request.le<std::uint32_t>() == 40);
@@ -374,15 +361,15 @@ TEST_CASE("mock server: guild banner page selects kits, edits a draft, and saves
         CHECK(run(L, "hs.ListClick(g, list, 0, 'left'); return click('RemoveBannerButton')") == "true");
         REQUIRE(rig.until([&] {
             clock.advance(2ms);
-            return MockEqServer::count(rig.server.zone_log, net::Op::GuildBannerRemove) == 1;
+            return MockEqServer::count(rig.server.zone_log, net::rof2::Op::GuildBannerRemove) == 1;
         }));
         CHECK(run(L, "return (hs.ListInfo(g, list))") == "3"); // server still owns the active banner
-        const auto status_requests = MockEqServer::count(rig.server.zone_log, net::Op::GuildBannerStatusRequest);
+        const auto status_requests = MockEqServer::count(rig.server.zone_log, net::rof2::Op::GuildBannerStatusRequest);
         CHECK(run(L, "hs.ShowWindow(g, false); return hs.ChildShown(g, 'BannerData')") == "false");
         CHECK(run(L, "hs.ShowWindow(g, true); return hs.ChildShown(g, 'BannerData')") == "false");
         REQUIRE(rig.until([&] {
             clock.advance(2ms);
-            return MockEqServer::count(rig.server.zone_log, net::Op::GuildBannerStatusRequest) > status_requests;
+            return MockEqServer::count(rig.server.zone_log, net::rof2::Op::GuildBannerStatusRequest) > status_requests;
         }));
         lua_close(L);
     }

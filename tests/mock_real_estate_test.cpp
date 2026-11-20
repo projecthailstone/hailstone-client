@@ -1,5 +1,5 @@
 // Real estate against the mock server: the server's records, catalog and areas reach the manager, occupancy follows
-// the player, and the client's requests go out as the windows send them (net/game_connection_real_estate.cpp).
+// the player, and the client's requests go out as the windows send them (net/connection/game_connection_real_estate.cpp).
 
 #include <doctest/doctest.h>
 
@@ -7,8 +7,8 @@
 
 #include "core/byte_io.h"
 #include "mock_server/harness.h"
-#include "net/real_estate_packets.h"
-#include "net/social_packets.h"
+#include "net/protocol/rof2/packets/real_estate_packets.h"
+#include "net/protocol/rof2/packets/social_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::net;

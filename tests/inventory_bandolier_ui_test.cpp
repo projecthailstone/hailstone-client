@@ -15,8 +15,8 @@
 
 #include "app/lua_ui.h"
 #include "mock_server/harness.h"
-#include "net/packet_io.h"
-#include "net/player_packets.h"
+#include "net/protocol/rof2/wire_io.h"
+#include "net/protocol/rof2/packets/player_packets.h"
 #include "ui/lua/lua_host.h"
 #include "scratch_dir.h"
 
@@ -108,7 +108,7 @@ TEST_CASE("Inventory's Bandolier page: draws, and its Save and Activate reach th
         REQUIRE(luaL_dostring(L, "hs.ClickChild('BandolierWnd', 'UseButton', 'left')") == LUA_OK);
         auto sent = [&](std::uint32_t action) {
             return std::any_of(rig.server.zone_log.begin(), rig.server.zone_log.end(), [&](const net::AppPacket& p) {
-                if (!net::is_op(p, net::Op::Bandolier)) return false;
+                if (!net::is_op(p, net::rof2::Op::Bandolier)) return false;
                 auto b = net::decode_bandolier(p);
                 return b && b->action == action && b->number == 0;
             });

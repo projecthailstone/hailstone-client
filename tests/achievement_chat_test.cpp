@@ -6,7 +6,8 @@
 #include <imgui.h>
 #include <lua.hpp>
 
-#include "achievement_test_packets.h"
+#include "rof2/achievement_test_packets.h"
+#include "net/messages/achievement.h"
 #include "app/lua_ui.h"
 #include "game/item_links.h"
 #include "mock_server/harness.h"
@@ -113,7 +114,39 @@ TEST_CASE("achievement chat: current catalog supplies escaped labels and exact m
     CHECK(before.text[0].find("Spoofed &lt;label&gt;") != std::string::npos);
     CHECK(link_data(before.text[0]).empty());
     CHECK(requests(rig) == 0);
-    rig.conn.receive_zone_packet_for_test(fixture::catalog());
+    net::AchievementCatalog catalog;
+    net::AchievementCategory category;
+    category.id = 7;
+    category.name = "Fixture category";
+    category.description = "Independent achievements";
+    for (std::size_t i = 0; i < fixture::ids.size(); ++i) {
+        const auto id = fixture::ids[i];
+        category.associations.push_back({id, {}, 0});
+        net::AchievementDefinition definition;
+        definition.id = id;
+        definition.name = i ? std::string(fixture::second_name) : "First achievement";
+        definition.description = "Fixture definition";
+        definition.version = 1;
+        definition.points = i ? 10 : 5;
+        definition.has_reward = i != 0;
+        // Received chat metadata includes one bit and one count for each of
+        // bucket 1 and bucket 0; preserve that schema in the semantic catalog.
+        for (const auto type : {0u, 1u}) {
+            net::AchievementComponent component;
+            component.id = static_cast<std::uint32_t>(100 + i * 100 + type);
+            component.type = static_cast<std::uint8_t>(type);
+            component.required_count = 5;
+            component.name = "Runtime criterion";
+            component.description = "Fixture component";
+            definition.component_indices[type][component.id] = definition.components[type].size();
+            definition.components[type].push_back(std::move(component));
+        }
+        catalog.definition_indices[id] = catalog.definitions.size();
+        catalog.definitions.push_back(std::move(definition));
+    }
+    catalog.category_indices[category.id] = 0;
+    catalog.categories.push_back(std::move(category));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::AchievementDefinitions, std::move(catalog)});
     REQUIRE(rig.conn.achievements().catalog());
     const auto received = chat.lines(before.version);
     REQUIRE(received.returned);

@@ -8,8 +8,8 @@
 //   - Handle_OP_MoveItem_Apply @0x4c1ba0, what a server OP_MoveItem does (Handle_OP_MoveItem_Apply.jsonl);
 //   - CEverQuest::MoveMoney @0x51ad70 (CEverQuest_MoveMoney.jsonl) and CInventoryWnd::ClickedMoneyButton @0x692890
 //     (CInventoryWnd_ClickedMoneyButton.jsonl).
-// OP_MoveMultipleItems' serialisation is net/item_packets.h's encode(const MoveMultipleItems&). Nothing here does
-// networking or touches the inventory; net/game_connection_items.cpp and net/game_connection_bank.cpp apply them.
+// OP_MoveMultipleItems' serialisation is net/protocol/rof2/packets/item_packets.h's encode(const MoveMultipleItems&). Nothing here does
+// networking or touches the inventory; net/connection/game_connection_items.cpp and net/connection/game_connection_bank.cpp apply them.
 
 #include <array>
 #include <cstdint>

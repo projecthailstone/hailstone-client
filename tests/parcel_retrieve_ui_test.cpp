@@ -13,9 +13,9 @@
 
 #include "app/lua_ui.h"
 #include "mock_server/harness.h"
-#include "net/item_packets.h"
-#include "net/merchant_packets.h"
-#include "net/packet_io.h"
+#include "net/protocol/rof2/packets/item_packets.h"
+#include "net/protocol/rof2/packets/merchant_packets.h"
+#include "net/protocol/rof2/wire_io.h"
 #include "ui/lua/lua_host.h"
 #include "scratch_dir.h"
 
@@ -45,7 +45,7 @@ void open_parcel_merchant(net::GameConnection& conn) {
     open.player_id = w.player_id;
     open.rate = 1.0f;
     open.tab_display = 7;
-    conn.receive_zone_packet_for_test(net::encode(open));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::ShopRequest, open});
     REQUIRE(conn.merchant()->open);
 }
 
@@ -55,14 +55,14 @@ void deliver_parcel(net::GameConnection& conn, std::int16_t slot, std::uint32_t 
     ip.item = make_item(id, name, slot);
     ip.parcel_sent_time = 1'790'000'000;
     ip.parcel_from = "Somebody";
-    conn.receive_zone_packet_for_test(net::encode_item_packet(false, ip));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::ItemPacket, ip});
 }
 
 // The parcel retrieved last: its slot (ParcelRetrieve's parcel_slot), or -1 when none was sent.
 long long last_retrieved(const std::vector<net::AppPacket>& log) {
     long long slot = -1;
     for (const auto& p : log)
-        if (net::is_op(p, net::Op::ShopRetrieveParcel))
+        if (net::is_op(p, net::rof2::Op::ShopRetrieveParcel))
             if (auto r = net::decode_parcel_retrieve(p)) slot = r->parcel_slot;
     return slot;
 }

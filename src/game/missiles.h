@@ -103,7 +103,6 @@ struct MissilePacket {
 
 // The 116-byte packet; nullopt when shorter or when any of its floats is NaN or infinite (Hailstone's check, not the
 // original's). The model name is the NUL-terminated text at +0x59 (27 bytes).
-std::optional<MissilePacket> decode_missile_packet(std::span<const std::byte> data);
 
 inline constexpr std::uint8_t kMissileItemSpell = 9;
 inline constexpr std::uint8_t kMissileItemThrown = 7; // MissileAI leaves its tilt rate alone

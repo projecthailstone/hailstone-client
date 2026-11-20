@@ -17,7 +17,7 @@
 
 #include "app/lua_ui.h"
 #include "core/game_dir.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "scratch_dir.h"
 #include "ui/dev_screens.h"
 #include "ui/lua/lua_host.h"

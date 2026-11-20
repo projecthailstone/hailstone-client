@@ -13,7 +13,7 @@
 #include "app/lua_ui.h"
 #include "app/lua_ui_windows.h"
 #include "plugin/lua_value.h"
-#include "net/item_packets.h"
+#include "net/protocol/rof2/packets/item_packets.h"
 #include "mq_test_world.h"
 #include "scratch_dir.h"
 

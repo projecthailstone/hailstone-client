@@ -7,8 +7,8 @@
 
 #include "app/lua_ui.h"
 #include "mock_server/harness.h"
-#include "net/item_packets.h"
-#include "net/packet_io.h"
+#include "net/protocol/rof2/packets/item_packets.h"
+#include "net/protocol/rof2/wire_io.h"
 
 using namespace hailstone;
 using namespace hailstone::test;
@@ -45,11 +45,11 @@ TEST_CASE("Auto-Inventory button: enabled with an item on the cursor; a click pu
     REQUIRE(luaL_dostring(L, "return hs.ClickChild('InventoryWindow', 'Hailstone_AutoInventory', 'left')") == LUA_OK);
     CHECK(lua_toboolean(L, -1));
     lua_settop(L, 0);
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::Op::MoveItem) >= 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::rof2::Op::MoveItem) >= 1; }));
     CHECK_FALSE(conn.inventory().cursor());
     const net::AppPacket* move = nullptr;
     for (const auto& p : rig.server.zone_log)
-        if (net::is_op(p, net::Op::MoveItem)) move = &p;
+        if (net::is_op(p, net::rof2::Op::MoveItem)) move = &p;
     REQUIRE(move);
     auto mv = net::decode_move_item(*move);
     REQUIRE(mv);

@@ -251,6 +251,14 @@ TEST_CASE("bug report: chat lines' words taken out of the logs and the crash rep
     CHECK(app::redact_chat("[info] chat: last line") == "[info] chat: (chat taken out of the report)");
     CHECK(app::redact_chat("[warn] chat: a\r\n") == "[warn] chat: (chat taken out of the report)\r\n");
     // Only the level's tag before it: a line that holds the words later stays.
+    // Source-location prefixes must not make private chat visible in an uploaded bug/crash report.
+    CHECK(app::redact_chat("[info] [game_connection.cpp:142, chat] chat: private text\n"
+                           "  multiline secret\n"
+                           "[warn] [zone_codec.cpp:311, decode_opcode] zone codec: unknown\n") ==
+          "[info] [game_connection.cpp:142, chat] chat: (chat taken out of the report)\n"
+          "[warn] [zone_codec.cpp:311, decode_opcode] zone codec: unknown\n");
+    CHECK(app::redact_chat("[info] [unknown:?, ?] chat: private") ==
+          "[info] [unknown:?, ?] chat: (chat taken out of the report)");
     CHECK(app::redact_chat("[info] loaded [x] chat: y\n") == "[info] loaded [x] chat: y\n");
     CHECK(app::redact_chat("chat: no tag\n") == "chat: no tag\n");
     // A chat text with newlines in it: its other lines (no level's tag) go too, up to the next tagged line.

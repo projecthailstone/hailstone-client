@@ -17,8 +17,8 @@
 #include "game/item_compare.h"
 #include "game/mechanics/character.h"
 #include "game/mechanics/tables.h"
-#include "net/game_connection.h"
-#include "net/item_packets.h"
+#include "net/connection/game_connection.h"
+#include "net/messages/item.h"
 #include "scratch_dir.h"
 
 using namespace hailstone;
@@ -298,7 +298,7 @@ TEST_CASE("Item compare: hs.CompareItem, hs.CompareSlotItem and hs.CompareBagSlo
     carried.slot = net::ItemSlot::possessions(23);
     net::Item food = gear("Rations", 0);
     food.slot = net::ItemSlot::possessions(24);
-    conn.receive_zone_packet_for_test(net::encode_char_inventory({worn, carried, food}));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::CharInventory, std::vector<net::Item>{worn, carried, food}});
 
     Fixture f;
     f.sheet.possessions[2] = worn;
@@ -410,7 +410,7 @@ TEST_CASE("Item compare: each place keeps its own comparison") {
         it.slot = net::ItemSlot::possessions(static_cast<std::int16_t>(23 + i));
         carried.push_back(it);
     }
-    conn.receive_zone_packet_for_test(net::encode_char_inventory(carried));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::CharInventory, carried});
     host.character = &ch;
     for (int i = 0; i < 10; ++i)
         CHECK(run(L, "return hs.CompareItem(" + std::to_string(23 + i) + ").slots[1].verdict") ==

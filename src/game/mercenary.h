@@ -7,13 +7,15 @@
 // (tests/merc_vectors_test.cpp).
 //
 // Nothing here does networking or UI: the handlers and senders report what they do through MercHooks (chat lines,
-// the manager's events, packets, window lookups), net/game_connection_merc.cpp connects them to the game.
+// the manager's events, packets, window lookups), net/connection/game_connection_merc.cpp connects them to the game.
 
 #include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>
 #include <vector>
+
+namespace hailstone::net::messages { struct MercenaryRequest; struct MercenaryNotice; }
 
 namespace hailstone::game {
 
@@ -90,9 +92,9 @@ public:
     // An event to the manager's state machine (Merc_DispatchEvent or the inline queue): its id and the argument the
     // events 0x10, 0x15, 0x17 and 0x19 carry.
     virtual void event(std::uint32_t id, std::int32_t argument) = 0;
-    // A packet on the world connection (net::Send: the opcode and payload; without a connection the original logs
-    // "Attempt to send message %d on a void connection." unless quieted, a failed send closes it).
-    virtual void send(std::uint16_t opcode, std::vector<std::uint8_t> payload) = 0;
+    // Semantic mercenary command. The selected application codec owns its wire layout.
+    virtual void send(const net::messages::MercenaryRequest& command) = 0;
+    virtual void send_stance(std::uint32_t command, std::uint32_t stance) = 0;
     // DebugLog_Printf.
     virtual void debug_log(const std::string& text) = 0;
     // UIWindowList_FindWindowByName: whether the window exists; hide_window is its Show(0, 1, 1), store_visibility
@@ -111,37 +113,8 @@ public:
     virtual void confirm(std::uint32_t eqstr, std::int32_t dialog, std::int32_t milliseconds) = 0;
 };
 
-// Opcodes (RoF2 wire values). EQEmu's patch_RoF2.conf names the first ones (net/opcodes_rof2.inc); the rest have no
-// EQEmu name and are given by the handler or sender that uses them.
-inline constexpr std::uint16_t kOpMercDataUpdateRequest = 0x7b89, kOpMercDataUpdate = 0x61a4,
-                               kOpMercDataRequest = 0x11c1, kOpMercDataResponse = 0x72ce, kOpMercHire = 0x7169,
-                               kOpMercDismiss = 0x6e83, kOpMercTimerRequest = 0x31e4, kOpMercTimer = 0x0763,
-                               kOpMercUnknown1 = 0x5d26, kOpMercCommand = 0x27f2, kOpMercSuspendRequest = 0x4407,
-                               kOpMercSuspendResponse = 0x6f03, kOpMercUnsuspendResponse = 0x27a0;
-inline constexpr std::uint16_t kOpMercSwitch = 0x1b37,       // OP_MercenarySwitch (both ways)
-    kOpMercSuspended = 0x0e52,                                // suspended by the server (Merc_HandleSuspended)
-    kOpMercDied = 0x038f,                                     // state 0 and the revive timer
-    kOpMercTimerCleared = 0x2749,                             // the restoration timer is over
-    kOpMercEvent7 = 0x20b9,                                   // event 7
-    kOpMercTimeLeft = 0x2b4f,                                 // the upkeep time left
-    kOpMercUpkeepCharged = 0x5f88,                            // Merc_HandleUpkeepCharged
-    kOpMercCosts = 0x3cbc,                                    // the active mercenary's four costs
-    kOpMercZoneIn = 0x4820,                                   // {u32 8} after OP_MercenaryTimerRequest
-    kOpMercAssistMode = 0x0b72,                               // auto-assist {u8}
-    kOpMercCallForAssist = 0x7e6f,                            // {'0'}
-    kOpMercSetOwner = 0x5df8,                                 // ownership transfer (28 bytes)
-    kOpMercTransferAnswer = 0x4333,                           // its answer
-    kOpMercLog = 0xee80;                                      // /merclog
-
 // States 0, 1, 2 and 4: no active (unsuspended) mercenary (0x564820).
 bool merc_inactive(std::uint32_t state);
-
-// Record_Unserialize_569cf0 @0x569cf0: one entry from `data` at `pos` into `rec`. Every field is read only when it
-// fits and otherwise keeps its value (the list reader reuses one record, so a truncated entry keeps the previous
-// entry's fields; the original's first one keeps stack bytes, here zero). More than kMercMaxStances stance pairs
-// overrun the original's record (into +0xcc and beyond); here the extra pairs are skipped (stance_count keeps the
-// wire's count).
-void merc_read_record(std::span<const std::uint8_t> data, std::size_t& pos, MercRecord& rec);
 
 // Merc_ResetState (0x566620): the zone-in reset; the owned list is kept.
 void merc_reset(MercManager& m, std::uint32_t fast_time);
@@ -153,25 +126,24 @@ void merc_dismiss_locally(MercManager& m, MercHooks& h);
 // 0x566f70: last tick = GetTickCount, event 0x13, then event 5 for state 0 or 2 for states 1, 2 and 4.
 void merc_restart_upkeep(MercManager& m, MercHooks& h);
 
-// ---- handlers (HandleWorldMessage_Mercenary @0x569920). `p` is the packet (null: none; the 4-byte reads are
-// little endian from it, so it must hold what the handler reads).
-void merc_handle_data_response(MercManager& m, std::span<const std::uint8_t> packet, MercHooks& h); // 0x72ce
-void merc_handle_data_update(MercManager& m, std::span<const std::uint8_t> packet, MercHooks& h);   // 0x61a4
-void merc_handle_hire(MercManager& m, const std::uint8_t* p, MercHooks& h);              // 0x7169 @0x5695b0
-void merc_handle_timer(MercManager& m, const std::uint8_t* p, MercHooks& h);             // 0x0763 @0x567ca0
-void merc_handle_suspend_response(MercManager& m, const std::uint8_t* p, MercHooks& h);  // 0x6f03 @0x567500
-void merc_handle_unsuspend_response(MercManager& m, const std::uint8_t* p, MercHooks& h); // 0x27a0 @0x567590
-void merc_handle_suspended(MercManager& m, const std::uint8_t* p, MercHooks& h);         // 0x0e52 @0x567920
-void merc_handle_died(MercManager& m, const std::uint8_t* p, MercHooks& h);              // 0x038f @0x567890
-void merc_handle_timer_cleared(MercManager& m, const std::uint8_t* p, MercHooks& h);     // 0x2749 @0x5677e0
-void merc_handle_event7(MercManager& m, const std::uint8_t* p, MercHooks& h);            // 0x20b9 @0x567a20
-void merc_handle_unknown1(MercManager& m, const std::uint8_t* p, MercHooks& h);          // 0x5d26 @0x567df0
-void merc_handle_time_left(MercManager& m, const std::uint8_t* p, MercHooks& h);         // 0x2b4f @0x567650
-void merc_handle_upkeep_charged(MercManager& m, const std::uint8_t* p, MercHooks& h);    // 0x5f88 @0x567710
-void merc_handle_costs(MercManager& m, const std::uint8_t* p, MercHooks& h);             // 0x3cbc @0x567ff0
-void merc_handle_command(MercManager& m, const std::uint8_t* p, MercHooks& h);           // 0x27f2 @0x567ea0
-void merc_handle_switch(MercManager& m, const std::uint8_t* p, MercHooks& h);            // 0x1b37 @0x5680c0
-void merc_handle_dismiss(MercManager& m, const std::uint8_t* p, MercHooks& h);           // 0x6e83 @0x567c00
+// The codec supplies typed notice values; no wire buffers enter the game manager.
+void merc_handle_data_response(MercManager& m, const net::messages::MercenaryNotice& notice, MercHooks& h);
+void merc_handle_data_update(MercManager& m, const net::messages::MercenaryNotice& notice, MercHooks& h);
+void merc_handle_hire(MercManager& m, const net::messages::MercenaryNotice& notice, MercHooks& h);
+void merc_handle_timer(MercManager& m, const net::messages::MercenaryNotice& notice, MercHooks& h);
+void merc_handle_suspend_response(MercManager& m, const net::messages::MercenaryNotice& notice, MercHooks& h);
+void merc_handle_unsuspend_response(MercManager& m, const net::messages::MercenaryNotice& notice, MercHooks& h);
+void merc_handle_suspended(MercManager& m, const net::messages::MercenaryNotice& notice, MercHooks& h);
+void merc_handle_died(MercManager& m, const net::messages::MercenaryNotice& notice, MercHooks& h);
+void merc_handle_timer_cleared(MercManager& m, const net::messages::MercenaryNotice& notice, MercHooks& h);
+void merc_handle_event7(MercManager& m, const net::messages::MercenaryNotice& notice, MercHooks& h);
+void merc_handle_unknown1(MercManager& m, const net::messages::MercenaryNotice& notice, MercHooks& h);
+void merc_handle_time_left(MercManager& m, const net::messages::MercenaryNotice& notice, MercHooks& h);
+void merc_handle_upkeep_charged(MercManager& m, const net::messages::MercenaryNotice& notice, MercHooks& h);
+void merc_handle_costs(MercManager& m, const net::messages::MercenaryNotice& notice, MercHooks& h);
+void merc_handle_command(MercManager& m, const net::messages::MercenaryNotice& notice, MercHooks& h);
+void merc_handle_switch(MercManager& m, const net::messages::MercenaryNotice& notice, MercHooks& h);
+void merc_handle_dismiss(MercManager& m, const net::messages::MercenaryNotice& notice, MercHooks& h);
 
 // ---- senders
 // Merc_RequestTimerAndData @0x566740 (zone-in): the reset, OP_MercenaryTimerRequest and 0x4820 {8}.
@@ -288,12 +260,7 @@ void merc_send_command(MercManager& m, const std::vector<std::uint32_t>& row_dat
     set_row_color(old_row, 0, kMercRowDefault);
     set_row_color(row, 0, kMercRowActive);
     m.active.stance = data(row);
-    std::vector<std::uint8_t> p(8);
-    for (int k = 0; k < 4; ++k) {
-        p[static_cast<std::size_t>(k)] = static_cast<std::uint8_t>(m.active.command >> (8 * k));
-        p[static_cast<std::size_t>(4 + k)] = static_cast<std::uint8_t>(m.active.stance >> (8 * k));
-    }
-    h.send(kOpMercCommand, std::move(p));
+    h.send_stance(m.active.command, m.active.stance);
 }
 
 int merc_stricmp(const std::string& a, const std::string& b);

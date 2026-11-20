@@ -171,7 +171,7 @@ struct SkillMessage {
     std::uint32_t color = 0x10e;
 };
 
-// A packet UseSkill sends (the bytes are in net/ability_packets.h).
+// A skill intent issued by the game simulation; the selected codec chooses its wire representation.
 struct SkillSend {
     enum class Kind : std::uint8_t {
         CombatAbility,   // OP_CombatAbility {target, atk = 100, skill}
@@ -196,11 +196,7 @@ struct SkillSend {
     std::uint32_t skill = 0;
     std::uint32_t value = 0; // the skill value (profile skills) for Disarm / PickPocket / Begging
     std::uint32_t source = 0; // the player's spawn id (Disarm / PickPocket / Begging)
-    // The bytes UseSkill built itself (game/mechanics/use_skill.h): the wire opcode and the payload after it;
-    // `kind` then only names the packet.
-    bool raw = false;
-    std::uint16_t opcode = 0;
-    std::vector<std::uint8_t> payload;
+
 };
 
 struct SkillResult {

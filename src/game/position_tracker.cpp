@@ -1,6 +1,5 @@
 #include "game/position_tracker.h"
 
-#include "core/byte_io.h"
 
 namespace hailstone::game {
 
@@ -26,26 +25,16 @@ bool PositionTracker::record(const std::array<float, 3>& p, std::uint32_t reason
     return reason == 3 || reason == 4 || reason == 5 || reason == 8; // 0x56e290
 }
 
-std::vector<std::byte> PositionTracker::take(bool force, std::uint32_t now) {
-    ByteWriter w;
-    std::size_t count = 0;
-    if (!enabled_) return {};
-    while (!samples_.empty() && count < 10000) {
+std::vector<PositionTracker::HistoryEntry> PositionTracker::take(bool force, std::uint32_t now) {
+    std::vector<HistoryEntry> result;
+    if (!enabled_) return result;
+    while (!samples_.empty() && result.size() < 10000) {
         const Sample& s = samples_.front();
         if (!force && now - s.time <= 2000) break;
-        // The jump table on the reason sends 1..9 alike; 6 throws (never recorded).
-        w.f32(s.position[0]);
-        w.f32(s.position[1]);
-        w.f32(s.position[2]);
-        w.le(static_cast<std::uint8_t>(s.reason));
-        w.le(static_cast<std::uint16_t>(s.time));
-        w.le(entries_++);
+        result.push_back({s, entries_++});
         samples_.pop_front();
-        ++count;
     }
-    if (count == 0) return {};
-    w.le(std::uint8_t{0});
-    return w.take();
+    return result;
 }
 
 void PositionTracker::flush() {

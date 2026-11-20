@@ -13,8 +13,8 @@
 #include "core/byte_io.h"
 #include "core/log.h"
 #include "manual_clock.h"
-#include "net/session.h"
-#include "net/session_codec.h"
+#include "net/session/soe/session.h"
+#include "net/session/soe/framing.h"
 #include "platform/udp_socket.h"
 
 using namespace hailstone;
@@ -504,7 +504,7 @@ struct FakeServer {
 
 TEST_CASE("session loopback: handshake, resend in both directions, fragment reassembly") {
     FakeServer server;
-    auto session = Session::create();
+    auto session = soe::create_session();
     session->connect("127.0.0.1", server.port());
     CHECK(session->state() == SessionState::Connecting);
 
@@ -559,7 +559,7 @@ TEST_CASE("session loopback: handshake, resend in both directions, fragment reas
 TEST_CASE("session: a server asking for a CRC size other than 0, 2 or 4 is refused at connect") {
     FakeServer server;
     server.params.crc_bytes = 3;
-    auto session = Session::create();
+    auto session = soe::create_session();
     session->connect("127.0.0.1", server.port());
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
     while (session->state() == SessionState::Connecting && std::chrono::steady_clock::now() < deadline) {
@@ -576,9 +576,9 @@ TEST_CASE("session times out when nobody answers") {
     std::string err;
     auto local = platform::Endpoint::v4(127, 0, 0, 1, 0);
     REQUIRE(silent.open(platform::Endpoint::Family::V4, err, &local));
-    SessionOptions opt;
+    soe::Options opt;
     opt.connect_timeout = std::chrono::milliseconds(300);
-    auto session = Session::create(opt);
+    auto session = soe::create_session(opt);
     session->connect("127.0.0.1", silent.local_endpoint()->port);
     for (int i = 0; i < 200 && session->state() == SessionState::Connecting; ++i) {
         session->update();
@@ -591,9 +591,9 @@ TEST_CASE("session times out when nobody answers") {
 TEST_CASE("session loopback: the service thread acks while the owner is busy; small packets are held") {
     FakeServer server;
     test::ManualClock clock;
-    SessionOptions held_opt;
+    soe::Options held_opt;
     held_opt.clock = clock.source();
-    auto session = Session::create(held_opt);
+    auto session = soe::create_session(held_opt);
     session->connect("127.0.0.1", server.port());
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
     auto alive = [&] { return std::chrono::steady_clock::now() < deadline; };
@@ -644,10 +644,10 @@ TEST_CASE("session loopback: the service thread acks while the owner is busy; sm
     CHECK(server.datagrams == before + 1);
 
     // With no hold (the login server's UdpManagers) the next service pass sends it.
-    SessionOptions opt;
+    soe::Options opt;
     opt.hold_time = std::chrono::milliseconds(0);
     FakeServer login;
-    auto quick = Session::create(opt);
+    auto quick = soe::create_session(opt);
     quick->connect("127.0.0.1", login.port());
     while (quick->state() == SessionState::Connecting && alive()) {
         login.poll(false);
@@ -776,9 +776,9 @@ TEST_CASE("platform::resolve_async: at most four lookups run at once; the rest w
 TEST_CASE("session: a send the network refuses is logged once an outage, not once a datagram") {
     // A link-local address on an interface that does not exist: every SessionRequest the session sends fails.
     test::ManualClock clock;
-    SessionOptions o;
+    soe::Options o;
     o.clock = clock.source();
-    auto session = Session::create(o);
+    auto session = soe::create_session(o);
     clock.hold();
     session->connect("fe80::1%4000000", 9);
     session->update();

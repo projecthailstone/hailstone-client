@@ -20,14 +20,13 @@
 #include "game/reward_selection.h"
 #include "mock_server/harness.h"
 #include "mq_test_world.h"
+#include "net/protocol/rof2/packets/reward_packets.h"
 #include "plugin/hooks.h"
 #include "plugin/policy.h"
-#include "reward_test_packets.h"
 #include "scratch_dir.h"
 #include "ui/lua/lua_host.h"
 
 using namespace hailstone;
-namespace fixture = test::reward_fixture;
 
 namespace {
 using Lane = game::RewardLane;
@@ -49,8 +48,38 @@ game::RewardSelection& rewards(net::GameConnection& connection) {
 game::RewardLaneState& lane(net::GameConnection& connection, Lane value = Lane::Pending) {
     return const_cast<game::RewardLaneState&>(connection.rewards().lane(value));
 }
-void deliver(net::GameConnection& connection, net::AppPacket packet) {
-    net::GameConnectionTestAccess::handle_zone(connection, packet);
+net::messages::GameMessage reward_collection(net::RewardLane lane = net::RewardLane::Pending,
+                                              std::uint32_t option = 12, std::uint32_t item = 1000) {
+    net::RewardPacket packet;
+    packet.lane = lane;
+    packet.replace_collection = lane == net::RewardLane::Preview;
+    net::RewardSet set;
+    set.pending_id = 42;
+    set.set_id = 700;
+    set.title = "Fixture choices";
+    net::RewardOption shared;
+    shared.wire_id = 1;
+    shared.common = true;
+    shared.label = "Common";
+    net::RewardEntry text;
+    text.entry_id = 10;
+    text.description = "Shared grant";
+    shared.entries.push_back(std::move(text));
+    net::RewardOption choice;
+    choice.wire_id = option;
+    choice.label = "Choose item";
+    net::RewardEntry selection;
+    selection.type = net::RewardEntryType::Item;
+    selection.entry_id = 20;
+    selection.description = "Fixture reward";
+    selection.items.push_back({item, 2, true, 77, "Synthetic reward"});
+    choice.entries.push_back(std::move(selection));
+    set.options.push_back(std::move(shared));
+    set.options.push_back(std::move(choice));
+    packet.sets.push_back(std::move(set));
+    return {lane == net::RewardLane::Pending ? net::messages::GameOpcode::AchievementReward
+                                             : net::messages::GameOpcode::RewardSelection,
+            std::move(packet)};
 }
 struct RewardLua {
     test::ScratchDir scratch{"lua_ui_rewards_layout"};
@@ -94,8 +123,8 @@ const net::AppPacket* last(const std::vector<net::AppPacket>& packets, std::uint
 TEST_CASE("hs reward bridge: exact typed DTO and full-width opaque identities") {
     RewardGui gui;
     mq_test::World world("lua_ui_reward_dto");
-    deliver(*world.conn, fixture::collection());
-    deliver(*world.conn, fixture::collection(Lane::Preview, 13));
+    world.conn->receive_zone_message_for_test(reward_collection());
+    world.conn->receive_zone_message_for_test(reward_collection(Lane::Preview, 13));
     auto& pending = lane(*world.conn);
     pending.revision = std::numeric_limits<std::uint64_t>::max() - 1;
     pending.tabs[0].token = std::numeric_limits<std::uint64_t>::max();
@@ -175,8 +204,8 @@ TEST_CASE("hs reward bridge: exact typed DTO and full-width opaque identities") 
 TEST_CASE("hs reward bridge: cached revisions omit tables while pending metadata stays fresh") {
     RewardGui gui;
     mq_test::World world("lua_ui_reward_cache");
-    deliver(*world.conn, fixture::collection());
-    deliver(*world.conn, fixture::collection(Lane::Preview, 13));
+    world.conn->receive_zone_message_for_test(reward_collection());
+    world.conn->receive_zone_message_for_test(reward_collection(Lane::Preview, 13));
     RewardLua lua(*world.conn);
     lua.check("saved=hs.RewardSelection(); return saved.pending.tabs~=nil and saved.preview.tabs~=nil");
     auto& pending = lane(*world.conn);
@@ -192,7 +221,7 @@ TEST_CASE("hs reward bridge: cached revisions omit tables while pending metadata
     )lua");
     // Invalid optional cache hints request a full snapshot, never an action/error.
     lua.check("local s=hs.RewardSelection(123,{});return s.pending.unchanged==false and s.pending.tabs~=nil and s.preview.tabs~=nil");
-    deliver(*world.conn, fixture::collection());
+    world.conn->receive_zone_message_for_test(reward_collection());
     lua.check(R"lua(
       local s=hs.RewardSelection(saved.pending.revision,saved.preview.revision)
       return s.pending.unchanged==false and #s.pending.tabs==1 and s.pending.tabs[1].token~=saved.pending.tabs[1].token
@@ -207,7 +236,7 @@ TEST_CASE("hs reward bridge: cached revisions omit tables while pending metadata
 TEST_CASE("hs reward bridge: strict decimal-u64 and integer-u32 arguments reject coercion") {
     RewardGui gui;
     mq_test::World world("lua_ui_reward_args");
-    deliver(*world.conn, fixture::collection());
+    world.conn->receive_zone_message_for_test(reward_collection());
     RewardLua lua(*world.conn);
     const auto& view = world.conn->rewards().lane(Lane::Pending);
     const auto revision = quoted(view.revision), token = quoted(view.tabs[0].token);
@@ -241,9 +270,9 @@ TEST_CASE("hs reward bridge: local visibility close and replacement connection i
     RewardGui gui;
     mq_test::World first("lua_ui_reward_first");
     mq_test::World second("lua_ui_reward_second");
-    deliver(*first.conn, fixture::collection());
-    deliver(*first.conn, fixture::collection(Lane::Preview, 13));
-    deliver(*second.conn, fixture::collection());
+    first.conn->receive_zone_message_for_test(reward_collection());
+    first.conn->receive_zone_message_for_test(reward_collection(Lane::Preview, 13));
+    second.conn->receive_zone_message_for_test(reward_collection());
     RewardLua lua(*first.conn);
     lua.check("old=hs.RewardSelection();return hs.WindowShown('RewardSelectionWnd')==true");
     lua.check("local ok=hs.RewardSelectionClose('pending');local s=hs.RewardSelection();return ok==true and s.pending.shown==false and s.preview.shown==true and s.shown==true");
@@ -272,8 +301,8 @@ TEST_CASE("hs reward bridge: getter is passive and explicit full-width requests 
     options.hooks = &hooks;
     test::Rig rig(test::MockConfig::standard(), options);
     REQUIRE(rig.to_zone());
-    deliver(rig.conn, fixture::collection(Lane::Pending, 0xffffffff, 0xffffffff));
-    deliver(rig.conn, fixture::collection(Lane::Preview, 0xfffffffd, 0xfffffffc));
+    rig.conn.receive_zone_message_for_test(reward_collection(Lane::Pending, 0xffffffff, 0xffffffff));
+    rig.conn.receive_zone_message_for_test(reward_collection(Lane::Preview, 0xfffffffd, 0xfffffffc));
     lane(rig.conn).tabs[0].reward.options[1].entries[0].entry_id = 0xfffffffe;
     RewardLua lua(rig.conn);
     lua.check("saved=hs.RewardSelection();return saved.shown==true");
@@ -316,8 +345,8 @@ TEST_CASE("hs reward bridge: getter is passive and explicit full-width requests 
     CHECK(claimed.le<std::uint32_t>() == 0); // stock sender trailer, never an extra UI argument
     CHECK(claimed.empty());
     REQUIRE(rig.until([&] {
-        return test::MockEqServer::count(rig.server.zone_log, net::Op::AchievementReward) >= 3 &&
-               test::MockEqServer::count(rig.server.zone_log, net::Op::RewardSelection) >= 1;
+        return test::MockEqServer::count(rig.server.zone_log, net::rof2::Op::AchievementReward) >= 3 &&
+               test::MockEqServer::count(rig.server.zone_log, net::rof2::Op::RewardSelection) >= 1;
     }));
     CHECK(rig.conn.rewards().lane(Lane::Pending).claim_pending);
     const auto before = outgoing.size();
@@ -328,7 +357,7 @@ TEST_CASE("hs reward bridge: getter is passive and explicit full-width requests 
 TEST_CASE("hs reward bridge: plugin UI without actions cannot inspect claim or restore") {
     RewardGui gui;
     mq_test::World world("lua_ui_reward_capabilities");
-    deliver(*world.conn, fixture::collection());
+    world.conn->receive_zone_message_for_test(reward_collection());
     RewardLua binding(*world.conn);
     test::ScratchDir scratch("lua_ui_reward_plugin");
     const auto pack = scratch.path() / "pack";
@@ -378,7 +407,7 @@ TEST_CASE("hs reward bridge: plugin UI without actions cannot inspect claim or r
 TEST_CASE("hs reward bridge: a kept record is refilled in place, with no garbage while nothing changes") {
     RewardGui gui;
     mq_test::World world("lua_ui_reward_into");
-    deliver(*world.conn, fixture::collection());
+    world.conn->receive_zone_message_for_test(reward_collection());
     RewardLua lua(*world.conn);
     lua.check(R"lua(
       into={}

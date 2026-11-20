@@ -13,9 +13,9 @@
 #include "game/combat.h"
 #include "game/eq_strings.h"
 #include "game/world_state.h"
-#include "net/opcodes.h"
-#include "net/packet_io.h"
-#include "net/zone_packets.h"
+#include "net/protocol/rof2/opcode_map.h"
+#include "net/protocol/rof2/wire_io.h"
+#include "net/protocol/rof2/packets/zone_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::net;
@@ -24,7 +24,7 @@ namespace {
 
 std::vector<std::byte> bytes_of(ByteWriter&& w) { return w.take(); }
 
-AppPacket packet(Op op, ByteWriter&& w) { return AppPacket(to_wire(op), w.take()); }
+AppPacket packet(rof2::Op op, ByteWriter&& w) { return AppPacket(rof2::to_wire(op), w.take()); }
 
 AppPacket respawn_choices(std::uint8_t validity = 1, bool duplicate_id = false) {
     ByteWriter w;
@@ -43,7 +43,7 @@ AppPacket respawn_choices(std::uint8_t validity = 1, bool duplicate_id = false) 
         w.bytes(std::as_bytes(std::span(names[i], std::strlen(names[i]) + 1)));
         w.le<std::uint8_t>(i == 1 ? validity : 0);
     }
-    return packet(Op::RespawnWindow, std::move(w));
+    return packet(rof2::Op::RespawnWindow, std::move(w));
 }
 
 } // namespace
@@ -103,7 +103,7 @@ TEST_CASE("OP_Damage is rof2_structs CombatDamage_Struct, 30 bytes, packed") {
     w.f32(0.0f);                 // /* 21 */ hit_pitch
     w.le<std::uint8_t>(0);       // /* 25 */ secondary
     w.le<std::uint32_t>(2);      // /* 26 */ special
-    AppPacket p = packet(Op::Damage, std::move(w));
+    AppPacket p = packet(rof2::Op::Damage, std::move(w));
     REQUIRE(p.data.size() == kCombatDamageSize);
     auto d = decode_combat_damage(p);
     REQUIRE(d);
@@ -128,7 +128,7 @@ TEST_CASE("OP_Death passes the server's Death_Struct through (bind zone at +12, 
     w.le<std::uint32_t>(4);          // attack_skill (damage type)
     w.le<std::uint32_t>(9);          // damage
     w.le<std::uint32_t>(0);          // unknown028
-    AppPacket p = packet(Op::Death, std::move(w));
+    AppPacket p = packet(rof2::Op::Death, std::move(w));
     REQUIRE(p.data.size() == kDeathSize);
     auto d = decode_death(p);
     REQUIRE(d);
@@ -149,7 +149,7 @@ TEST_CASE("OP_ManaChange, OP_ManaUpdate, OP_EnduranceUpdate, OP_ExpUpdate, OP_Le
     mc.le<std::uint8_t>(0);   // keepcasting
     mc.zeros(3);
     mc.le<std::int32_t>(-1); // slot
-    AppPacket m = packet(Op::ManaChange, std::move(mc));
+    AppPacket m = packet(rof2::Op::ManaChange, std::move(mc));
     REQUIRE(m.data.size() == 20);
     auto md = decode_mana_change(m);
     REQUIRE(md);
@@ -162,7 +162,7 @@ TEST_CASE("OP_ManaChange, OP_ManaUpdate, OP_EnduranceUpdate, OP_ExpUpdate, OP_Le
     eu.le<std::uint32_t>(90);  // cur_end
     eu.le<std::uint32_t>(100); // max_end
     eu.le<std::uint16_t>(321); // spawn_id
-    AppPacket e = packet(Op::EnduranceUpdate, std::move(eu));
+    AppPacket e = packet(rof2::Op::EnduranceUpdate, std::move(eu));
     auto ed = decode_points_update(e);
     REQUIRE(ed);
     CHECK(ed->current == 90);
@@ -191,7 +191,7 @@ TEST_CASE("OP_Animation is rof2_structs Animation_Struct: id, action, speed") {
     w.le<std::uint16_t>(300); // spawnid
     w.le<std::uint8_t>(5);    // action
     w.le<std::uint8_t>(10);   // speed
-    AppPacket p = packet(Op::Animation, std::move(w));
+    AppPacket p = packet(rof2::Op::Animation, std::move(w));
     auto a = decode_animation(p);
     REQUIRE(a);
     CHECK(a->spawn_id == 300);
@@ -216,7 +216,7 @@ TEST_CASE("OP_ZonePlayerToBind follows ENCODE(OP_ZonePlayerToBind)") {
     w.bytes(std::as_bytes(std::span("qeynos", 7)));
     w.le<std::uint8_t>(1);
     w.zeros(12);
-    AppPacket p = packet(Op::ZonePlayerToBind, std::move(w));
+    AppPacket p = packet(rof2::Op::ZonePlayerToBind, std::move(w));
     CHECK(p.data.size() == 34 + 6);
     auto b = decode_zone_player_to_bind(p);
     REQUIRE(b);
@@ -511,7 +511,7 @@ TEST_CASE("OP_SimpleMessage is SimpleMessage_Struct: string id, colour, unknown"
     w.le<std::uint32_t>(138); // You gain experience!!
     w.le<std::uint32_t>(15);
     w.le<std::uint32_t>(0);
-    AppPacket p = packet(Op::SimpleMessage, std::move(w));
+    AppPacket p = packet(rof2::Op::SimpleMessage, std::move(w));
     auto m = decode_simple_message(p);
     REQUIRE(m);
     CHECK(m->string_id == 138);

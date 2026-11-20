@@ -5,7 +5,6 @@
 #include <numbers>
 
 #include "assets/character.h"
-#include "core/byte_io.h"
 #include "core/log.h"
 #include "game/doors.h"
 #include "game/follow.h"
@@ -109,47 +108,6 @@ void missile_contacts(Missile& m, std::uint32_t now, const MissileWorld& world) 
 
 } // namespace
 
-std::optional<MissilePacket> decode_missile_packet(std::span<const std::byte> data) {
-    if (data.size() < 116) return std::nullopt;
-    ByteReader r(data);
-    MissilePacket p;
-    auto vec = [&r] {
-        glm::vec3 v;
-        v.x = r.f32();
-        v.y = r.f32();
-        v.z = r.f32();
-        return v;
-    };
-    p.position = vec();
-    p.velocity = vec();
-    p.speed = r.f32();
-    p.heading = r.f32();
-    p.tilt = r.f32();
-    p.tilt_rate = r.f32();
-    p.heading_rate = r.f32();
-    p.pitch = r.f32();
-    p.source_id = r.le<std::uint32_t>();
-    p.target_id = r.le<std::uint32_t>();
-    p.item_id = r.le<std::uint32_t>();
-    p.item_extra = r.le<std::uint32_t>();
-    p.spell = r.le<std::uint32_t>();
-    p.light = r.le<std::uint8_t>();
-    r.le<std::uint32_t>(); // +0x45 (EQEmu's 175 at +0x46: its "ranged, not a swing")
-    p.range = r.le<std::uint8_t>();
-    p.item_type = r.le<std::uint8_t>();
-    p.skill = r.le<std::uint8_t>();
-    p.to_location = r.le<std::uint8_t>() != 0;
-    p.location = vec();
-    p.model = r.fixed_string(27);
-    // Not the original's check: a NaN or infinite position, velocity or angle would carry into the flight and the
-    // renderer's matrices, so such a packet is refused, as spells.cpp and collision.cpp refuse non-finite input.
-    auto finite = [](const glm::vec3& v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); };
-    if (!finite(p.position) || !finite(p.velocity) || !finite(p.location) || !std::isfinite(p.speed) ||
-        !std::isfinite(p.heading) || !std::isfinite(p.tilt) || !std::isfinite(p.tilt_rate) ||
-        !std::isfinite(p.heading_rate) || !std::isfinite(p.pitch))
-        return std::nullopt;
-    return p;
-}
 
 std::uint8_t missile_launch_animation(std::uint8_t skill, std::uint8_t item_type, std::uint8_t range,
                                       std::uint16_t source_race, std::uint8_t source_class, std::uint8_t body_wet,

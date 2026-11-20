@@ -14,7 +14,7 @@
 
 #include "app/lua_ui.h"
 #include "mock_server/harness.h"
-#include "net/trade_packets.h"
+#include "net/messages/trade.h"
 #include "ui/lua/lua_host.h"
 #include "scratch_dir.h"
 
@@ -70,7 +70,7 @@ TEST_CASE("Trade window (modern): the partner's accept and ours show in the wind
         pc.position = me->position + glm::vec3(3.0f, 0.0f, 0.0f);
         world.spawns[pc.id] = pc;
         // Partner asks; the request is taken and the window opens (Handle_OP_TradeRequest).
-        conn.receive_zone_packet_for_test(net::encode_trade_request({world.player_id, pc.id}));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::TradeRequest, net::TradeInvitation{world.player_id, pc.id}});
         REQUIRE(conn.trade().has_value());
         REQUIRE(conn.trade()->open);
 
@@ -111,17 +111,17 @@ TEST_CASE("Trade window (modern): the partner's accept and ours show in the wind
         };
 
         frames();
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE((lua.load_status().error_count == 0), (lua.load_status().errors.empty() ? "" : lua.load_status().errors.front()));
         std::string s = drawn(L);
         CHECK(s.find("Neither of you has accepted yet.") != std::string::npos);
         CHECK(s.find("Trade##TRDW_Trade_Button") != std::string::npos);
         CHECK(s.find("Accepted|") == std::string::npos);
 
         // Partner clicks Trade.
-        conn.receive_zone_packet_for_test(net::encode(net::TradeAccept{pc.id, 1}));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::TradeAcceptClick, net::TradeReadiness{pc.id, true}});
         REQUIRE(conn.trade()->their_ready);
         frames();
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE((lua.load_status().error_count == 0), (lua.load_status().errors.empty() ? "" : lua.load_status().errors.front()));
         s = drawn(L);
         CHECK(s.find("Partner has accepted. Click Trade to complete it.") != std::string::npos);
         CHECK(s.find("Accepted") != std::string::npos); // the tag on their offer
@@ -132,7 +132,7 @@ TEST_CASE("Trade window (modern): the partner's accept and ours show in the wind
         REQUIRE(conn.trade().has_value());
         CHECK(conn.trade()->my_ready);
         frames();
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE((lua.load_status().error_count == 0), (lua.load_status().errors.empty() ? "" : lua.load_status().errors.front()));
         s = drawn(L);
         CHECK(s.find("Both accepted.") != std::string::npos);
         CHECK(s.find("Accepted##TRDW_Trade_Button") != std::string::npos);

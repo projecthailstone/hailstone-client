@@ -15,7 +15,7 @@
 #include "game/mechanics/collision_movement.h"
 #include "game/zone_ladders.h"
 #include "game_files.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "plugin/policy.h"
 #include "scratch_dir.h"
 

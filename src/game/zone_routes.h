@@ -6,7 +6,7 @@
 //
 // Two sources, kept apart so the file says where each link came from:
 //   * the server's list (Hailstone's server script answers OP_HsZoneLinksRequest with the zone_points table the
-//     server's expansion and content flags allow; net/zone_link_packets.h);
+//     server's expansion and content flags allow; net/protocol/extensions/hailstone/zone_link_packets.h);
 //   * learned: the zone points (OP_SendZonepoints) of each zone the player enters on this server.
 // A route follows links in their own direction. When there is none that way, a route may also use a learned link
 // backwards (a zone line seen from the far side only). Most zone lines go both ways, but not all, so such a route

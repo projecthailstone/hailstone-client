@@ -9,9 +9,10 @@
 #include <vector>
 
 #include "game/spells.h"
+#include "net/messages/spell.h"
 #include "mock_server/harness.h"
-#include "net/spell_packets.h"
-#include "net/zone_packets.h"
+#include "net/protocol/rof2/packets/spell_packets.h"
+#include "net/protocol/rof2/packets/zone_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::net;
@@ -33,13 +34,13 @@ std::string spell_line(std::initializer_list<std::pair<int, std::string>> set) {
 std::vector<SpawnAppearance> appearances(const MockEqServer& server) {
     std::vector<SpawnAppearance> out;
     for (const auto& p : server.zone_log)
-        if (from_wire(p.opcode) == Op::SpawnAppearance)
+        if (rof2::from_wire(p.opcode) == rof2::Op::SpawnAppearance)
             if (auto a = decode_spawn_appearance(p)) out.push_back(*a);
     return out;
 }
 
-Action spell_on(std::uint32_t me, std::uint32_t spell) {
-    Action a;
+messages::SpellAction spell_on(std::uint32_t me, std::uint32_t spell) {
+    messages::SpellAction a;
     a.target = static_cast<std::uint16_t>(me);
     a.source = static_cast<std::uint16_t>(me);
     a.type = 231;
@@ -65,12 +66,12 @@ TEST_CASE("A feign death spell landing on the player lies them down and stops au
     REQUIRE(conn.auto_attack());
 
     // A spell without SPA 74 leaves the player standing.
-    conn.receive_zone_packet_for_test(encode(spell_on(me, 401)));
+    conn.receive_zone_message_for_test({messages::GameOpcode::Action, spell_on(me, 401)});
     CHECK(conn.player_status().stand_state == kStandStanding);
     CHECK(conn.auto_attack());
 
     rig.server.zone_log.clear();
-    conn.receive_zone_packet_for_test(encode(spell_on(me, 400)));
+    conn.receive_zone_message_for_test({messages::GameOpcode::Action, spell_on(me, 400)});
     CHECK(conn.player_status().stand_state == kStandLying);
     CHECK(conn.world().spawns.at(me).stand_state == kStandLying);
     CHECK_FALSE(conn.auto_attack());
@@ -82,7 +83,7 @@ TEST_CASE("A feign death spell landing on the player lies them down and stops au
 
     // Landing again while lying sends nothing more (the same state).
     const std::size_t sent = appearances(rig.server).size();
-    conn.receive_zone_packet_for_test(encode(spell_on(me, 400)));
+    conn.receive_zone_message_for_test({messages::GameOpcode::Action, spell_on(me, 400)});
     rig.run_for(std::chrono::milliseconds(30));
     CHECK(appearances(rig.server).size() == sent);
 }

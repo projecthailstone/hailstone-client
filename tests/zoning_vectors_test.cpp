@@ -11,8 +11,11 @@
 #include <string>
 #include <vector>
 
+#include "core/byte_io.h"
 #include "game/death_report.h"
 #include "game/zoning.h"
+#include "net/protocol/rof2/codec.h"
+#include "net/protocol/rof2/packets/zoning_packets.h"
 #include "vector_files.h"
 
 using namespace hailstone::game;
@@ -260,15 +263,26 @@ std::string check_index_request(const Json& rec) {
     // answer. The quiet byte and when a disconnected run's answer comes are not among the inputs: the record's
     // log line and sleep count stand for them.
     std::vector<std::string> got, want;
+    // Resolve the current RoF2 wire mapping by encoding the semantic teleport
+    // request; the gameplay test must not duplicate a hard-coded wire opcode.
+    hailstone::net::rof2::Codec codec;
+    const auto result = codec.encode(hailstone::net::messages::ServiceScope::Zone,
+                                     {hailstone::net::messages::GameOpcode::TeleportIndex, in["index"].i32()});
+    if (!result || result.value()->size() != 1) return "teleport-index encode";
+    const auto& packet = result.value()->front();
+    if (packet.data.size() != sizeof(std::uint32_t)) return "teleport-index payload length";
+    hailstone::ByteReader reader(packet.data);
+    if (reader.le<std::uint32_t>() != in["index"].u32()) return "teleport-index payload";
     bool connected = in["connected"].truthy();
     if (connected) {
-        got.push_back(std::format("hton {} 0", kOpTeleportIndex));
+        got.push_back(std::format("hton {} 0", packet.opcode));
         got.push_back("udp_send 4 6");
         if (!in["send_ok"].truthy()) got.push_back("close_connection");
         if (out["payload_index"].i32() != in["index"].i32()) return "payload";
     } else {
         for (const Json& c : out["calls"].items)
-            if (c["fn"].text == "void_connection_log") got.push_back(std::format("void_connection_log {}", kOpTeleportIndex));
+            if (c["fn"].text == "void_connection_log")
+                got.push_back(std::format("void_connection_log {}", packet.opcode));
         if (!out["payload_index"].is_null()) return "payload sent";
     }
     int sleeps = connected || in["answer_after_sleeps"].i32() != 0 ? in["answer_after_sleeps"].i32()
@@ -496,7 +510,7 @@ TEST_CASE("OP_ZonePlayerToBind decode") {
     d.push_back(1);
     for (std::int32_t v : {100, 200, 300})
         for (int k = 0; k < 4; ++k) d.push_back(static_cast<std::uint8_t>(v >> (8 * k)));
-    auto p = decode_zone_to_bind(d);
+    auto p = hailstone::net::rof2::decode_zone_to_bind(d);
     REQUIRE(p);
     CHECK(p->zone == 0x10002u);
     CHECK(p->zone_name == "qeynos");
@@ -513,7 +527,7 @@ TEST_CASE("OP_ZonePlayerToBind decode: little-endian fields; a short tail reads 
     d.push_back(0);
     d.push_back(1);
     d.push_back(0x2a); // hp's first byte only: too short for hp
-    auto p = decode_zone_to_bind(d);
+    auto p = hailstone::net::rof2::decode_zone_to_bind(d);
     REQUIRE(p);
     CHECK(p->zone == 0x01020304u);
     CHECK(p->x == 1.0f);
@@ -525,18 +539,18 @@ TEST_CASE("OP_ZonePlayerToBind decode: little-endian fields; a short tail reads 
     // No NUL after the name: the name to the end, the rest zeros. 20 bytes or fewer: nothing.
     std::vector<std::uint8_t> open(20, 0);
     open.push_back('x');
-    p = decode_zone_to_bind(open);
+    p = hailstone::net::rof2::decode_zone_to_bind(open);
     REQUIRE(p);
     CHECK(p->zone_name == "x");
     CHECK(p->keep_items == 0);
-    CHECK_FALSE(decode_zone_to_bind(std::vector<std::uint8_t>(20, 0)));
+    CHECK_FALSE(hailstone::net::rof2::decode_zone_to_bind(std::vector<std::uint8_t>(20, 0)));
     // A name longer than 0x1ff keeps its first 0x1ff characters and the fields after its NUL.
     std::vector<std::uint8_t> long_name(20, 0);
     long_name.insert(long_name.end(), 0x300, 'a');
     long_name.push_back(0);
     long_name.push_back(1);
     for (int k = 0; k < 4; ++k) long_name.push_back(k == 0 ? 7 : 0);
-    p = decode_zone_to_bind(long_name);
+    p = hailstone::net::rof2::decode_zone_to_bind(long_name);
     REQUIRE(p);
     CHECK(p->zone_name.size() == 0x1ff);
     CHECK(p->keep_items == 1);

@@ -12,10 +12,17 @@
 #include <vector>
 
 #include "game/mercenary.h"
+#include "net/protocol/rof2/packets/merc_packets.h"
+#include "net/protocol/rof2/opcode_map.h"
 #include "vector_files.h"
 
 using namespace hailstone::game;
 using hailstone::test::Json;
+using hailstone::net::messages::MercenaryAction;
+using hailstone::net::messages::MercenaryNotice;
+using hailstone::net::messages::MercenaryNoticeKind;
+using hailstone::net::messages::MercenaryRequest;
+namespace rof2 = hailstone::net::rof2;
 
 namespace {
 
@@ -47,7 +54,12 @@ struct Recorder : MercHooks {
     void event(std::uint32_t id, std::int32_t argument) override {
         calls.push_back(carries_argument(id) ? std::format("event|{}|{}", id, argument) : std::format("event|{}", id));
     }
-    void send(std::uint16_t opcode, std::vector<std::uint8_t> payload) override {
+    void send(const MercenaryRequest& command) override {
+        auto packet = rof2::encode_mercenary_request(command);
+        if (!packet) { calls.push_back("unencodable mercenary command"); return; }
+        const auto opcode = packet->opcode;
+        std::vector<std::uint8_t> payload;
+        for (std::byte b : packet->data) payload.push_back(std::to_integer<std::uint8_t>(b));
         std::size_t length = payload.size() + 2;
         if (!sender) {
             calls.push_back(std::format("send|{}|{}", opcode, length));
@@ -60,6 +72,13 @@ struct Recorder : MercHooks {
         calls.push_back(std::format("send|{}|{}|{}", opcode, length, send_ok ? 1 : 0));
         sent = std::make_pair(opcode, std::move(payload));
         if (!send_ok) calls.push_back("close_world_connection");
+    }
+    void send_stance(std::uint32_t command, std::uint32_t stance) override {
+        MercenaryRequest request;
+        request.action = MercenaryAction::SetStance;
+        request.command = command;
+        request.stance = stance;
+        send(request);
     }
     void debug_log(const std::string& text) override { calls.push_back("debug_log|" + text); }
     bool find_window(const char* screen) override {
@@ -109,7 +128,7 @@ std::vector<std::string> want_calls(const Json& calls) {
         } else if (fn == "report_upkeep_charged") {
             want.push_back(std::format("report_upkeep_charged|{}", c["in_alt_currency"].i32()));
         } else if (fn == "send_data_update_request") {
-            want.push_back(std::format("send|{}|2", kOpMercDataUpdateRequest)); // Send_OP_MercenaryDataUpdateRequest
+            want.push_back(std::format("send|{}|2", rof2::to_wire(rof2::Op::MercenaryDataUpdateRequest))); // Send_OP_MercenaryDataUpdateRequest
         } else if (fn == "format_duration") {
             seconds = c["seconds"].i32();
         } else if (fn == "format") {
@@ -212,6 +231,13 @@ std::vector<std::uint8_t> hex_bytes(const std::string& hex, std::size_t size) {
 
 // ---- the list handlers
 
+std::optional<MercenaryNotice> decoded_notice(rof2::Op op, const std::vector<std::uint8_t>& bytes) {
+    std::vector<std::byte> wire;
+    wire.reserve(bytes.size());
+    for (auto b : bytes) wire.push_back(static_cast<std::byte>(b));
+    return rof2::decode_mercenary_notice({rof2::to_wire(op), std::move(wire)});
+}
+
 std::string check_data_response(const Json& rec) {
     const Json& in = rec["in"];
     const Json& out = rec["out"];
@@ -220,7 +246,9 @@ std::string check_data_response(const Json& rec) {
     Recorder h;
     h.window_found = in["window_found"].truthy();
     auto bytes = hex_bytes(in["packet"].text, static_cast<std::size_t>(in["size"].i32()));
-    merc_handle_data_response(m, bytes, h);
+    auto notice = decoded_notice(rof2::Op::MercenaryDataResponse, bytes);
+    if (!notice) return "merchant-list codec";
+    merc_handle_data_response(m, *notice, h);
     std::vector<std::string> types, want_types;
     for (std::uint32_t t : m.merc_types) types.push_back(std::to_string(static_cast<std::int32_t>(t)));
     for (const Json& t : out["merc_types"].items) want_types.push_back(std::to_string(t.i32()));
@@ -241,7 +269,9 @@ std::string check_data_update(const Json& rec) {
     h.window_found = in["window_found"].truthy();
     h.ticks = in["tick_count"].u32();
     auto bytes = hex_bytes(in["packet"].text, static_cast<std::size_t>(in["size"].i32()));
-    merc_handle_data_update(m, bytes, h);
+    auto notice = decoded_notice(rof2::Op::MercenaryDataUpdate, bytes);
+    if (!notice) return "owned-list codec";
+    merc_handle_data_update(m, *notice, h);
     if (m.current_index != out["current_index"].i32()) return std::format("current_index {}", m.current_index);
     if (m.slot_count != out["slot_count"].i32()) return std::format("slot_count {}", m.slot_count);
     if (auto e = check_list(m.owned, out["owned"], "owned"); !e.empty()) return e;
@@ -253,7 +283,7 @@ std::string check_data_update(const Json& rec) {
 
 // ---- the small handlers (VmHandler: the manager in and out, the packet as dwords or null)
 
-using Handler = void (*)(MercManager&, const std::uint8_t*, MercHooks&);
+using Handler = void (*)(MercManager&, const MercenaryNotice&, MercHooks&);
 
 std::string check_handler(const Json& rec, Handler fn) {
     const Json& in = rec["in"];
@@ -263,14 +293,25 @@ std::string check_handler(const Json& rec, Handler fn) {
     Recorder h;
     h.ticks = in["tick_count"].u32();
     h.fast = in["fast_time"].u32();
-    // The generator's packet buffer: 8 dwords (those not listed are its random picks; the handlers read only the
-    // listed ones), as little-endian bytes.
-    std::vector<std::uint8_t> packet(32, 0);
-    for (std::size_t k = 0; k < in["packet"].items.size() && k < 8; ++k) {
-        std::uint32_t v = in["packet"].items[k].u32();
-        for (int b = 0; b < 4; ++b) packet[4 * k + static_cast<std::size_t>(b)] = static_cast<std::uint8_t>(v >> (8 * b));
-    }
-    fn(m, in["packet"].is_null() ? nullptr : packet.data(), h);
+    MercenaryNotice notice;
+    // The original vectors supply eight little-endian dwords. Decode them as the
+    // same semantic fields that the RoF2 codec presents to the game handlers.
+    const auto value = [&](std::size_t index) -> std::uint32_t {
+        return index < in["packet"].items.size() ? in["packet"].items[index].u32() : 0u;
+    };
+    notice.result = value(0);
+    notice.flag = static_cast<std::uint8_t>(value(0));
+    notice.timer_interval = value(1);
+    notice.timer_tag = value(2);
+    notice.state = value(3);
+    notice.suspend_time = fn == merc_handle_timer ? value(4) : value(0);
+    notice.time_left = value(0);
+    notice.seconds = value(1);
+    notice.purchase_cost = static_cast<std::int32_t>(value(0));
+    notice.alt_purchase_cost = static_cast<std::int32_t>(value(1));
+    notice.upkeep_cost = static_cast<std::int32_t>(value(2));
+    notice.alt_upkeep_cost = static_cast<std::int32_t>(value(3));
+    fn(m, notice, h);
     if (auto e = check_manager(m, out); !e.empty()) return e;
     return diff("calls", h.calls, want_calls(out["calls"]));
 }
@@ -544,14 +585,22 @@ TEST_CASE("mercenary: more than ten stance pairs stay inside the record") {
         u32(static_cast<std::uint32_t>(k + 100));
     }
     u32(0xabcd); // what follows the entry
-    std::size_t pos = 0;
-    MercRecord r;
-    merc_read_record(p, pos, r);
+    std::vector<std::uint8_t> payload;
+    auto append32 = [&](std::uint32_t v) {
+        for (int b = 0; b < 4; ++b) payload.push_back(static_cast<std::uint8_t>(v >> (8 * b)));
+    };
+    append32(0); // current owned index
+    append32(1); // one record
+    payload.insert(payload.end(), p.begin(), p.end());
+    auto notice = decoded_notice(rof2::Op::MercenaryDataUpdate, payload);
+    REQUIRE(notice);
+    REQUIRE(notice->mercenaries.size() == 1);
+    const auto& r = notice->mercenaries.front();
     CHECK(r.stance_count == 12);
     CHECK(r.stances.size() == kMercMaxStances);
     CHECK(r.required_membership == 6);
     CHECK(r.name == "Lerwa");
-    CHECK(pos == p.size() - 4);
+    CHECK(notice->slot_count == 0xabcd); // following field was not consumed as another stance
 }
 
 TEST_CASE("mercenary: the timer's has-mercenary flag is the low byte") {
@@ -559,7 +608,17 @@ TEST_CASE("mercenary: the timer's has-mercenary flag is the low byte") {
         std::vector<std::uint16_t> sent;
         void chat(const std::string&, std::int32_t) override {}
         void event(std::uint32_t, std::int32_t) override {}
-        void send(std::uint16_t op, std::vector<std::uint8_t>) override { sent.push_back(op); }
+        void send(const MercenaryRequest& command) override {
+            auto packet = rof2::encode_mercenary_request(command);
+            if (packet) sent.push_back(packet->opcode);
+        }
+        void send_stance(std::uint32_t command, std::uint32_t stance) override {
+            MercenaryRequest request;
+            request.action = MercenaryAction::SetStance;
+            request.command = command;
+            request.stance = stance;
+            send(request);
+        }
         void debug_log(const std::string&) override {}
         bool find_window(const char*) override { return false; }
         void hide_window(const char*) override {}
@@ -573,13 +632,17 @@ TEST_CASE("mercenary: the timer's has-mercenary flag is the low byte") {
     MercManager m;
     std::uint8_t p[20] = {0x00, 0x01, 0, 0}; // entity id 0x100: low byte 0
     p[12] = 5;
-    merc_handle_timer(m, p, h);
+    auto notice = decoded_notice(rof2::Op::MercenaryTimer, {p, p + sizeof(p)});
+    REQUIRE(notice);
+    merc_handle_timer(m, *notice, h);
     CHECK(m.has_mercenary == 0);
     CHECK(h.sent.empty());
     p[0] = 0x01;
-    merc_handle_timer(m, p, h);
+    notice = decoded_notice(rof2::Op::MercenaryTimer, {p, p + sizeof(p)});
+    REQUIRE(notice);
+    merc_handle_timer(m, *notice, h);
     CHECK(m.has_mercenary == 1);
-    CHECK(h.sent == std::vector<std::uint16_t>{kOpMercDataUpdateRequest});
+    CHECK(h.sent == std::vector<std::uint16_t>{rof2::to_wire(rof2::Op::MercenaryDataUpdateRequest)});
 }
 
 TEST_CASE("mercenary lists: a huge count over a short tail stops where the bytes do") {
@@ -591,7 +654,9 @@ TEST_CASE("mercenary lists: a huge count over a short tail stops where the bytes
         MercManager m;
         Recorder h;
         std::vector<std::uint8_t> d = {0xff, 0xff, 0xff, 0xff, 0x00};
-        merc_handle_data_response(m, d, h);
+        auto notice = decoded_notice(rof2::Op::MercenaryDataResponse, d);
+        REQUIRE(notice);
+        merc_handle_data_response(m, *notice, h);
         CHECK(m.merc_types.empty());
         // Two whole types, then a short tail: both kept.
         std::vector<std::uint8_t> two;
@@ -599,7 +664,9 @@ TEST_CASE("mercenary lists: a huge count over a short tail stops where the bytes
         u32(two, 7);
         u32(two, 9);
         two.push_back(1);
-        merc_handle_data_response(m, two, h);
+        auto notice2 = decoded_notice(rof2::Op::MercenaryDataResponse, two);
+        REQUIRE(notice2);
+        merc_handle_data_response(m, *notice2, h);
         CHECK(m.merc_types == std::vector<std::uint32_t>{7, 9});
     }
     {
@@ -622,7 +689,9 @@ TEST_CASE("mercenary lists: a huge count over a short tail stops where the bytes
         u32(d, 1); u32(d, 11); // pair 0
         u32(d, 2); u32(d, 12); // pair 1
         d.push_back(5);
-        merc_handle_data_update(m, d, h);
+        auto notice = decoded_notice(rof2::Op::MercenaryDataUpdate, d);
+        REQUIRE(notice);
+        merc_handle_data_update(m, *notice, h);
         REQUIRE(m.owned.size() == 1);
         CHECK(m.owned[0].stance_count == 0xffffffffu);
         REQUIRE(m.owned[0].stances.size() >= 2);

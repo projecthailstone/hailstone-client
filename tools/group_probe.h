@@ -23,11 +23,11 @@
 
 #include "game/combat.h"
 #include "game/spells.h"
-#include "net/game_connection.h"
-#include "net/group_packets.h"
-#include "net/opcodes.h"
-#include "net/pet_packets.h"
-#include "net/spell_packets.h"
+#include "net/connection/game_connection.h"
+#include "net/protocol/rof2/packets/group_packets.h"
+#include "net/protocol/rof2/opcode_map.h"
+#include "net/protocol/rof2/packets/pet_packets.h"
+#include "net/protocol/rof2/packets/spell_packets.h"
 
 namespace hailstone::probe {
 
@@ -52,20 +52,20 @@ public:
     }
 
     void tap(const net::AppPacket& p) {
-        net::Op op = net::from_wire(p.opcode);
+        net::rof2::Op op = net::rof2::from_wire(p.opcode);
         double t = std::chrono::duration<double>(Clock::now() - start_).count();
         switch (op) {
-        case net::Op::GroupInvite:
-        case net::Op::GroupInvite2:
+        case net::rof2::Op::GroupInvite:
+        case net::rof2::Op::GroupInvite2:
             if (auto v = net::decode_group_invite(p))
-                std::printf("  GROUP +%.1fs: OP_%s invitee '%s' inviter '%s' (%zu bytes)\n", t, net::op_name(op), v->invitee.c_str(), v->inviter.c_str(), p.data.size());
+                std::printf("  GROUP +%.1fs: OP_%s invitee '%s' inviter '%s' (%zu bytes)\n", t, net::rof2::op_name(op), v->invitee.c_str(), v->inviter.c_str(), p.data.size());
             break;
-        case net::Op::GroupFollow:
-        case net::Op::GroupFollow2:
+        case net::rof2::Op::GroupFollow:
+        case net::rof2::Op::GroupFollow2:
             if (auto v = net::decode_group_follow(p))
-                std::printf("  GROUP +%.1fs: OP_%s inviter '%s' invitee '%s'\n", t, net::op_name(op), v->inviter.c_str(), v->invitee.c_str());
+                std::printf("  GROUP +%.1fs: OP_%s inviter '%s' invitee '%s'\n", t, net::rof2::op_name(op), v->inviter.c_str(), v->invitee.c_str());
             break;
-        case net::Op::GroupUpdateB:
+        case net::rof2::Op::GroupUpdateB:
             if (auto v = net::decode_group_update_b(p)) {
                 std::printf("  GROUP +%.1fs: OP_GroupUpdateB leader '%s', %zu member(s):", t, v->leader.c_str(), v->members.size());
                 for (const auto& m : v->members) std::printf(" [%u '%s' L%u]", m.slot, m.name.c_str(), m.level);
@@ -74,41 +74,41 @@ public:
                 std::printf("  GROUP +%.1fs: OP_GroupUpdateB UNDECODABLE (%zu bytes)\n", t, p.data.size());
             }
             break;
-        case net::Op::GroupUpdate:
+        case net::rof2::Op::GroupUpdate:
             if (auto v = net::decode_group_join(p))
                 std::printf("  GROUP +%.1fs: OP_GroupUpdate member '%s' level %u (%zu bytes)\n", t, v->member_name.c_str(), v->level, p.data.size());
             break;
-        case net::Op::GroupLeaderChange:
+        case net::rof2::Op::GroupLeaderChange:
             if (auto v = net::decode_group_leader_change(p)) std::printf("  GROUP +%.1fs: OP_GroupLeaderChange '%s'\n", t, v->c_str());
             break;
-        case net::Op::GroupDisbandYou:
-        case net::Op::GroupDisbandOther:
+        case net::rof2::Op::GroupDisbandYou:
+        case net::rof2::Op::GroupDisbandOther:
             if (auto v = net::decode_group_generic(p))
-                std::printf("  GROUP +%.1fs: OP_%s '%s' '%s'\n", t, net::op_name(op), v->name1.c_str(), v->name2.c_str());
+                std::printf("  GROUP +%.1fs: OP_%s '%s' '%s'\n", t, net::rof2::op_name(op), v->name1.c_str(), v->name2.c_str());
             break;
-        case net::Op::GroupAcknowledge:
-        case net::Op::GroupLeadershipAAUpdate:
-        case net::Op::GroupDelete:
-            std::printf("  GROUP +%.1fs: OP_%s (%zu bytes)\n", t, net::op_name(op), p.data.size());
+        case net::rof2::Op::GroupAcknowledge:
+        case net::rof2::Op::GroupLeadershipAAUpdate:
+        case net::rof2::Op::GroupDelete:
+            std::printf("  GROUP +%.1fs: OP_%s (%zu bytes)\n", t, net::rof2::op_name(op), p.data.size());
             break;
-        case net::Op::MobManaUpdate:
-        case net::Op::MobEnduranceUpdate:
-            if (auto v = net::decode_mob_percent(p)) std::printf("  GROUP +%.1fs: OP_%s spawn %u %u%%\n", t, net::op_name(op), v->spawn_id, v->percent);
+        case net::rof2::Op::MobManaUpdate:
+        case net::rof2::Op::MobEnduranceUpdate:
+            if (auto v = net::decode_mob_percent(p)) std::printf("  GROUP +%.1fs: OP_%s spawn %u %u%%\n", t, net::rof2::op_name(op), v->spawn_id, v->percent);
             break;
-        case net::Op::MobHealth:
+        case net::rof2::Op::MobHealth:
             if (auto v = net::decode_mob_health(p); v && (v->spawn_id != last_hp_id_ || v->percent != last_hp_)) {
                 last_hp_id_ = v->spawn_id;
                 last_hp_ = v->percent;
                 std::printf("  HP +%.1fs: OP_MobHealth spawn %u %u%%\n", t, v->spawn_id, v->percent);
             }
             break;
-        case net::Op::PetCommandState:
+        case net::rof2::Op::PetCommandState:
             if (auto v = net::decode_pet_command_state(p)) std::printf("  PET +%.1fs: OP_PetCommandState button %u state %u\n", t, v->button, v->state);
             break;
-        case net::Op::PetHoTT:
+        case net::rof2::Op::PetHoTT:
             if (auto v = net::decode_pet_hott(p)) std::printf("  PET +%.1fs: OP_PetHoTT target %u\n", t, *v);
             break;
-        case net::Op::PetBuffWindow:
+        case net::rof2::Op::PetBuffWindow:
             if (auto v = net::decode_buff_icons(p)) {
                 std::printf("  PET +%.1fs: OP_PetBuffWindow pet %u:", t, v->entity_id);
                 for (const auto& e : v->entries) std::printf(" [slot %u spell %d tics %u]", e.slot, static_cast<int>(e.spell_id), e.tics);

@@ -11,7 +11,7 @@
 #include <thread>
 
 #include "core/log.h"
-#include "net/login.h"
+#include "net/connection/login_client.h"
 
 namespace {
 

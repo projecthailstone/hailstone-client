@@ -175,68 +175,6 @@ void track_sort(std::span<TrackEntry> entries, int order) {
     s.sort(0, entries.size(), static_cast<std::ptrdiff_t>(entries.size()));
 }
 
-bool set_tracking_list(TrackList& list, std::span<const std::uint8_t> data, bool ranger, std::uint32_t sort_order,
-                       std::string (*trim)(const std::string&)) {
-    for (auto& e : list) {
-        e.distance = -1.0f;
-        e.spawn_id = 0;
-        e.name.clear();
-        e.sort_name.clear();
-        e.position = -1;
-        e.flags = 0;
-    }
-    const std::size_t length = data.size();
-    std::size_t at = 0;
-    std::uint32_t count = 0;
-    if (length >= 2) {
-        at = 2;
-        count = static_cast<std::uint32_t>(data[0] | (data[1] << 8));
-    }
-    auto byte = [&](std::size_t i) -> std::uint8_t { return i < length ? data[i] : 0; };
-    auto u32 = [&](std::size_t i) {
-        return static_cast<std::uint32_t>(byte(i)) | static_cast<std::uint32_t>(byte(i + 1)) << 8 |
-               static_cast<std::uint32_t>(byte(i + 2)) << 16 | static_cast<std::uint32_t>(byte(i + 3)) << 24;
-    };
-    std::uint8_t is_npc = 1, is_pet = 0, is_merc = 0;
-    for (std::uint32_t n = 0; n < count && n < static_cast<std::uint32_t>(kTrackEntries); ++n) {
-        TrackEntry& e = list[n];
-        if (at + 4 <= length) {
-            e.spawn_id = static_cast<std::int32_t>(u32(at));
-            at += 4;
-        }
-        if (at + 4 <= length) {
-            std::uint32_t bits = u32(at);
-            std::memcpy(&e.distance, &bits, 4);
-            at += 4;
-        }
-        if (at + 1 <= length) e.level = data[at++];
-        if (at + 1 <= length) is_npc = data[at++];
-        // strlen over the reply (zero past its end), the copy at most 63 characters.
-        std::size_t len = 0;
-        while (at + len < length && data[at + len] != 0) ++len;
-        std::size_t with_nul = len + 1;
-        std::size_t copy = with_nul > 0x3e ? 0x3f : with_nul;
-        if (length < at + copy) {
-            e.name.clear();
-        } else {
-            e.name.assign(reinterpret_cast<const char*>(data.data() + at), std::min(copy, len));
-            at += with_nul;
-        }
-        if (at + 1 <= length) is_pet = data[at++];
-        if (at + 1 <= length) is_merc = data[at++];
-        e.position = static_cast<std::int32_t>(n);
-        e.flags = 0;
-        if (is_npc == 0) e.flags = kTrackPlayer;
-        if (is_pet != 0) e.flags |= kTrackPet;
-        if (is_merc != 0) e.flags |= kTrackMerc;
-        e.sort_name = trim ? trim(e.name) : e.name;
-    }
-    std::uint32_t order = ranger ? sort_order : 0;
-    if (order > 6) return false;
-    track_sort(list, static_cast<int>(order));
-    return true;
-}
-
 std::uint32_t track_color(const TrackEntry& e, std::span<const std::int32_t> group_spawn_ids) {
     const std::uint32_t f = e.flags;
     if (f & kTrackPlayer) {

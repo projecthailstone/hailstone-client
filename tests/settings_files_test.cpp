@@ -300,6 +300,20 @@ TEST_CASE("Settings files: the log keeps the earlier runs' files") {
     CHECK_FALSE(fs::exists(tmp.path / "logs" / "test.4.log"));
 }
 
+TEST_CASE("Settings files: log output redacts home-directory usernames before disk writes") {
+    TempDir tmp("log_privacy");
+    const fs::path file = tmp.path / "logs" / "test.log";
+    REQUIRE(log::open_file(file));
+    log::info("asset folder /home/PrivateUser/.local/share/hailstone-client");
+    log::warn("plugin path C:\\Users\\OtherUser\\AppData\\Roaming");
+    log::close_file();
+    const auto content = read(file);
+    CHECK(content.find("/home/redacted/.local/share/hailstone-client") != std::string::npos);
+    CHECK(content.find("C:\\Users\\redacted\\AppData\\Roaming") != std::string::npos);
+    CHECK(content.find("PrivateUser") == std::string::npos);
+    CHECK(content.find("OtherUser") == std::string::npos);
+}
+
 TEST_CASE("Settings files: a second client's old logs go, the newest and the recent ones stay") {
     TempDir tmp("log_pids");
     const fs::path logs = tmp.path / "logs";

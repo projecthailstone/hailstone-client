@@ -13,13 +13,13 @@
 
 #include "app/lua_ui.h"
 #include "app/lua_ui_menu.h"
-#include "core/byte_io.h"
 #include "game/keymap.h"
 #include "manual_clock.h"
 #include "mock_server/profile_builder.h"
 #include "mq_test_world.h"
-#include "net/adventure_packets.h"
-#include "net/packet_io.h"
+#include "net/messages/adventure.h"
+#include "net/messages/message.h"
+#include "net/messages/zone.h"
 
 using namespace hailstone;
 using namespace hailstone::net;
@@ -34,14 +34,14 @@ struct ImGuiScope {
 
 ConnectionOptions with_clock(const test::ManualClock& clock) {
     ConnectionOptions options;
-    options.session.clock = clock.source();
+    options.world_protocol.session_config.clock = clock.source(); options.zone_protocol.session_config.clock = clock.source();
     return options;
 }
 
 struct AdventureUi {
     ImGuiScope imgui;
     test::ManualClock clock;
-    mq_test::World world{"hailstone_adventure_windows", with_clock(clock)};
+    mq_test::World world{"hailstone_adventure_windows", with_clock(clock), true};
     app::UiHost host;
     app::UiApi api{host};
     lua_State* L = luaL_newstate();
@@ -66,8 +66,8 @@ struct AdventureUi {
         lua_settop(L, 0);
         return value;
     }
-    void receive(const AppPacket& packet) {
-        world.conn->receive_zone_packet_for_test(packet);
+    void receive(messages::GameMessage message) {
+        world.conn->receive_zone_message_for_test(message);
         api.begin_frame();
     }
     void recruiter() {
@@ -77,11 +77,6 @@ struct AdventureUi {
     }
 };
 
-AppPacket text_packet(Op op, std::string_view text) {
-    ByteWriter w;
-    w.fixed_string(text, text.size() + 1);
-    return make_packet(op, std::move(w));
-}
 
 } // namespace
 
@@ -119,9 +114,9 @@ TEST_CASE("adventure windows: recruiter offers and active adventures expose sepa
     ui.recruiter();
     CHECK(ui.api.shown("AdventureRequestWnd"));
     CHECK(ui("return (hs.ChildState('AdventureRequestWnd', 'AdvRqst_RequestButton'))") == "true");
-    ui.receive(text_packet(Op::AdventureInfo, "Recruiter introduction."));
+    ui.receive({messages::GameOpcode::AdventureInfo, std::string("Recruiter introduction.")});
     CHECK(ui("return hs.WindowText('AdventureRequestWnd', 'AdvRqst_NPCText')") == "Recruiter introduction.");
-    ui.receive(text_packet(Op::AdventureDetails, "Offered <adventure> & briefing."));
+    ui.receive({messages::GameOpcode::AdventureDetails, std::string("Offered <adventure> & briefing.")});
     CHECK(ui("return hs.WindowText('AdventureRequestWnd', 'AdvRqst_NPCText')") == "Offered &lt;adventure&gt; &amp; briefing.");
     CHECK(ui("return (hs.ChildState('AdventureRequestWnd', 'AdvRqst_RequestButton'))") == "false");
     CHECK(ui("return (hs.ChildState('AdventureRequestWnd', 'AdvRqst_AcceptButton'))") == "true");
@@ -135,11 +130,8 @@ TEST_CASE("adventure windows: recruiter offers and active adventures expose sepa
     active.risk = 1; // stock EQEmu: is_hard ? 1 : 0
     active.time_to_enter = 120;
     active.time_left = 1800;
-    ui.receive(encode(active));
-    ByteWriter count;
-    count.le<std::uint32_t>(3);
-    count.le<std::uint32_t>(10);
-    ui.receive(make_packet(Op::AdventureUpdate, std::move(count))); // kept, shown once inside
+    ui.receive({messages::GameOpcode::AdventureData, active});
+    ui.receive({messages::GameOpcode::AdventureUpdate, AdventureCount{3, 10}}); // kept, shown once inside
     ui.clock.advance(31s);
     CHECK(ui("return hs.WindowText('AdventureRequestWnd', 'AdvRqst_NPCText')") == "Current briefing.");
     CHECK(ui("return hs.WindowText('AdventureRequestWnd', 'AdvRqst_EnterTimeLeftLabel')") == "2 minutes");
@@ -156,7 +148,7 @@ TEST_CASE("adventure windows: recruiter offers and active adventures expose sepa
     active.time_to_enter = 0;
     active.time_left = 90;
     active.risk = 0;
-    ui.receive(encode(active));
+    ui.receive({messages::GameOpcode::AdventureData, active});
     CHECK(ui("return select(2, hs.ComboInfo('AdventureRequestWnd', 'AdvRqst_RiskCombobox'))") == "0");
     ui.clock.advance(1s);
     CHECK(ui("return hs.WindowText('AdventureRequestWnd', 'AdvRqst_EnterTimeLeftLabel')") == "");
@@ -166,7 +158,7 @@ TEST_CASE("adventure windows: recruiter offers and active adventures expose sepa
     CHECK(ui("return hs.WindowText('AdventureRequestWnd', 'AdvRqst_CompleteTimeLeftLabel')") == "1 minute");
     ui.clock.advance(100s);
     CHECK(ui("return hs.WindowText('AdventureRequestWnd', 'AdvRqst_CompleteTimeLeftLabel')") == "0 minutes");
-    ui.receive(encode(AdventureData{}));
+    ui.receive({messages::GameOpcode::AdventureData, AdventureData{}});
     CHECK(ui("return hs.WindowText('AdventureRequestWnd', 'AdvRqst_ProgressTextLabel')") == "");
     CHECK(ui("return hs.ChildShown('AdventureRequestWnd', 'AdvRqst_LeaveButton')") == "false");
 }
@@ -177,7 +169,11 @@ TEST_CASE("adventure windows: profile points and full theme statistics include p
     profile.name = "Tester";
     profile.adventure_points = {11, 22, 33, 44, 55};
     profile.adventure_points_available = 165;
-    ui.receive(test::build_player_profile(profile));
+    PlayerProfile character;
+    character.name = profile.name;
+    character.adventure_points = profile.adventure_points;
+    character.adventure_points_available = profile.adventure_points_available;
+    ui.receive({messages::GameOpcode::PlayerProfile, std::move(character)});
     CHECK(ui("return hs.WindowText('AdventureStatsWnd', 'AdvStats_AvailableValue')") == "165");
     auto rows = ui.api.list_rows("AdventureStatsWnd", "AdvStats_ThemeList");
     REQUIRE(rows.size() == 6);
@@ -194,7 +190,7 @@ TEST_CASE("adventure windows: profile points and full theme statistics include p
     stats.failure = {5, 1, 3, 0, std::numeric_limits<std::uint32_t>::max(), 0};
     stats.rank = {12, 2, 4, 0, 9, 0};
     stats.rank_percent = {14, 3, 5, 0, 11, 0};
-    ui.receive(encode(stats));
+    ui.receive({messages::GameOpcode::AdventureStatsReply, stats});
     rows = ui.api.list_rows("AdventureStatsWnd", "AdvStats_ThemeList");
     CHECK(rows[0] == std::vector<std::string>{"Deepest Guk", "2", "3", "1", "75.0%", "3", "11"});
     CHECK(rows[1][4] == "70.0%");
@@ -204,7 +200,7 @@ TEST_CASE("adventure windows: profile points and full theme statistics include p
 
     AdventurePoints balances;
     balances.theme.fill(std::numeric_limits<std::uint32_t>::max());
-    ui.receive(encode(balances));
+    ui.receive({messages::GameOpcode::AdventurePointsUpdate, balances});
     rows = ui.api.list_rows("AdventureStatsWnd", "AdvStats_ThemeList");
     CHECK(rows[5][6] == "21474836475");
 }
@@ -229,7 +225,7 @@ TEST_CASE("adventure windows: leaderboard category and risk are independent and 
     CHECK_FALSE(ui.api.select_combo("AdventureLeaderboardWnd", "AdvLeaderboard_RiskCombobox", 3));
 
     // Resolve the first outstanding request, then the selected category once its native cooldown expires.
-    ui.receive(encode(AdventureLeaderboard{}));
+    ui.receive({messages::GameOpcode::AdventureLeaderboardReply, AdventureLeaderboard{}});
     ui.clock.advance(10s);
     ui.world.conn->adventure_frame();
     CHECK(ui("return hs.WindowText('AdventureLeaderboardWnd', 'AdvLeaderboard_StatusLabel')") == "Updating leaderboard...");
@@ -237,8 +233,9 @@ TEST_CASE("adventure windows: leaderboard category and risk are independent and 
     board.success = 0;
     board.failure = 0;
     board.rank = 0;
-    board.rows = {{"Alpha", 10, 2}, {"Bravo", 10, 2}, {"Charlie", 8, 4}, {"Delta", 0, 0}};
-    ui.receive(encode(board));
+    board.rows = {{"Alpha", 10, 2, 1}, {"Bravo", 10, 2, 2},
+                  {"Charlie", 8, 4, 3}, {"Delta", 0, 0, 4}};
+    ui.receive({messages::GameOpcode::AdventureLeaderboardReply, board});
     auto rows = ui.api.list_rows("AdventureLeaderboardWnd", "AdvLeaderboard_LeaderList");
     REQUIRE(rows.size() == 4);
     CHECK(rows[0][0] == "1");
@@ -256,9 +253,9 @@ TEST_CASE("adventure windows: leaderboard category and risk are independent and 
     ui.clock.advance(10s);
     ui.world.conn->adventure_frame();
     board.rank = 3;
-    AppPacket sparse = encode(board);
-    std::fill(sparse.data.begin() + 20 + 72, sparse.data.begin() + 20 + 72 + 64, std::byte{0});
-    ui.receive(sparse);
+    auto sparse = board;
+    sparse.rows.erase(sparse.rows.begin() + 1); // blank wire slot 2, leaving ranks 1, 3 and 4
+    ui.receive({messages::GameOpcode::AdventureLeaderboardReply, std::move(sparse)});
     rows = ui.api.list_rows("AdventureLeaderboardWnd", "AdvLeaderboard_LeaderList");
     REQUIRE(rows.size() == 3);
     CHECK(rows[0][0] == "1");
@@ -272,7 +269,7 @@ TEST_CASE("adventure windows: leaderboard category and risk are independent and 
     ui.world.conn->adventure_frame();
     board.rank = 0;
     board.rows[1].name = "Tester";
-    ui.receive(encode(board));
+    ui.receive({messages::GameOpcode::AdventureLeaderboardReply, board});
     CHECK(ui("return hs.WindowText('AdventureLeaderboardWnd', 'AdvLeaderboard_YourRankLabel')") == "1");
 
     // A script can change the selected board between UI frames; each selector preserves the other live choice.

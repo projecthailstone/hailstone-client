@@ -31,8 +31,8 @@
 
 #include "game/coords.h"
 #include "game/world_state.h"
-#include "net/game_connection.h"
-#include "net/opcodes.h"
+#include "net/connection/game_connection.h"
+#include "net/protocol/rof2/opcode_map.h"
 
 namespace hailstone::probe {
 
@@ -61,21 +61,21 @@ public:
 
     void tap(const net::AppPacket& p) {
         if (!active()) return;
-        net::Op op = net::from_wire(p.opcode);
+        net::rof2::Op op = net::rof2::from_wire(p.opcode);
         switch (op) {
-        case net::Op::RespondAA: case net::Op::AAExpUpdate: case net::Op::AAAction: case net::Op::ClearAA:
-        case net::Op::GMTraining: case net::Op::GMTrainSkillConfirm:
-        case net::Op::TradeSkillCombine: case net::Op::ClearObject: case net::Op::ClickObjectAction:
-        case net::Op::TaskDescription: case net::Op::TaskActivity: case net::Op::CompletedTasks:
-        case net::Op::TaskSelectWindow: case net::Op::SharedTaskSelectWindow: case net::Op::TaskHistoryReply:
-        case net::Op::TaskActivityComplete: case net::Op::CancelTask: case net::Op::TaskRequestTimer:
-        case net::Op::SkillUpdate: case net::Op::LevelUpdate: case net::Op::ExpUpdate: {
-            std::printf("  PROGRESS: got %s (%zu bytes):", net::op_name(op), p.data.size());
+        case net::rof2::Op::RespondAA: case net::rof2::Op::AAExpUpdate: case net::rof2::Op::AAAction: case net::rof2::Op::ClearAA:
+        case net::rof2::Op::GMTraining: case net::rof2::Op::GMTrainSkillConfirm:
+        case net::rof2::Op::TradeSkillCombine: case net::rof2::Op::ClearObject: case net::rof2::Op::ClickObjectAction:
+        case net::rof2::Op::TaskDescription: case net::rof2::Op::TaskActivity: case net::rof2::Op::CompletedTasks:
+        case net::rof2::Op::TaskSelectWindow: case net::rof2::Op::SharedTaskSelectWindow: case net::rof2::Op::TaskHistoryReply:
+        case net::rof2::Op::TaskActivityComplete: case net::rof2::Op::CancelTask: case net::rof2::Op::TaskRequestTimer:
+        case net::rof2::Op::SkillUpdate: case net::rof2::Op::LevelUpdate: case net::rof2::Op::ExpUpdate: {
+            std::printf("  PROGRESS: got %s (%zu bytes):", net::rof2::op_name(op), p.data.size());
             for (std::size_t i = 0; i < p.data.size() && i < 24; ++i) std::printf(" %02x", std::to_integer<unsigned>(p.data[i]));
             std::printf("\n");
             break;
         }
-        case net::Op::SendAATable: ++aa_ranks_seen_; break;
+        case net::rof2::Op::SendAATable: ++aa_ranks_seen_; break;
         default: break;
         }
     }

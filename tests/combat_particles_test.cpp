@@ -28,9 +28,11 @@
 #include "game/path_trail.h"
 #include "game/spells.h"
 #include "mock_server/harness.h"
-#include "net/movement_packets.h"
-#include "net/spell_packets.h"
-#include "net/zone_packets.h"
+#include "net/protocol/rof2/packets/movement_packets.h"
+#include "net/messages/spell.h"
+#include "net/messages/zone.h"
+#include "net/protocol/rof2/packets/spell_packets.h"
+#include "net/protocol/rof2/packets/zone_packets.h"
 
 using namespace hailstone;
 
@@ -225,7 +227,7 @@ TEST_CASE("Server Find and guide trails each use rainbow particles and stop inde
     const auto guide_key = particles.simulation().emitters().front().key;
 
     rig.conn.find_map_location({0, 60, 2});
-    rig.conn.receive_zone_packet_for_test(net::encode_find_person_reply({{0, 60, 2}, {0, 0, 2}, {0, 60, 2}}));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::FindPersonReply, std::vector<glm::vec3>{{0, 60, 2}, {0, 0, 2}, {0, 60, 2}}});
     REQUIRE(rig.conn.player_path().active());
     REQUIRE_FALSE(rig.conn.player_path().points().empty());
     CHECK(rig.conn.player_path().points().front().z - rig.conn.player_path().floor_offset() == doctest::Approx(2.0f));
@@ -267,7 +269,7 @@ TEST_CASE("Find trail visibility retains both routes and keeps ordinary spell ef
     });
     particles.set_guide_line({{0, 0, 2}, {60, 0, 2}});
     rig.conn.find_map_location({0, 60, 2});
-    rig.conn.receive_zone_packet_for_test(net::encode_find_person_reply({{0, 60, 2}, {0, 0, 2}, {0, 60, 2}}));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::FindPersonReply, std::vector<glm::vec3>{{0, 60, 2}, {0, 0, 2}, {0, 60, 2}}});
     REQUIRE(rig.conn.player_path().active());
     const auto points = rig.conn.player_path().points();
     net::SpellEffectCue cast;
@@ -330,7 +332,7 @@ TEST_CASE("Find's rainbow replaces elevated travelling clouds and grounds large 
     REQUIRE(rig.conn.find_spawn(333));
     REQUIRE(rig.conn.player_path().floor_offset() == 12.0f);
     REQUIRE(rig.conn.player_path().settings().emitters[0].definition == 1);
-    rig.conn.receive_zone_packet_for_test(net::encode_find_person_reply({{60, 0, 14}, {0, 0, 14}, {60, 0, 14}}));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::FindPersonReply, std::vector<glm::vec3>{{60, 0, 14}, {0, 0, 14}, {60, 0, 14}}});
     // Drive this owned component's frame clock explicitly; the connection's session clock does not drive it.
     auto& path = const_cast<game::PlayerPath&>(rig.conn.player_path());
     const auto tick = net::GameConnection::eq_time();
@@ -464,14 +466,14 @@ TEST_CASE("Spell landing packets use the source actor and its level for impact-s
     REQUIRE(table->parse(spell_line(600)) == 1);
     rig.conn.set_spell_table_for_test(table);
     rig.conn.take_spell_effect_cues();
-    Action hit;
+    net::messages::SpellAction hit;
     hit.source = 333;
     hit.target = 334;
     hit.type = 231;
     hit.spell_id = 600;
     hit.spell_level = 50;
     hit.effect_flag = 4;
-    rig.conn.receive_zone_packet_for_test(encode(hit));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::Action, hit});
     auto cues = rig.conn.take_spell_effect_cues();
     REQUIRE(std::any_of(cues.begin(), cues.end(), [](const auto& c) { return c.stage == 2; }));
     for (auto& cue : cues)
@@ -515,13 +517,13 @@ TEST_CASE("A spell landing without a known source plays no impact stage, as DoSp
     for (std::uint16_t source : {std::uint16_t{0}, std::uint16_t{999}}) {
         CAPTURE(source);
         rig.conn.take_spell_effect_cues();
-        Action hit;
+        net::messages::SpellAction hit;
         hit.source = source;
         hit.target = 334;
         hit.type = 231;
         hit.spell_id = 600;
         hit.effect_flag = 4;
-        rig.conn.receive_zone_packet_for_test(encode(hit));
+        rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::Action, hit});
         app::SpellParticles particles({assets::EmitterDefinition{}, dot()}, {assets::SpellEffect{}, effect});
         particles.update(rig.conn, rig.conn.take_spell_effect_cues(), {}, nullptr, 0.01f);
         CHECK(particles.simulation().emitters().empty()); // not even the slot on the struck spawn
@@ -906,11 +908,11 @@ TEST_CASE("Local sharp-weapon damage produces asset-backed blood only at a suppo
     hit.type = 1;
     hit.damage = 10;
     // Even with a valid point, an installation without the source sprite shows no fabricated fallback.
-    rig.conn.receive_zone_packet_for_test(encode(hit));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::Damage, hit});
     particles.update(rig.conn, {}, {}, nullptr, 0.01f);
     CHECK(particles.simulation().emitters().empty());
     particles.set_blood_sprite(game::blood_spurt_definition("fixture.dds"));
-    rig.conn.receive_zone_packet_for_test(encode(hit));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::Damage, hit});
     particles.update(rig.conn, {}, {}, nullptr, 0.01f);
     REQUIRE(particles.simulation().emitters().size() == 1);
     const auto& blood = particles.simulation().emitters().front();
@@ -929,31 +931,31 @@ TEST_CASE("Local sharp-weapon damage produces asset-backed blood only at a suppo
     // Skill, ownership, successful hit and a living target are all part of the packet-to-cue contract.
     for (auto skill : {4u, 7u, 21u, 30u, 51u, 231u}) {
         hit.type = static_cast<std::uint8_t>(skill);
-        rig.conn.receive_zone_packet_for_test(encode(hit));
+        rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::Damage, hit});
     }
     hit.type = 1;
     hit.source = 333;
-    rig.conn.receive_zone_packet_for_test(encode(hit));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::Damage, hit});
     hit.source = static_cast<std::uint16_t>(rig.conn.world().player_id);
     hit.damage = 0;
-    rig.conn.receive_zone_packet_for_test(encode(hit));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::Damage, hit});
     CHECK(rig.conn.take_blood_spurts().empty());
     hit.damage = 10;
     for (auto skill : {0u, 1u, 2u, 3u, 8u, 10u, 36u, 77u}) {
         hit.type = static_cast<std::uint8_t>(skill);
-        rig.conn.receive_zone_packet_for_test(encode(hit));
+        rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::Damage, hit});
     }
     CHECK(rig.conn.take_blood_spurts().size() == 8);
     rig.conn.world_for_test().spawns.at(334).is_corpse = true;
-    rig.conn.receive_zone_packet_for_test(encode(hit));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::Damage, hit});
     CHECK(rig.conn.take_blood_spurts().empty());
     rig.conn.world_for_test().spawns.at(334).is_corpse = false;
     supported = false;
-    rig.conn.receive_zone_packet_for_test(encode(hit));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::Damage, hit});
     particles.update(rig.conn, {}, {}, nullptr, 0.01f);
     CHECK(particles.simulation().emitters().empty());
     supported = true;
-    rig.conn.receive_zone_packet_for_test(encode(hit));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::Damage, hit});
     particles.update(rig.conn, {}, {}, nullptr, 0.01f);
     REQUIRE(particles.simulation().emitters().size() == 1);
     rig.conn.world_for_test().spawns.erase(334);
@@ -985,19 +987,17 @@ TEST_CASE("A valid spell missile packet creates its stage at the missile and rel
     effect.stages[2].slots[2] = {1, 0, 0, 0}; // the explicit world point
     effect.stages[2].slots[3] = {1, 0, 3, 8}; // native missile launch passes no target actor to DoSpellEffect
     app::SpellParticles particles({assets::EmitterDefinition{}, dot()}, {assets::SpellEffect{}, effect});
-    ByteWriter packet;
-    for (float value : {10.0f, 20.0f, 30.0f, 1.0f, 2.0f, 3.0f, 4.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}) packet.f32(value);
-    for (auto value : {333u, 334u, 0u, 0u, 600u}) packet.le(value);
-    packet.le<std::uint8_t>(0); // light
-    packet.le<std::uint32_t>(0);
-    packet.le<std::uint8_t>(1); // range
-    packet.le<std::uint8_t>(9); // spell missile
-    packet.le<std::uint8_t>(0); // skill
-    packet.le<std::uint8_t>(0); // explicit destination flag
-    for (int i = 0; i < 3; ++i) packet.f32(0);
-    packet.fixed_string("IT123", 27);
-    REQUIRE(packet.data().size() == 116);
-    rig.conn.receive_zone_packet_for_test({to_wire(Op::SomeItemPacketMaybe), packet.take()});
+    game::MissilePacket packet;
+    packet.position = {10, 20, 30};
+    packet.velocity = {1, 2, 3};
+    packet.speed = 4;
+    packet.source_id = 333;
+    packet.target_id = 334;
+    packet.spell = 600;
+    packet.range = 1;
+    packet.item_type = game::kMissileItemSpell;
+    packet.model = "IT123";
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::SomeItemPacketMaybe, packet});
     auto incoming = rig.conn.take_missiles();
     REQUIRE(incoming.size() == 1);
     REQUIRE(incoming.front().item_type == 9);
@@ -1121,11 +1121,11 @@ TEST_CASE("Spell859 missile destruction invokes the local Action presentation wi
     const auto position = rig.conn.world().player()->position;
     rig.server.add_spawn(make_spawn("FixtureCaster", 333, 1, 1, 50, 60, 7));
     REQUIRE(rig.until([&] { return rig.conn.world().spawns.contains(333); }));
-    BeginCast casting; // the source is casting something else, which the local presentation must not end
+    net::messages::CastStarted casting; // the source is casting something else, which the local presentation must not end
     casting.spell_id = 859;
     casting.caster_id = 333;
     casting.cast_time = 10000;
-    rig.conn.receive_zone_packet_for_test(encode(casting));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::BeginCast, casting});
     REQUIRE(rig.conn.spell_state().others.contains(333));
     rig.conn.take_spell_effect_cues();
     rig.conn.take_sound_cues();
@@ -1188,14 +1188,14 @@ TEST_CASE("Spell859 missile destruction invokes the local Action presentation wi
 
     // A real success Action for the same fixture must be capable of applying a lasting buff, so the assertion
     // above proves the synthetic path's missing success flag rather than an inert spell definition.
-    Action success;
+    net::messages::SpellAction success;
     success.source = 333;
     success.target = static_cast<std::uint16_t>(me);
     success.type = 231;
     success.spell_id = 859;
     success.level = success.spell_level = 50;
     success.effect_flag = 4;
-    rig.conn.receive_zone_packet_for_test(encode(success));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::Action, success});
     CHECK(std::any_of(rig.conn.spell_state().buffs.begin(), rig.conn.spell_state().buffs.end(),
                      [](const auto& buff) { return buff.spell == 859 && buff.tics > 0; }));
 }

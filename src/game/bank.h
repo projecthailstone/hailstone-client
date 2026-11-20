@@ -3,14 +3,14 @@
 // The bank as the original client keeps it (CBankWnd) and the rules it checks before an item goes into or comes out
 // of the bank and the shared bank (CInvSlot::HandleLButtonUp @0x695670, the
 // put-down branch for Location 1 and 2).
-// Nothing here does networking; net/game_connection_bank.cpp sends the packets.
+// Nothing here does networking; net/connection/game_connection_bank.cpp sends the packets.
 
 #include <cstdint>
 #include <optional>
 #include <string>
 
 #include "game/inventory.h"
-#include "net/item_packets.h"
+#include "net/messages/item.h"
 
 namespace hailstone::game {
 

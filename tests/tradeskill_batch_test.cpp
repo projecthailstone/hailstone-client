@@ -1,4 +1,4 @@
-// Hailstone's Combine N / Combine All in the tradeskill window (game/tradeskill.h CombineBatch, net/game_connection_progress.cpp):
+// Hailstone's Combine N / Combine All in the tradeskill window (game/tradeskill.h CombineBatch, net/connection/game_connection_progress.cpp):
 // the components against what the character carries, the room a result needs, where a result is put away, and a
 // batch against the mock EQEmu (the server's side played by the test as HandleAutoCombine does it: the components
 // taken, the answer, then the result on the cursor).
@@ -10,8 +10,8 @@
 #include "game/inventory.h"
 #include "game/tradeskill.h"
 #include "mock_server/harness.h"
-#include "net/door_packets.h"
-#include "net/trade_packets.h"
+#include "net/protocol/rof2/packets/door_packets.h"
+#include "net/protocol/rof2/packets/trade_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::net;
@@ -163,7 +163,7 @@ TEST_CASE("mock server: Combine All puts each result away and stops when the com
 
     // HandleAutoCombine: the components taken, the answer, the result on the cursor.
     auto serve = [&](int nth, std::uint32_t water, std::uint32_t wings) {
-        REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, Op::RecipeAutoCombine) == nth; }));
+        REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, rof2::Op::RecipeAutoCombine) == nth; }));
         server.item_packet(kItemPacketCharInventory, stack_of(13006, "Water Flask", water, 23, 0));
         server.item_packet(kItemPacketCharInventory, stack_of(13068, "Bat Wing", wings, 23, 1));
         RecipeAutoCombine a;
@@ -186,7 +186,7 @@ TEST_CASE("mock server: Combine All puts each result away and stops when the com
     CHECK(stew->stack_count == 2);
     CHECK_FALSE(conn.inventory().cursor());
     CHECK(has_line(rig.chat(), "Combining stopped after 2 combines: you are out of components."));
-    CHECK(MockEqServer::count(server.zone_log, Op::RecipeAutoCombine) == 2);
+    CHECK(MockEqServer::count(server.zone_log, rof2::Op::RecipeAutoCombine) == 2);
     CHECK(conn.tradeskill_start_batch(0) == "You do not have the components.");
 }
 
@@ -213,7 +213,7 @@ TEST_CASE("mock server: a combine batch stops when the result has nowhere to go,
     // Slot 32 and the bag's second place are free: room for one result. The first result is put away; it does not
     // stack, the next has no room: the batch stops before combining again.
     CHECK(conn.tradeskill_start_batch(5).empty());
-    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, Op::RecipeAutoCombine) == 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, rof2::Op::RecipeAutoCombine) == 1; }));
     server.item_packet(kItemPacketCharInventory, stack_of(13006, "Water Flask", 9, 23, 0));
     RecipeAutoCombine a;
     a.object_type = 10;
@@ -229,13 +229,13 @@ TEST_CASE("mock server: a combine batch stops when the result has nowhere to go,
     }
     REQUIRE(rig.until([&] { return !conn.tradeskill().batch; }));
     CHECK(has_line(rig.chat(), "Combining stopped after 1 combine: your inventory is full."));
-    CHECK(MockEqServer::count(server.zone_log, Op::RecipeAutoCombine) == 1);
+    CHECK(MockEqServer::count(server.zone_log, rof2::Op::RecipeAutoCombine) == 1);
 
     // The server's refusal (reply 0xfffffff5: missing components, a lore conflict) ends the batch.
     server.zone.send_reliable(encode_delete_item({ItemSlot::possessions(32), ItemSlot::invalid(), 0xffffffffu}));
     REQUIRE(rig.until([&] { return conn.inventory().at(ItemSlot::possessions(32)) == nullptr; }));
     CHECK(conn.tradeskill_start_batch(0).empty());
-    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, Op::RecipeAutoCombine) == 2; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, rof2::Op::RecipeAutoCombine) == 2; }));
     a.reply_code = kAutoCombineFailed;
     server.zone.send_reliable(encode(a));
     REQUIRE(rig.until([&] { return !conn.tradeskill().batch; }));
@@ -248,5 +248,5 @@ TEST_CASE("mock server: a combine batch stops when the result has nowhere to go,
     REQUIRE(rig.until([&] { return !conn.tradeskill().batch; }));
     CHECK(has_line(rig.chat(), "Combining stopped after 0 combines: you are holding an item."));
     CHECK(conn.inventory().cursor());
-    CHECK(MockEqServer::count(server.zone_log, Op::RecipeAutoCombine) == 2);
+    CHECK(MockEqServer::count(server.zone_log, rof2::Op::RecipeAutoCombine) == 2);
 }

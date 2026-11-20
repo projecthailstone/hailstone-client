@@ -2,7 +2,7 @@
 
 #include "app/nameplate_canvas_context.h"
 #include "mq_test_world.h"
-#include "net/zone_packets.h"
+#include "net/protocol/rof2/packets/zone_packets.h"
 
 using namespace hailstone;
 
@@ -153,7 +153,7 @@ TEST_CASE("nameplate canvas context: full identity replacement and removal retir
     CHECK(connection.world().spawns.at(12).incarnation != old);
     cleared();
     seed();
-    connection.receive_zone_packet_for_test(net::encode_delete_spawn(12));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::DeleteSpawn, net::SpawnDespawn{12}});
     cleared();
     CHECK_FALSE(connection.world().spawns.contains(12));
 }

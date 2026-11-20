@@ -31,8 +31,8 @@
 
 #include "game/coords.h"
 #include "game/world_state.h"
-#include "net/game_connection.h"
-#include "net/opcodes.h"
+#include "net/connection/game_connection.h"
+#include "net/protocol/rof2/opcode_map.h"
 
 namespace hailstone::probe {
 
@@ -51,12 +51,12 @@ public:
 
     void tap(const net::AppPacket& p) {
         if (want_.empty()) return;
-        net::Op op = net::from_wire(p.opcode);
-        if (op == net::Op::MoveItem || op == net::Op::MoneyUpdate || op == net::Op::DeleteItem || op == net::Op::MoveCoin) {
-            std::printf("  BANK: got %s (%zu bytes):", net::op_name(op), p.data.size());
+        net::rof2::Op op = net::rof2::from_wire(p.opcode);
+        if (op == net::rof2::Op::MoveItem || op == net::rof2::Op::MoneyUpdate || op == net::rof2::Op::DeleteItem || op == net::rof2::Op::MoveCoin) {
+            std::printf("  BANK: got %s (%zu bytes):", net::rof2::op_name(op), p.data.size());
             for (std::size_t i = 0; i < p.data.size() && i < 32; ++i) std::printf(" %02x", std::to_integer<unsigned>(p.data[i]));
             std::printf("\n");
-        } else if (op == net::Op::ItemPacket) {
+        } else if (op == net::rof2::Op::ItemPacket) {
             if (auto ip = net::decode_item_packet(p))
                 std::printf("  BANK: item packet %#x: %s x%u at %d/%d/%d\n", ip->type, ip->item.name.c_str(), ip->item.stack_count,
                             ip->item.slot.type, ip->item.slot.slot, ip->item.slot.sub);

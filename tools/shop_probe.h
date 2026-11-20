@@ -33,8 +33,8 @@
 #include "game/item_links.h"
 #include "game/merchant.h"
 #include "game/world_state.h"
-#include "net/game_connection.h"
-#include "net/opcodes.h"
+#include "net/connection/game_connection.h"
+#include "net/protocol/rof2/opcode_map.h"
 
 namespace hailstone::probe {
 
@@ -63,19 +63,19 @@ public:
 
     void tap(const net::AppPacket& p) {
         if (!active()) return;
-        net::Op op = net::from_wire(p.opcode);
+        net::rof2::Op op = net::rof2::from_wire(p.opcode);
         switch (op) {
-        case net::Op::ShopRequest: case net::Op::ShopPlayerBuy: case net::Op::ShopPlayerSell: case net::Op::ShopEnd:
-        case net::Op::ShopEndConfirm: case net::Op::ShopDelItem: case net::Op::TradeRequest: case net::Op::TradeRequestAck:
-        case net::Op::TradeAcceptClick: case net::Op::TradeCoins: case net::Op::TradeBusy: case net::Op::CancelTrade:
-        case net::Op::FinishTrade: case net::Op::FinishWindow: case net::Op::FinishWindow2: case net::Op::MoneyUpdate:
-        case net::Op::ExpUpdate: case net::Op::MoveItem: case net::Op::DeleteItem: {
-            std::printf("  SHOP: got %s (%zu bytes):", net::op_name(op), p.data.size());
+        case net::rof2::Op::ShopRequest: case net::rof2::Op::ShopPlayerBuy: case net::rof2::Op::ShopPlayerSell: case net::rof2::Op::ShopEnd:
+        case net::rof2::Op::ShopEndConfirm: case net::rof2::Op::ShopDelItem: case net::rof2::Op::TradeRequest: case net::rof2::Op::TradeRequestAck:
+        case net::rof2::Op::TradeAcceptClick: case net::rof2::Op::TradeCoins: case net::rof2::Op::TradeBusy: case net::rof2::Op::CancelTrade:
+        case net::rof2::Op::FinishTrade: case net::rof2::Op::FinishWindow: case net::rof2::Op::FinishWindow2: case net::rof2::Op::MoneyUpdate:
+        case net::rof2::Op::ExpUpdate: case net::rof2::Op::MoveItem: case net::rof2::Op::DeleteItem: {
+            std::printf("  SHOP: got %s (%zu bytes):", net::rof2::op_name(op), p.data.size());
             for (std::size_t i = 0; i < p.data.size() && i < 32; ++i) std::printf(" %02x", std::to_integer<unsigned>(p.data[i]));
             std::printf("\n");
             break;
         }
-        case net::Op::ItemPacket:
+        case net::rof2::Op::ItemPacket:
             if (auto ip = net::decode_item_packet(p); ip && ip->type != net::kItemPacketMerchant)
                 std::printf("  SHOP: item packet type %#x: %s x%u at %d/%d/%d\n", ip->type, ip->item.name.c_str(),
                             ip->item.stack_count, ip->item.slot.type, ip->item.slot.slot, ip->item.slot.sub);

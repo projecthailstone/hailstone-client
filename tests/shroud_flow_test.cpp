@@ -2,12 +2,15 @@
 #include <limits>
 
 #include "mock_server/harness.h"
-#include "net/packet_io.h"
-#include "net/task_packets.h"
+#include "net/wire/byte_codec.h"
+#include "net/protocol/rof2/wire_io.h"
+#include "net/protocol/rof2/packets/shroud_packets.h"
+#include "net/protocol/rof2/packets/task_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::net;
 using namespace hailstone::test;
+using hailstone::net::rof2::Op;
 
 namespace {
 

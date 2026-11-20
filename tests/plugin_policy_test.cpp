@@ -1,4 +1,4 @@
-// plugin/policy.h: the server's rules from its hailstone.cfg, and net/settings_packets.h.
+// plugin/policy.h: the server's rules from its hailstone.cfg, and net/protocol/extensions/hailstone/settings_packets.h.
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -7,7 +7,7 @@
 #include <iterator>
 
 #include "core/sha256.h"
-#include "net/settings_packets.h"
+#include "net/protocol/extensions/hailstone/settings_packets.h"
 #include "plugin/policy.h"
 
 using namespace hailstone;

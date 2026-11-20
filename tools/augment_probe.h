@@ -15,8 +15,8 @@
 #include <string>
 
 #include "game/augments.h"
-#include "net/game_connection.h"
-#include "net/opcodes.h"
+#include "net/connection/game_connection.h"
+#include "net/protocol/rof2/opcode_map.h"
 
 namespace hailstone::probe {
 
@@ -35,9 +35,9 @@ public:
 
     void tap(const net::AppPacket& p) {
         if (!host_id_) return;
-        net::Op op = net::from_wire(p.opcode);
-        if (op == net::Op::AugmentItem || op == net::Op::AugmentInfo)
-            std::printf("  AUGMENT: got %s (%zu bytes)\n", net::op_name(op), p.data.size());
+        net::rof2::Op op = net::rof2::from_wire(p.opcode);
+        if (op == net::rof2::Op::AugmentItem || op == net::rof2::Op::AugmentInfo)
+            std::printf("  AUGMENT: got %s (%zu bytes)\n", net::rof2::op_name(op), p.data.size());
     }
 
     void zone_in(net::GameConnection&) { since_ = Clock::now(); }

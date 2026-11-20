@@ -212,20 +212,23 @@ std::vector<TaskWindowRow> objective_rows(const Task& t, const EqStrings& string
                 out.push_back(std::move(sep));
             }
             ++shown;
+            const bool hidden = e.hidden || e.type == -1;
             std::uint32_t color = kTaskListText;
             std::string zone = strings.format(kStrAll, {});
-            if (e.type == -1) {
+            if (hidden) {
                 color = kGrey;
                 zone = strings.format(kStrHidden, {});
             } else if (e.goal_count <= e.done_count) {
                 color = kGreen;
             }
-            std::string text = upper_first(element_text(e));
-            if (e.optional) text = strings.format(kStrOptional, {}) + text;
-            if (!e.zones.empty()) zone = task_zone_names(e.zones, zone_name).substr(0, 255);
+            // Hidden objective descriptions, zones and progress must not leak through
+            // native rows or through the hs.Tasks() Lua projection of these rows.
+            std::string text = hidden ? strings.format(kStrHidden, {}) : upper_first(element_text(e));
+            if (e.optional && !hidden) text = strings.format(kStrOptional, {}) + text;
+            if (!hidden && !e.zones.empty()) zone = task_zone_names(e.zones, zone_name).substr(0, 255);
             TaskWindowRow row;
             std::string status;
-            if (e.type != -1)
+            if (!hidden)
                 status = color == kGreen ? strings.format(kStrDone, {}) : std::format("{}/{}", e.done_count, e.goal_count);
             row.texts = {std::move(text), std::move(status), std::move(zone)};
             row.colors = {color, kTaskListText, color};

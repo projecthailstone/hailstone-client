@@ -233,7 +233,21 @@ std::string check_group_world(const Json& rec) {
     const Json& in = rec["in"];
     const Json& out = rec["out"];
     GroupWorldPacket p;
-    p.opcode = in["opcode"].u32();
+    // Recorded eqgame vectors contain wire opcodes; map them to the semantic
+    // operations the current group rules consume, rather than casting their
+    // unrelated numeric values into GameOpcode.
+    using hailstone::net::messages::GameOpcode;
+    switch (in["opcode"].u32()) {
+    case kOpGroupAcknowledge:   p.opcode = GameOpcode::GroupAcknowledge; break;
+    case kOpGroupDisbandYou:    p.opcode = GameOpcode::GroupDisbandYou; break;
+    case kOpGroupDelete:
+    case kOpGroupDelete2:       p.opcode = GameOpcode::GroupDelete; break;
+    case kOpGroupLeaderChange: p.opcode = GameOpcode::GroupLeaderChange; break;
+    case kOpGroupUpdate:       p.opcode = GameOpcode::GroupUpdate; break;
+    case kOpGroupRoles:        p.opcode = GameOpcode::GroupRoles; break;
+    case kOpGroupDisbandOther: p.opcode = GameOpcode::GroupDisbandOther; break;
+    default: p.opcode = GameOpcode::Unknown; break;
+    }
     p.name = in["name"].text;
     p.name2 = in["name2"].text;
     p.merc = static_cast<std::int8_t>(in["merc"].i32());

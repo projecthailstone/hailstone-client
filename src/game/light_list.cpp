@@ -13,7 +13,7 @@
 #include "game/inventory.h"
 #include "game/particles.h"
 #include "game/world_state.h"
-#include "net/item_packets.h"
+#include "net/messages/item.h"
 
 namespace hailstone::game {
 

@@ -654,7 +654,7 @@ TEST_CASE("TLO: GameTime advances between packets and carries the game calendar"
     test::ManualClock clock;
     clock.hold();
     net::ConnectionOptions options;
-    options.session.clock = clock.source();
+    options.world_protocol.session_config.clock = clock.source(); options.zone_protocol.session_config.clock = clock.source();
     mq_test::World world("hailstone_mq_game_time_test", options);
     mq::Registry reg;
     mq::register_game_tlos(reg);
@@ -663,7 +663,7 @@ TEST_CASE("TLO: GameTime advances between packets and carries the game calendar"
     ctx.conn = world.conn.get();
     auto parse = [&](std::string_view text) { return mq::parse_macro_data(ctx, text); };
     CHECK(parse("${GameTime}") == "NULL");
-    world.conn->receive_zone_packet_for_test(net::encode(net::TimeOfDay{18, 59, 28, 12, 3200}));
+    world.conn->receive_zone_message_for_test({net::messages::GameOpcode::TimeOfDay, net::TimeOfDay{18, 59, 28, 12, 3200}});
     CHECK(parse("${GameTime}") == "18:59");
     CHECK(parse("${GameTime.Night}") == "FALSE");
     clock.advance(std::chrono::milliseconds{2999});

@@ -14,7 +14,7 @@
 #include <string_view>
 
 #include "game/world_state.h"
-#include "net/item_packets.h"
+#include "net/messages/item.h"
 
 namespace hailstone::game {
 

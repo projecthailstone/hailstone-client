@@ -15,11 +15,14 @@
 
 #include "app/lua_ui.h"
 #include "mock_server/harness.h"
-#include "net/spell_packets.h"
+#include "net/messages/message.h"
+#include "net/messages/spell.h"
+#include "net/protocol/rof2/packets/spell_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::net;
 using namespace hailstone::test;
+namespace messages = hailstone::net::messages;
 
 namespace {
 
@@ -31,7 +34,7 @@ std::uint32_t u32_at(const AppPacket& p, std::size_t at) {
 
 const AppPacket& last_swap(const std::vector<AppPacket>& log) {
     for (auto it = log.rbegin(); it != log.rend(); ++it)
-        if (from_wire(it->opcode) == Op::SwapSpell) return *it;
+        if (rof2::from_wire(it->opcode) == rof2::Op::SwapSpell) return *it;
     FAIL("no OP_SwapSpell sent");
     return log.back();
 }
@@ -62,7 +65,7 @@ std::shared_ptr<game::SpellTable> two_spells() {
 
 TEST_CASE("OP_SwapSpell: {u32 from, u32 to}") {
     AppPacket p = encode(SwapSpell{3, 17});
-    CHECK(from_wire(p.opcode) == Op::SwapSpell);
+    CHECK(rof2::from_wire(p.opcode) == rof2::Op::SwapSpell);
     REQUIRE(p.data.size() == kSwapSpellSize);
     CHECK(u32_at(p, 0) == 3);
     CHECK(u32_at(p, 4) == 17);
@@ -78,11 +81,11 @@ TEST_CASE("spell book: a right click picks a slot up, the next sends OP_SwapSpel
     REQUIRE(rig.to_zone());
     conn.set_spell_table_for_test(two_spells());
     // Two spells scribed into book slots 0 and 9 (OP_MemorizeSpell, scribing 0).
-    conn.receive_zone_packet_for_test(encode(MemorizeSpell{0, 200, kMemScribe, 0}));
-    conn.receive_zone_packet_for_test(encode(MemorizeSpell{9, 201, kMemScribe, 0}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::MemorizeSpell, messages::MemorizationEvent{0, 200, kMemScribe, 0}});
+    conn.receive_zone_message_for_test({messages::GameOpcode::MemorizeSpell, messages::MemorizationEvent{9, 201, kMemScribe, 0}});
     REQUIRE(conn.spell_state().book[0] == 200);
     REQUIRE(conn.spell_state().book[9] == 201);
-    auto swaps = [&] { return MockEqServer::count(rig.server.zone_log, Op::SwapSpell); };
+    auto swaps = [&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::SwapSpell); };
 
     // Moving (the controlled spawn's SpeedRun above 0) and standing: nothing.
     conn.set_speed_run(1.0f);
@@ -120,7 +123,7 @@ TEST_CASE("spell book: a right click picks a slot up, the next sends OP_SwapSpel
     CHECK(conn.spell_state().book[9] == 201);
 
     // EQEmu echoes the packet: the slots swap (an empty slot too), 1388, the pick is dropped.
-    conn.receive_zone_packet_for_test(sent);
+    conn.receive_zone_message_for_test({messages::GameOpcode::SwapSpell, messages::SpellBookSwap{9, 20}});
     CHECK(conn.spell_state().book[20] == 201);
     CHECK(conn.spell_state().book[9] == game::kNoSpell);
     CHECK(conn.spell_book_swap_slot() == -1);
@@ -132,12 +135,12 @@ TEST_CASE("spell book: a right click picks a slot up, the next sends OP_SwapSpel
     conn.spell_book_swap_click(20);
     conn.spell_book_swap_click(0);
     REQUIRE(rig.until([&] { return swaps() == 2; }));
-    conn.receive_zone_packet_for_test(last_swap(rig.server.zone_log));
+    conn.receive_zone_message_for_test({messages::GameOpcode::SwapSpell, messages::SpellBookSwap{20, 0}});
     CHECK(conn.spell_state().book[0] == 201);
     CHECK(conn.spell_state().book[20] == 200);
 
     // An echo with a slot out of the book is ignored (the original breaks into the debugger).
-    conn.receive_zone_packet_for_test(encode(SwapSpell{0, 720}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::SwapSpell, messages::SpellBookSwap{0, 720}});
     CHECK(conn.spell_state().book[0] == 201);
 }
 
@@ -150,10 +153,10 @@ TEST_CASE("hs.SpellBookMemorize: with replace_gem_spell off, an empty gem only (
     PlayerProfile pp = *conn.profile();
     pp.class_ = 2; // a cleric: the book opens
     conn.set_profile_for_test(pp);
-    conn.receive_zone_packet_for_test(encode(MemorizeSpell{0, 200, kMemScribe, 0}));
-    conn.receive_zone_packet_for_test(encode(MemorizeSpell{1, 201, kMemScribe, 0}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::MemorizeSpell, messages::MemorizationEvent{0, 200, kMemScribe, 0}});
+    conn.receive_zone_message_for_test({messages::GameOpcode::MemorizeSpell, messages::MemorizationEvent{1, 201, kMemScribe, 0}});
     // Gem 0 holds Minor Healing (OP_MemorizeSpell, memorize).
-    conn.receive_zone_packet_for_test(encode(MemorizeSpell{0, 200, kMemMemorize, 0}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::MemorizeSpell, messages::MemorizationEvent{0, 200, kMemMemorize, 0}});
     REQUIRE(conn.spell_state().gems[0].spell == 200);
     conn.set_sitting(true);
     ImGuiContext* ctx = ImGui::CreateContext();
@@ -192,9 +195,9 @@ TEST_CASE("hs.SpellBookMemorize: with replace_gem_spell on, a spell memorizes ov
     PlayerProfile pp = *conn.profile();
     pp.class_ = 2; // a cleric: the book opens
     conn.set_profile_for_test(pp);
-    conn.receive_zone_packet_for_test(encode(MemorizeSpell{0, 200, kMemScribe, 0}));
-    conn.receive_zone_packet_for_test(encode(MemorizeSpell{1, 201, kMemScribe, 0}));
-    conn.receive_zone_packet_for_test(encode(MemorizeSpell{0, 200, kMemMemorize, 0})); // gem 0: Minor Healing
+    conn.receive_zone_message_for_test({messages::GameOpcode::MemorizeSpell, messages::MemorizationEvent{0, 200, kMemScribe, 0}});
+    conn.receive_zone_message_for_test({messages::GameOpcode::MemorizeSpell, messages::MemorizationEvent{1, 201, kMemScribe, 0}});
+    conn.receive_zone_message_for_test({messages::GameOpcode::MemorizeSpell, messages::MemorizationEvent{0, 200, kMemMemorize, 0}}); // gem 0: Minor Healing
     REQUIRE(conn.spell_state().gems[0].spell == 200);
     conn.set_sitting(true);
     ImGuiContext* ctx = ImGui::CreateContext();
@@ -227,7 +230,7 @@ TEST_CASE("hs.SpellBookMemorize: with replace_gem_spell on, a spell memorizes ov
         CHECK(conn.spell_state().memorizing->spell == 201);
         CHECK(conn.spell_state().gems[0].spell == 200); // kept until the server answers
         // the memorize runs to its end: OP_MemorizeSpell {gem 0, 201, memorize}
-        auto mems = [&] { return MockEqServer::count(rig.server.zone_log, Op::MemorizeSpell); };
+        auto mems = [&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::MemorizeSpell); };
         const auto before = mems();
         std::vector<std::int64_t> steps;
         const std::int64_t t0 = GameConnection::now_ms();
@@ -237,7 +240,7 @@ TEST_CASE("hs.SpellBookMemorize: with replace_gem_spell on, a spell memorizes ov
         conn.set_game_steps(std::nullopt);
         const AppPacket* sent = nullptr;
         for (auto it = rig.server.zone_log.rbegin(); it != rig.server.zone_log.rend(); ++it)
-            if (from_wire(it->opcode) == Op::MemorizeSpell) {
+            if (rof2::from_wire(it->opcode) == rof2::Op::MemorizeSpell) {
                 sent = &*it;
                 break;
             }
@@ -249,8 +252,8 @@ TEST_CASE("hs.SpellBookMemorize: with replace_gem_spell on, a spell memorizes ov
         CHECK(d->scribing == kMemMemorize);
         drain_chat(conn);
         // EQEmu's answer: forget gem 0, then memorize 201 into it
-        conn.receive_zone_packet_for_test(encode(MemorizeSpell{0, 200, kMemForget, 0}));
-        conn.receive_zone_packet_for_test(encode(MemorizeSpell{0, 201, kMemMemorize, 0}));
+        conn.receive_zone_message_for_test({messages::GameOpcode::MemorizeSpell, messages::MemorizationEvent{0, 200, kMemForget, 0}});
+        conn.receive_zone_message_for_test({messages::GameOpcode::MemorizeSpell, messages::MemorizationEvent{0, 201, kMemMemorize, 0}});
         CHECK(conn.spell_state().gems[0].spell == 201);
         CHECK_FALSE(conn.spell_state().memorizing.has_value());
         for (const auto& line : drain_chat(conn)) CHECK(line.find("12496") == std::string::npos); // no You forget

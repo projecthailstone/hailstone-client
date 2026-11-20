@@ -10,8 +10,8 @@
 
 #include "game/bank.h"
 #include "game/item_moves.h"
-#include "net/item_packets.h"
-#include "net/trade_packets.h"
+#include "net/protocol/rof2/packets/item_packets.h"
+#include "net/protocol/rof2/packets/trade_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::net;

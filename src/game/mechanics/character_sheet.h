@@ -19,7 +19,7 @@
 
 #include "game/mechanics/fpu.h"
 #include "game/server_ext.h"
-#include "net/item_packets.h"
+#include "net/messages/item.h"
 
 namespace hailstone::game {
 struct SpellData;

@@ -5,7 +5,7 @@
 // pending invitation, the group members' mana and endurance percentages; the
 // pets (NMS OP_PetList, else the spawns whose owner is the player), the
 // focused pet and its window state. Pure state with the original's rules;
-// the packets are handled in net/game_connection_group.cpp.
+// the packets are handled in net/connection/game_connection_group.cpp.
 
 #include <array>
 #include <cstdint>

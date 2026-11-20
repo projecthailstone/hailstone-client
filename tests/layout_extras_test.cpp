@@ -217,7 +217,7 @@ TEST_CASE("Crash log: the last log lines and the report file") {
     char recent[4096];
     std::size_t n = log::copy_recent_lines(recent, sizeof recent);
     std::string lines(recent, n);
-    CHECK(lines.find("[info] crash test line 19\n") != std::string::npos);
+    CHECK(lines.find("] crash test line 19\n") != std::string::npos);
     CHECK(lines.find("crash test line 4\n") != std::string::npos);
     CHECK(lines.find("crash test line 3\n") == std::string::npos); // 16 kept
     char small[10];

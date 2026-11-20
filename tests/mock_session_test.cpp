@@ -10,9 +10,9 @@
 #include <thread>
 
 #include "mock_server/harness.h"
-#include "net/game_connection.h"
-#include "net/session.h"
-#include "net/session_codec.h"
+#include "net/connection/game_connection.h"
+#include "net/session/soe/session.h"
+#include "net/session/soe/framing.h"
 #include "platform/udp_socket.h"
 
 using namespace hailstone;
@@ -27,14 +27,14 @@ std::uint8_t tag_of(const AppPacket& p) { return p.data.empty() ? 0 : std::to_in
 
 struct SessionRig {
     SoeEndpoint server;
-    std::unique_ptr<Session> session;
+    std::unique_ptr<ISession> session;
     std::vector<AppPacket> got; // what the session delivered, in order
 
-    explicit SessionRig(SessionOptions options = quick(), soe::SessionParams params = SoeEndpoint::default_params())
-        : server(params), session(Session::create(std::move(options))) {}
+    explicit SessionRig(soe::Options options = quick(), soe::SessionParams params = SoeEndpoint::default_params())
+        : server(params), session(soe::create_session(std::move(options))) {}
 
-    static SessionOptions quick() {
-        SessionOptions o;
+    static soe::Options quick() {
+        soe::Options o;
         o.hold_time = 0ms;
         return o;
     }
@@ -251,7 +251,7 @@ TEST_CASE("mock session: the server closing the session, OP_OutOfSession and a c
 }
 
 TEST_CASE("mock session: link death needs silence; a keepalive is traffic") {
-    SessionOptions opt = SessionRig::quick();
+    soe::Options opt = SessionRig::quick();
     opt.idle_timeout = 300ms; // the real one is 180 s (world and zone)
     ManualClock clock;
     opt.clock = clock.source();
@@ -279,9 +279,9 @@ TEST_CASE("mock session: link death needs silence; a keepalive is traffic") {
 TEST_CASE("mock session: the default link-death limit is the original's 180 s of silence") {
     // UdpManager Params 0x12 for world and zone (NetMgr +0x50 = 180000; UdpConnection +0x15c). Login and chat keep
     // their own limits (their Options).
-    CHECK(SessionOptions{}.idle_timeout == 180s);
-    CHECK(ConnectionOptions{}.session.idle_timeout == 180s);
-    SessionOptions opt = SessionRig::quick();
+    CHECK(soe::Options{}.idle_timeout == 180s);
+    CHECK(ConnectionOptions{}.zone_protocol.session_config.protocol == "soe");
+    soe::Options opt = SessionRig::quick();
     opt.stat_interval = 0ms; // the mock answers a stat request, which would be traffic
     ManualClock clock;
     opt.clock = clock.source();
@@ -306,7 +306,7 @@ TEST_CASE("mock session: the default link-death limit is the original's 180 s of
 }
 
 TEST_CASE("mock session: a keepalive goes out after the keepalive delay without sending, not while sending") {
-    SessionOptions opt = SessionRig::quick();
+    soe::Options opt = SessionRig::quick();
     opt.keepalive_interval = 200ms; // the original's 15 s (UdpManager Params 0xe)
     ManualClock clock;
     opt.clock = clock.source();
@@ -340,7 +340,7 @@ TEST_CASE("mock session: a keepalive goes out after the keepalive delay without 
 }
 
 TEST_CASE("mock session: keepalive_interval 0 sends none") {
-    SessionOptions opt = SessionRig::quick();
+    soe::Options opt = SessionRig::quick();
     opt.keepalive_interval = 0ms;
     ManualClock clock;
     opt.clock = clock.source();
@@ -372,7 +372,7 @@ TEST_CASE("mock session: connect() again starts a fresh session with its own seq
 }
 
 TEST_CASE("mock session: datagrams that fail the CRC do not keep a dead link alive") {
-    SessionOptions opt = SessionRig::quick();
+    soe::Options opt = SessionRig::quick();
     opt.idle_timeout = 300ms;
     opt.stat_interval = 0ms;
     ManualClock clock;
@@ -402,7 +402,7 @@ TEST_CASE("mock session: datagrams that fail the CRC do not keep a dead link ali
 }
 
 TEST_CASE("mock session: received packets the owner does not read are bounded; passing the bound ends the session") {
-    SessionOptions opt = SessionRig::quick();
+    soe::Options opt = SessionRig::quick();
     opt.max_received_bytes = 6000;
     SessionRig rig(opt);
     REQUIRE(rig.connect());
@@ -453,7 +453,7 @@ TEST_CASE("mock session: a SessionResponse with the connect code is taken from a
     if (!other_host.open(platform::Endpoint::Family::V4, error, &there)) {
         MESSAGE("127.0.0.2 cannot be bound here (" << error << "): the other-address half is not checked");
     }
-    auto session = Session::create(SessionRig::quick());
+    auto session = soe::create_session(SessionRig::quick());
     session->connect("127.0.0.1", server.local_endpoint()->port);
 
     std::array<std::byte, 2048> buf{};
@@ -505,12 +505,12 @@ TEST_CASE("mock session: a host name is looked up off the caller's thread, and t
 TEST_CASE("mock session: a lookup still running when the connect times out ends the connect") {
     // The connect timeout counts the lookup too. A name that never answers is stood in for by a clock that jumps
     // past the timeout before the lookup can have come back.
-    SessionOptions opt = SessionRig::quick();
+    soe::Options opt = SessionRig::quick();
     opt.service_interval = 0ms; // update() alone services it
     opt.connect_timeout = 100ms;
     ManualClock clock;
     opt.clock = clock.source();
-    auto session = Session::create(opt);
+    auto session = soe::create_session(opt);
     clock.hold();
     session->connect("localhost", 9);
     clock.advance(200ms);
@@ -527,12 +527,12 @@ TEST_CASE("mock session: a lookup that came back after the timeout is not report
     // resolver leaves the lookup unfinished; each try waits longer.
     std::string last_error;
     for (auto wait : {50ms, 250ms, 1000ms, 3000ms}) {
-        SessionOptions opt = SessionRig::quick();
+        soe::Options opt = SessionRig::quick();
         opt.service_interval = 0ms; // update() alone services it
         opt.connect_timeout = 100ms;
         ManualClock clock;
         opt.clock = clock.source();
-        auto session = Session::create(opt);
+        auto session = soe::create_session(opt);
         clock.hold();
         session->connect("localhost", 9);
         std::this_thread::sleep_for(wait);

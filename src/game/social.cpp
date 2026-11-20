@@ -13,7 +13,7 @@
 #include "game/eq_strings.h"
 #include "game/slash_commands.h"
 #include "game/zone_names.h"
-#include "net/social_packets.h"
+#include "net/messages/social.h"
 
 namespace hailstone::game {
 

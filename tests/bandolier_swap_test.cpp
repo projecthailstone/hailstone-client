@@ -11,8 +11,8 @@
 
 #include "game/inventory.h"
 #include "mock_server/harness.h"
-#include "net/packet_io.h"
-#include "net/player_packets.h"
+#include "net/protocol/rof2/wire_io.h"
+#include "net/protocol/rof2/packets/player_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::test;
@@ -22,7 +22,7 @@ namespace {
 
 int swaps_sent(const MockEqServer& server, std::uint8_t set) {
     return static_cast<int>(std::count_if(server.zone_log.begin(), server.zone_log.end(), [&](const net::AppPacket& p) {
-        if (!net::is_op(p, net::Op::Bandolier)) return false;
+        if (!net::is_op(p, net::rof2::Op::Bandolier)) return false;
         auto b = net::decode_bandolier(p);
         return b && b->action == net::kBandolierSet && b->number == set;
     }));

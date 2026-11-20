@@ -6,7 +6,7 @@
 
 #include "game/inventory.h"
 #include "game/item_sort.h"
-#include "net/item_packets.h"
+#include "net/protocol/rof2/packets/item_packets.h"
 
 using namespace hailstone;
 using net::Item;

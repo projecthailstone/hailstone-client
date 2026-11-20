@@ -5,7 +5,7 @@
 // before a train request (PcZoneClient_CanTrainSkillOrLanguage @0x5855a0)
 // and which languages a
 // character may learn (PcClient::checkLang @0x581800). Pure rules; the
-// packets are handled in net/game_connection_progress.cpp.
+// packets are handled in net/connection/game_connection_progress.cpp.
 
 #include <array>
 #include <cstdint>

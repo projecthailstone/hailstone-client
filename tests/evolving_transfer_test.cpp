@@ -4,11 +4,13 @@
 
 #include "mock_server/harness.h"
 #include "mq_test_world.h"
-#include "net/evolving_packets.h"
+#include "net/messages/message.h"
+#include "net/protocol/rof2/packets/evolving_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::net;
 using namespace hailstone::test;
+namespace messages = hailstone::net::messages;
 
 namespace {
 
@@ -54,7 +56,7 @@ void select_pair(GameConnection& conn, std::uint64_t to = destination_id) {
 std::vector<EvolvingRequest> requests(const Rig& rig) {
     std::vector<EvolvingRequest> result;
     for (const auto& packet : rig.server.zone_log)
-        if (packet.opcode == to_wire(Op::EvolveItem))
+        if (packet.opcode == rof2::to_wire(rof2::Op::EvolveItem))
             if (auto request = decode_evolving_request(packet)) result.push_back(*request);
     return result;
 }
@@ -118,7 +120,7 @@ TEST_CASE("evolving transfer: the unaligned 30-byte details header precedes two 
     absent.destination.reset();
     CHECK(encode(absent).data.size() == 30);
     CHECK(decode_evolving_details(encode(absent)).has_value());
-    // Action 1 shares action 0's 24-byte envelope; action 0 itself is net/item_packets.h's decoder.
+    // Action 1 shares action 0's 24-byte envelope; action 0 itself is net/protocol/rof2/packets/item_packets.h's decoder.
     CHECK(decode_evolving_open(encode(EvolvingUpdate{EvolvingAction::Open, 0, 0, 0})));
     CHECK_FALSE(decode_evolving_open(encode(EvolvingUpdate{EvolvingAction::Update, source_id, 83, 1})));
     CHECK_FALSE(decode_evolving_open(encode(EvolvingRequest{EvolvingAction::Details, source_id, destination_id})));
@@ -133,7 +135,7 @@ TEST_CASE("mock evolving transfer: server preview enables an explicit single tra
     CHECK_FALSE(conn.can_transfer_evolving());
     REQUIRE(rig.until([&] { return requests(rig).size() == 1; }));
     CHECK(requests(rig)[0].action == EvolvingAction::Details);
-    conn.receive_zone_packet_for_test(encode(preview()));
+    conn.receive_zone_message_for_test({messages::GameOpcode::EvolveItem, preview()});
     CHECK(conn.can_transfer_evolving());
     REQUIRE(conn.evolving_transfer().details);
     CHECK(conn.evolving_transfer().details->max_transfer_level == 4);
@@ -142,7 +144,7 @@ TEST_CASE("mock evolving transfer: server preview enables an explicit single tra
     CHECK(conn.request_evolving_transfer(revision));
     CHECK_FALSE(conn.request_evolving_transfer(revision));
     CHECK(conn.evolving_transfer().submitted);
-    conn.receive_zone_packet_for_test(encode(EvolvingUpdate{EvolvingAction::Update, source_id, 41, 1}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::EvolveItem, EvolvingItemUpdate{source_id, 41, 1}});
     CHECK(conn.evolving_transfer().submitted); // periodic progress is not a transfer completion acknowledgement
     CHECK_FALSE(conn.request_evolving_transfer(conn.evolving_transfer().revision));
     CHECK(conn.inventory().at(ItemSlot::possessions(24))->id == 10);
@@ -150,7 +152,7 @@ TEST_CASE("mock evolving transfer: server preview enables an explicit single tra
     CHECK(requests(rig)[1].action == EvolvingAction::Transfer);
     CHECK(requests(rig)[1].source_id == source_id);
     CHECK(requests(rig)[1].destination_id == destination_id);
-    conn.receive_zone_packet_for_test(encode_item_packet(false, ItemPacket{kItemPacketTrade, evolving(100, 11, 24)}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, ItemPacket{kItemPacketTrade, evolving(100, 11, 24)}});
     rig.step();
     CHECK_FALSE(conn.evolving_transfer().submitted);
     CHECK(conn.evolving_transfer().source_id == 0);
@@ -167,18 +169,18 @@ TEST_CASE("mock evolving transfer: unknown, same-item, incompatible and incomple
     CHECK_FALSE(conn.select_evolving_transfer(false, source_id));
     CHECK_FALSE(conn.request_evolving_transfer(conn.evolving_transfer().revision));
     REQUIRE(conn.select_evolving_transfer(false, destination_id));
-    conn.receive_zone_packet_for_test(encode(preview(destination_id, 0)));
+    conn.receive_zone_message_for_test({messages::GameOpcode::EvolveItem, preview(destination_id, 0)});
     CHECK_FALSE(conn.can_transfer_evolving());
     REQUIRE(conn.select_evolving_transfer(false, destination_id));
     auto missing = preview();
     missing.destination.reset();
-    conn.receive_zone_packet_for_test(encode(missing));
+    conn.receive_zone_message_for_test({messages::GameOpcode::EvolveItem, missing});
     CHECK_FALSE(conn.can_transfer_evolving());
     CHECK_FALSE(conn.request_evolving_transfer(conn.evolving_transfer().revision));
     REQUIRE(conn.select_evolving_transfer(false, destination_id));
     auto zero_level = preview();
     zero_level.max_transfer_level = 0; // a valid transfer need not cross a destination tier
-    conn.receive_zone_packet_for_test(encode(zero_level));
+    conn.receive_zone_message_for_test({messages::GameOpcode::EvolveItem, zero_level});
     CHECK(conn.can_transfer_evolving());
 }
 
@@ -188,23 +190,23 @@ TEST_CASE("mock evolving transfer: delayed previews for other pairs and closed w
     auto& conn = rig.conn;
     select_pair(conn);
     REQUIRE(conn.select_evolving_transfer(false, other_id));
-    conn.receive_zone_packet_for_test(encode(preview())); // old pair, not the current pair
+    conn.receive_zone_message_for_test({messages::GameOpcode::EvolveItem, preview()}); // old pair, not the current pair
     CHECK(conn.evolving_transfer().pending);
     CHECK_FALSE(conn.can_transfer_evolving());
-    conn.receive_zone_packet_for_test(encode(preview(other_id)));
+    conn.receive_zone_message_for_test({messages::GameOpcode::EvolveItem, preview(other_id)});
     REQUIRE(conn.can_transfer_evolving());
     REQUIRE(conn.select_evolving_transfer(false, destination_id));
-    conn.receive_zone_packet_for_test(encode(preview()));
+    conn.receive_zone_message_for_test({messages::GameOpcode::EvolveItem, preview()});
     REQUIRE(conn.can_transfer_evolving());
     REQUIRE(conn.select_evolving_transfer(false, destination_id));
     conn.close_evolving_transfer();
-    conn.receive_zone_packet_for_test(encode(preview()));
+    conn.receive_zone_message_for_test({messages::GameOpcode::EvolveItem, preview()});
     CHECK_FALSE(conn.evolving_transfer().shown);
     select_pair(conn);
-    conn.receive_zone_packet_for_test(encode(preview()));
+    conn.receive_zone_message_for_test({messages::GameOpcode::EvolveItem, preview()});
     CHECK(conn.can_transfer_evolving());
     // A fresh server-open notification resets selections even if the window is already shown.
-    conn.receive_zone_packet_for_test(encode(EvolvingUpdate{EvolvingAction::Open, 0, 0, 0}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::EvolveItem, EvolvingUpdate{EvolvingAction::Open, 0, 0, 0}});
     CHECK(conn.evolving_transfer().shown);
     CHECK(conn.evolving_transfer().source_id == 0);
     CHECK(conn.evolving_transfer().destination_id == 0);
@@ -219,11 +221,11 @@ TEST_CASE("mock evolving transfer: a progress tick keeps the approval; a changed
     REQUIRE(rig.to_zone());
     auto& conn = rig.conn;
     select_pair(conn);
-    conn.receive_zone_packet_for_test(encode(preview()));
+    conn.receive_zone_message_for_test({messages::GameOpcode::EvolveItem, preview()});
     REQUIRE(conn.can_transfer_evolving());
     REQUIRE(rig.until([&] { return requests(rig).size() == 1; }));
     const auto revision = conn.evolving_transfer().revision;
-    conn.receive_zone_packet_for_test(encode(EvolvingUpdate{EvolvingAction::Update, source_id, 60, 1}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::EvolveItem, EvolvingItemUpdate{source_id, 60, 1}});
     CHECK(conn.inventory().at(ItemSlot::possessions(24))->evolving.progress == 60.0);
     CHECK(conn.inventory().at(ItemSlot::possessions(24))->evolving.activated == 1);
     rig.step();
@@ -235,7 +237,7 @@ TEST_CASE("mock evolving transfer: a progress tick keeps the approval; a changed
     // A replaced original (a new template or level) does invalidate it, at once and in the next frame.
     auto evolved = evolving(source_id, 10, 24);
     evolved.evolving.evolve_level = 3;
-    conn.receive_zone_packet_for_test(encode_item_packet(false, ItemPacket{kItemPacketTrade, evolved}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, ItemPacket{kItemPacketTrade, evolved}});
     CHECK_FALSE(conn.can_transfer_evolving());
     CHECK_FALSE(conn.request_evolving_transfer(revision));
     rig.step();
@@ -243,9 +245,9 @@ TEST_CASE("mock evolving transfer: a progress tick keeps the approval; a changed
     CHECK(conn.evolving_transfer().revision != revision);
     REQUIRE(rig.until([&] { return requests(rig).size() == 2; }));
     CHECK(requests(rig)[1].action == EvolvingAction::Details);
-    conn.receive_zone_packet_for_test(encode(preview()));
+    conn.receive_zone_message_for_test({messages::GameOpcode::EvolveItem, preview()});
     CHECK(conn.can_transfer_evolving());
-    conn.receive_zone_packet_for_test(encode_item_packet(false, ItemPacket{kItemPacketTrade, evolving(source_id, 99, 24)}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, ItemPacket{kItemPacketTrade, evolving(source_id, 99, 24)}});
     CHECK_FALSE(conn.can_transfer_evolving());
     CHECK_FALSE(conn.request_evolving_transfer(conn.evolving_transfer().revision));
 }
@@ -264,7 +266,7 @@ TEST_CASE("mock evolving transfer: bank and socketed items are excluded while ba
     Rig rig(std::move(config));
     REQUIRE(rig.to_zone());
     auto& conn = rig.conn;
-    conn.receive_zone_packet_for_test(encode(EvolvingUpdate{EvolvingAction::Open, 0, 0, 0}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::EvolveItem, EvolvingUpdate{EvolvingAction::Open, 0, 0, 0}});
     CHECK(conn.evolving_transfer().shown);
     const auto items = conn.evolving_transfer_items();
     CHECK(items.size() == 4);
@@ -280,7 +282,7 @@ TEST_CASE("mock evolving transfer: after a refused transfer a new selection star
     REQUIRE(rig.to_zone());
     auto& conn = rig.conn;
     select_pair(conn);
-    conn.receive_zone_packet_for_test(encode(preview()));
+    conn.receive_zone_message_for_test({messages::GameOpcode::EvolveItem, preview()});
     REQUIRE(conn.request_evolving_transfer(conn.evolving_transfer().revision));
     REQUIRE(rig.until([&] { return requests(rig).size() == 2; }));
     CHECK(conn.evolving_transfer().status.find("Select an item to start again") != std::string::npos);
@@ -293,7 +295,7 @@ TEST_CASE("mock evolving transfer: after a refused transfer a new selection star
     CHECK(conn.evolving_transfer().destination_id == destination_id);
     REQUIRE(rig.until([&] { return requests(rig).size() == 3; }));
     CHECK(requests(rig)[2].action == EvolvingAction::Details);
-    conn.receive_zone_packet_for_test(encode(preview()));
+    conn.receive_zone_message_for_test({messages::GameOpcode::EvolveItem, preview()});
     CHECK(conn.can_transfer_evolving());
     CHECK(conn.request_evolving_transfer(conn.evolving_transfer().revision));
     REQUIRE(rig.until([&] { return requests(rig).size() == 4; }));
@@ -307,7 +309,7 @@ TEST_CASE("mock evolving transfer: an unchanged inventory costs no rebuild per f
     REQUIRE(rig.to_zone());
     auto& conn = rig.conn;
     select_pair(conn);
-    conn.receive_zone_packet_for_test(encode(preview()));
+    conn.receive_zone_message_for_test({messages::GameOpcode::EvolveItem, preview()});
     REQUIRE(conn.can_transfer_evolving());
     const auto before = GameConnectionTestAccess::evolving_cache_work(conn);
     for (int frame = 0; frame < 20; ++frame) {
@@ -317,7 +319,7 @@ TEST_CASE("mock evolving transfer: an unchanged inventory costs no rebuild per f
     }
     CHECK(GameConnectionTestAccess::evolving_cache_work(conn) == before);
     // A changed original is still noticed: one build and one comparison, then a fresh preview request.
-    conn.receive_zone_packet_for_test(encode_item_packet(false, ItemPacket{kItemPacketTrade, evolving(source_id, 99, 24)}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemPacket, ItemPacket{kItemPacketTrade, evolving(source_id, 99, 24)}});
     CHECK_FALSE(conn.can_transfer_evolving());
     rig.step();
     CHECK(conn.evolving_transfer().pending);

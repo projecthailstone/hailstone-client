@@ -3,8 +3,8 @@
 #include "game/coords.h"
 #include "mock_server/harness.h"
 #include "mq_test_world.h"
-#include "net/door_packets.h"
-#include "net/packet_io.h"
+#include "net/protocol/rof2/packets/door_packets.h"
+#include "net/protocol/rof2/wire_io.h"
 
 using namespace hailstone;
 
@@ -24,7 +24,7 @@ void place_station(net::GameConnection& c, std::uint32_t id = kStation, std::uin
     station.x = server.x;
     station.y = server.y;
     station.z = server.z;
-    c.receive_zone_packet_for_test(net::encode(station));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::GroundSpawn, station});
 }
 
 void answer_open(net::GameConnection& c, std::uint32_t id = kStation, std::uint32_t type = 16) {
@@ -32,7 +32,7 @@ void answer_open(net::GameConnection& c, std::uint32_t id = kStation, std::uint3
     answer.drop_id = id;
     answer.type = type;
     answer.name = "Test station";
-    c.receive_zone_packet_for_test(net::encode(answer));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::ClickObjectAction, answer});
 }
 
 void open_station(net::GameConnection& c, std::uint32_t id = kStation, std::uint32_t type = 16,
@@ -71,7 +71,7 @@ net::Item carried_bag(std::uint8_t type = 10) {
 int close_packets(const test::Rig& rig) {
     int count = 0;
     for (const auto& p : rig.server.zone_log)
-        if (net::is_op(p, net::Op::ClickObjectAction) && p.data.empty()) ++count;
+        if (net::is_op(p, net::rof2::Op::ClickObjectAction) && p.data.empty()) ++count;
     return count;
 }
 } // namespace
@@ -92,7 +92,7 @@ TEST_CASE("world containers: distance closure covers recipes Experiment and hidd
             switch (reason) {
             case 0: c.set_player_motion({20.25f, 0, 0}, 0, {}, true); break;
             case 1: c.set_player_motion({0, 0, 20.25f}, 0, {}, true); break;
-            case 2: c.receive_zone_packet_for_test(net::encode(net::ClickObject{kStation, 0})); break;
+            case 2: c.receive_zone_message_for_test({net::messages::GameOpcode::ClickObject, net::ClickObject{kStation, 0}}); break;
             case 3: c.world_for_test().spawns.erase(c.world().player_id); break;
             case 4: place_station(c, kStation, 16, {0, 21, 0}); break;
             }
@@ -248,12 +248,14 @@ TEST_CASE("world containers: source stack questions close and server-owned item 
     CHECK_FALSE(c.inventory().cursor());
     REQUIRE(c.inventory().at(world_slot()));
     CHECK(c.inventory().at(world_slot())->stack_count == 5);
-    c.receive_zone_packet_for_test(net::encode(net::ClearObject{1, 0}));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::ClearObject, net::ClearObject{1, 0}});
     CHECK_FALSE(c.inventory().at(world_slot()));
 }
 
 TEST_CASE("world containers: closing leaves carried stack questions and carried tradeskill kits usable") {
-    mq_test::World world("world_container_carried_items");
+    // A split-stack transaction must be admitted by a live zone endpoint;
+    // an InZone-only synthetic fixture correctly refuses outbound moves.
+    mq_test::World world("world_container_carried_items", {}, true);
     auto& c = *world.conn;
     open_station(c);
     const auto bag_slot = net::ItemSlot::possessions(30);
@@ -313,12 +315,12 @@ TEST_CASE("world containers: leaving stops a real recipe batch before another co
     mq_test::World world("world_container_batch_close");
     auto& c = *world.conn;
     open_station(c);
-    c.receive_zone_packet_for_test(net::encode(net::RecipeReply{16, 0, 1, 500, 20, "Test recipe"}));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::RecipeReply, net::RecipeReply{16, 0, 1, 500, 20, "Test recipe"}});
     c.tradeskill_select(500);
     net::RecipeDetails detail;
     detail.recipe_id = 500;
     detail.components.push_back({5001, 1, "Healing Potion"});
-    c.receive_zone_packet_for_test(net::encode(detail));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::RecipeDetails, detail});
     REQUIRE(c.tradeskill_start_batch(2).empty());
     REQUIRE(c.tradeskill().batch);
     c.set_player_motion({21, 0, 0}, 0, {}, true);
@@ -346,9 +348,9 @@ TEST_CASE("world containers: distance sends one normal close and a stale reply c
     answer_open(c, kStation);
     REQUIRE(c.world_container());
     CHECK(c.world_container()->drop_id == kOtherStation);
-    const int messages = test::MockEqServer::count(rig.server.zone_log, net::Op::ChannelMessage);
+    const int messages = test::MockEqServer::count(rig.server.zone_log, net::rof2::Op::ChannelMessage);
     c.say("world container late-reply marker");
-    REQUIRE(rig.until([&] { return test::MockEqServer::count(rig.server.zone_log, net::Op::ChannelMessage) > messages; }));
+    REQUIRE(rig.until([&] { return test::MockEqServer::count(rig.server.zone_log, net::rof2::Op::ChannelMessage) > messages; }));
     CHECK(close_packets(rig) == 1); // an ID-less duplicate close would release the newer server container
     REQUIRE(c.world_container());
     CHECK(c.world_container()->drop_id == kOtherStation);

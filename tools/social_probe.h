@@ -28,8 +28,8 @@
 
 #include "game/coords.h"
 #include "game/world_state.h"
-#include "net/game_connection.h"
-#include "net/opcodes.h"
+#include "net/connection/game_connection.h"
+#include "net/protocol/rof2/opcode_map.h"
 
 namespace hailstone::probe {
 
@@ -52,13 +52,13 @@ public:
     }
 
     void tap(const net::AppPacket& p) {
-        net::Op op = net::from_wire(p.opcode);
+        net::rof2::Op op = net::rof2::from_wire(p.opcode);
         switch (op) {
-        case net::Op::GuildOptInOut: case net::Op::GuildTributeFavorAndTimer: case net::Op::GuildTributeToggleReply:
-        case net::Op::ShopSendParcel: case net::Op::ShopRetrieveParcel: case net::Op::ShopParcelIcon:
-        case net::Op::ShopDeleteParcel: case net::Op::MoneyUpdate: case net::Op::MoveCoin:
+        case net::rof2::Op::GuildOptInOut: case net::rof2::Op::GuildTributeFavorAndTimer: case net::rof2::Op::GuildTributeToggleReply:
+        case net::rof2::Op::ShopSendParcel: case net::rof2::Op::ShopRetrieveParcel: case net::rof2::Op::ShopParcelIcon:
+        case net::rof2::Op::ShopDeleteParcel: case net::rof2::Op::MoneyUpdate: case net::rof2::Op::MoveCoin:
             if (!active()) break;
-            std::printf("  SOCIAL +%.1fs: got %s (%zu bytes):", secs(), net::op_name(op), p.data.size());
+            std::printf("  SOCIAL +%.1fs: got %s (%zu bytes):", secs(), net::rof2::op_name(op), p.data.size());
             for (std::size_t i = 0; i < p.data.size() && i < 40; ++i) std::printf(" %02x", std::to_integer<unsigned>(p.data[i]));
             std::printf("\n");
             break;

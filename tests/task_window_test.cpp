@@ -15,7 +15,7 @@
 #include "app/lua_ui_windows.h"
 #include "core/byte_io.h"
 #include "mock_server/harness.h"
-#include "net/task_packets.h"
+#include "net/protocol/rof2/packets/task_packets.h"
 #include "plugin/hooks.h"
 
 using namespace hailstone;
@@ -280,7 +280,7 @@ TEST_CASE("task offers: description appends the starting zones of element slot z
 }
 
 TEST_CASE("task offers: Preview Reward uses the selected received offer and refuses stale rows") {
-    for (const auto op : {net::Op::TaskSelectWindow, net::Op::SharedTaskSelectWindow}) {
+    for (const auto op : {net::rof2::Op::TaskSelectWindow, net::rof2::Op::SharedTaskSelectWindow}) {
         CAPTURE(op);
         plugin::Hooks hooks;
         const auto owner = hooks.new_owner("task offer preview fixture");
@@ -291,7 +291,7 @@ TEST_CASE("task offers: Preview Reward uses the selected received offer and refu
         });
         test::ManualClock clock;
         auto options = test::quick_options();
-        options.session.clock = clock.source();
+        options.world_protocol.session_config.clock = clock.source(); options.zone_protocol.session_config.clock = clock.source();
         options.hooks = &hooks;
         test::Rig rig(test::MockConfig::standard(), options);
         REQUIRE(rig.to_zone());
@@ -299,7 +299,7 @@ TEST_CASE("task offers: Preview Reward uses the selected received offer and refu
 
         TaskOffers offers;
         offers.giver_id = 123;
-        offers.type = op == net::Op::SharedTaskSelectWindow ? kTaskTypeShared : kTaskTypeQuest;
+        offers.type = op == net::rof2::Op::SharedTaskSelectWindow ? kTaskTypeShared : kTaskTypeQuest;
         TaskOffer first;
         first.task_id = 9001;
         first.title = "First offer";
@@ -310,7 +310,10 @@ TEST_CASE("task offers: Preview Reward uses the selected received offer and refu
         second.description = "Second description";
         second.reward_preview = true;
         offers.offers = {first, second};
-        rig.conn.receive_zone_packet_for_test(net::encode_task_select(offers, op));
+        rig.conn.receive_zone_message_for_test({
+            op == net::rof2::Op::SharedTaskSelectWindow ? net::messages::GameOpcode::SharedTaskSelectWindow
+                                                          : net::messages::GameOpcode::TaskSelectWindow,
+            offers});
 
         app::UiHost host;
         host.conn = &rig.conn;
@@ -351,7 +354,10 @@ TEST_CASE("task offers: Preview Reward uses the selected received offer and refu
 
         clock.advance(std::chrono::milliseconds{501});
         offers.offers[1].task_id = 80000;
-        rig.conn.receive_zone_packet_for_test(net::encode_task_select(offers, op));
+        rig.conn.receive_zone_message_for_test({
+            op == net::rof2::Op::SharedTaskSelectWindow ? net::messages::GameOpcode::SharedTaskSelectWindow
+                                                          : net::messages::GameOpcode::TaskSelectWindow,
+            offers});
         button = {};
         window.child(host, "TSEL_PreviewRewardButton", button);
         CHECK(button.enabled == false);
@@ -365,7 +371,10 @@ TEST_CASE("task offers: Preview Reward uses the selected received offer and refu
 
         REQUIRE(window.list(host, "TaskList"));
         ++offers.giver_id; // same task ID from a different giver is also a new offer view
-        rig.conn.receive_zone_packet_for_test(net::encode_task_select(offers, op));
+        rig.conn.receive_zone_message_for_test({
+            op == net::rof2::Op::SharedTaskSelectWindow ? net::messages::GameOpcode::SharedTaskSelectWindow
+                                                          : net::messages::GameOpcode::TaskSelectWindow,
+            offers});
         button = {};
         window.child(host, "TSEL_PreviewRewardButton", button);
         CHECK(button.enabled == false);
@@ -374,11 +383,14 @@ TEST_CASE("task offers: Preview Reward uses the selected received offer and refu
 
         REQUIRE(window.list(host, "TaskList"));
         offers.offers[1].reward_preview = false;
-        rig.conn.receive_zone_packet_for_test(net::encode_task_select(offers, op));
+        rig.conn.receive_zone_message_for_test({
+            op == net::rof2::Op::SharedTaskSelectWindow ? net::messages::GameOpcode::SharedTaskSelectWindow
+                                                          : net::messages::GameOpcode::TaskSelectWindow,
+            offers});
         Task active;
         active.task_id = offers.offers[1].task_id;
         active.has_rewards = active.reward_set = true;
-        rig.conn.receive_zone_packet_for_test(net::encode_task_description(active));
+        rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::TaskDescription, active});
         REQUIRE(rig.conn.tasks().find_id(active.task_id));
         REQUIRE(rig.conn.tasks().find_id(active.task_id)->reward_set);
         button = {};
@@ -401,7 +413,7 @@ TEST_CASE("task offers: Preview Reward uses the selected received offer and refu
 TEST_CASE("task offers: selecting an offer without a preview hides a shown preview; a replaced list starts at row 0") {
     test::ManualClock clock;
     auto options = test::quick_options();
-    options.session.clock = clock.source();
+    options.world_protocol.session_config.clock = clock.source(); options.zone_protocol.session_config.clock = clock.source();
     test::Rig rig(test::MockConfig::standard(), options);
     REQUIRE(rig.to_zone());
     clock.hold();
@@ -420,7 +432,7 @@ TEST_CASE("task offers: selecting an offer without a preview hides a shown previ
     TaskOffer other = previewed;
     other.task_id = 9003;
     offers.offers = {plain, previewed, other};
-    rig.conn.receive_zone_packet_for_test(net::encode_task_select(offers, net::Op::TaskSelectWindow));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::TaskSelectWindow, offers});
 
     app::UiHost host;
     host.conn = &rig.conn;
@@ -450,7 +462,7 @@ TEST_CASE("task offers: selecting an offer without a preview hides a shown previ
     REQUIRE(rows);
     CHECK(rows->selected == 2);
     offers.offers = {previewed, plain, other};
-    rig.conn.receive_zone_packet_for_test(net::encode_task_select(offers, net::Op::TaskSelectWindow));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::TaskSelectWindow, offers});
     rows = window.list(host, "TaskList");
     REQUIRE(rows);
     CHECK(rows->selected == 0);
@@ -464,13 +476,13 @@ TEST_CASE("task window: Preview Reward sends the selected task ID and refuses st
     const auto owner = hooks.new_owner("task preview fixture");
     std::vector<net::AppPacket> requests;
     hooks.on_packet(owner, plugin::Stream::Zone, plugin::Direction::Out, 0, [&](net::AppPacket& p) {
-        if (p.opcode == net::to_wire(net::Op::RewardSelection) || p.opcode == net::to_wire(net::Op::AchievementReward))
+        if (p.opcode == net::rof2::to_wire(net::rof2::Op::RewardSelection) || p.opcode == net::rof2::to_wire(net::rof2::Op::AchievementReward))
             requests.push_back(p);
         return plugin::Flow::Continue;
     });
     test::ManualClock clock;
     auto options = test::quick_options();
-    options.session.clock = clock.source();
+    options.world_protocol.session_config.clock = clock.source(); options.zone_protocol.session_config.clock = clock.source();
     options.hooks = &hooks;
     test::Rig rig(test::MockConfig::standard(), options);
     REQUIRE(rig.to_zone());
@@ -518,7 +530,7 @@ TEST_CASE("task window: Preview Reward sends the selected task ID and refuses st
     CHECK(requests.empty());
     REQUIRE(window.click(host, "TASK_PreviewRewardButton", "left", false));
     REQUIRE(requests.size() == 1);
-    CHECK(requests.front().opcode == net::to_wire(net::Op::RewardSelection));
+    CHECK(requests.front().opcode == net::rof2::to_wire(net::rof2::Op::RewardSelection));
     ByteReader reader(requests.front().data);
     CHECK(reader.le<std::uint32_t>() == 4u);
     CHECK(reader.le<std::uint32_t>() == zebra.task_id); // neither sequence 0 nor the sorted list's row

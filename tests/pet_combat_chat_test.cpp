@@ -9,7 +9,7 @@
 #include "core/config.h"
 #include "game/death_report.h"
 #include "mq_test_world.h"
-#include "net/opcodes.h"
+#include "net/protocol/rof2/opcode_map.h"
 
 using namespace hailstone;
 
@@ -25,7 +25,7 @@ struct PetCombatWorld : mq_test::World {
     }
 
     void spawn(std::uint32_t id, std::uint8_t temporary, std::uint32_t owner,
-               net::Op opcode = net::Op::NewSpawn) {
+               net::rof2::Op opcode = net::rof2::Op::NewSpawn) {
         net::Spawn s;
         s.spawn_id = id;
         s.name = "Pet" + std::to_string(id);
@@ -35,9 +35,10 @@ struct PetCombatWorld : mq_test::World {
         s.is_pet = temporary == 0 && owner != 0;
         s.temp_pet = temporary;
         s.pet_owner_id = owner;
-        auto packet = net::encode(s);
-        packet.opcode = net::to_wire(opcode);
-        conn->receive_zone_packet_for_test(packet);
+        conn->receive_zone_message_for_test({
+            opcode == net::rof2::Op::ZoneEntry ? net::messages::GameOpcode::ZoneEntry
+                                               : net::messages::GameOpcode::NewSpawn,
+            s});
     }
 
     void damage(std::uint16_t source, std::int32_t amount = 7, std::uint16_t target = 10) {
@@ -46,14 +47,11 @@ struct PetCombatWorld : mq_test::World {
         hit.source = source;
         hit.type = 0;
         hit.damage = amount;
-        conn->receive_zone_packet_for_test(net::encode(hit));
+        conn->receive_zone_message_for_test({net::messages::GameOpcode::Damage, hit});
     }
 
     void remove(std::uint32_t id) {
-        ByteWriter removed;
-        removed.le(id);
-        removed.le<std::uint8_t>(0);
-        conn->receive_zone_packet_for_test({net::to_wire(net::Op::DeleteSpawn), removed.take()});
+        conn->receive_zone_message_for_test({net::messages::GameOpcode::DeleteSpawn, net::SpawnDespawn{id}});
     }
 
     void expect_line(bool shown, std::uint32_t color = 0x148u) {
@@ -71,11 +69,11 @@ struct PetCombatWorld : mq_test::World {
 
 TEST_CASE("Pet combat chat: zone and new spawns retain temporary state without replacing the window pet") {
     PetCombatWorld w;
-    w.spawn(20, 0, 1, net::Op::ZoneEntry);
+    w.spawn(20, 0, 1, net::rof2::Op::ZoneEntry);
     REQUIRE(w.conn->pets().focused == 20);
     for (const auto& [id, temporary] : {std::pair{21u, std::uint8_t{1}}, std::pair{22u, std::uint8_t{0x80}}}) {
         CAPTURE(id);
-        w.spawn(id, temporary, 1, id == 21 ? net::Op::ZoneEntry : net::Op::NewSpawn);
+        w.spawn(id, temporary, 1, id == 21 ? net::rof2::Op::ZoneEntry : net::rof2::Op::NewSpawn);
         const auto& spawn = w.conn->world().spawns.at(id);
         CHECK(spawn.temp_pet);
         CHECK(spawn.pet_owner_id == 1);
@@ -134,7 +132,7 @@ TEST_CASE("Pet combat chat: current owner and replacement records determine temp
     w.spawn(21, 1, 1);
     w.conn->set_chat_filter(15, 0);
     for (std::uint32_t owner : {1u, 12u, 0u, 1u}) {
-        w.conn->receive_zone_packet_for_test(net::encode(net::SpawnAppearance{21, 25, owner}));
+        w.conn->receive_zone_message_for_test({net::messages::GameOpcode::SpawnAppearance, net::SpawnAppearance{21, 25, owner}});
         w.damage(21);
         w.expect_line(owner == 1);
         CHECK(w.conn->pets().focused == 20);
@@ -187,7 +185,7 @@ TEST_CASE("Pet combat chat: killing blows obey the death range with either other
                     death.killer_id = killer;
                     death.attack_skill = 0;
                     death.damage = 7;
-                    w.conn->receive_zone_packet_for_test(net::encode(death));
+                    w.conn->receive_zone_message_for_test({net::messages::GameOpcode::Death, death});
                     const bool hit_shown = distance <= range && (!hide_others || killer != 22);
                     if (hit_shown) {
                         auto hit = w.conn->poll_chat();
@@ -295,7 +293,7 @@ TEST_CASE("Pet combat chat: death announcements use combat range and retain loca
                 death.killer_id = killer;
                 death.attack_skill = 231; // Test death text without a second melee hit/miss line.
                 death.damage = 7;
-                w.conn->receive_zone_packet_for_test(net::encode(death));
+                w.conn->receive_zone_message_for_test({net::messages::GameOpcode::Death, death});
                 auto event = w.conn->poll_chat();
                 REQUIRE(event.has_value() == (distance <= range || killer == 1));
                 if (event) {
@@ -316,7 +314,7 @@ TEST_CASE("Pet combat chat: death announcements use combat range and retain loca
     death.killer_id = 20;
     death.attack_skill = 231;
     death.damage = 7;
-    w.conn->receive_zone_packet_for_test(net::encode(death));
+    w.conn->receive_zone_message_for_test({net::messages::GameOpcode::Death, death});
     auto event = w.conn->poll_chat();
     REQUIRE(event.has_value());
     CHECK(event->color == game::kOwnDeathColor);

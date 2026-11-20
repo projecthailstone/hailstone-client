@@ -186,7 +186,7 @@ public:
     // EQ_Character's HP, mana and endurance functions for the local character (CharacterVitals); stock: none.
     virtual CharacterVitals character_vitals(const net::GameConnection&) const { return {}; }
 
-    // ---- items (net/game_connection_item_use.cpp) ----
+    // ---- items (net/connection/game_connection_item_use.cpp) ----
     // CInvSlot::HandleRButtonUp, before the original: true = taken (the extension runs the original itself later,
     // GameConnection::right_click_item_original).
     virtual bool item_right_click(net::GameConnection&, const net::ItemSlot&) { return false; }
@@ -221,7 +221,7 @@ public:
     // The text of a world nameplate, after its stock name and marks have been assembled.
     virtual void nameplate_text(const net::GameConnection&, const Spawn&, std::string&) const {}
 
-    // ---- the extended target list (net/game_connection_group.cpp, app/lua_ui_player.cpp) ----
+    // ---- the extended target list (net/connection/game_connection_group.cpp, app/lua_ui_player.cpp) ----
     // True = the slot is left out on this side: no row in the window, not targeted by a click, the slot keys or
     // the cycle key, not taken by /xtarget add (GameConnection::xtarget_slot_hidden). The slot keeps its number.
     virtual bool hide_xtarget_slot(const net::GameConnection&, int) const { return false; }

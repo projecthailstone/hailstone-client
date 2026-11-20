@@ -3,6 +3,7 @@
 #include <stdexcept>
 
 #include "core/byte_io.h"
+#include "net/wire/item_serialization.h"
 
 namespace hailstone::game {
 

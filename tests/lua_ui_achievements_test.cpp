@@ -17,7 +17,6 @@
 
 #include "app/lua_ui.h"
 #include "app/lua_ui_caps.h"
-#include "achievement_test_packets.h"
 #include "core/byte_io.h"
 #include "game/achievements.h"
 #include "mock_server/harness.h"
@@ -355,7 +354,7 @@ TEST_CASE("hs achievement bridge: plugin UI requires capabilities for explicit a
     CHECK(app::ui_call_caps("AchievementLink") == plugin::kCapChat);
 }
 
-TEST_CASE("hs achievement bridge: literal packet ingress is passive and reward uses the received index") {
+TEST_CASE("hs achievement bridge: semantic catalog ingress is passive and reward uses the received index") {
     AchievementGui gui;
     plugin::Hooks hooks;
     std::vector<net::AppPacket> outgoing;
@@ -369,9 +368,34 @@ TEST_CASE("hs achievement bridge: literal packet ingress is passive and reward u
     options.hooks = &hooks;
     test::Rig rig(test::MockConfig::standard(), options);
     REQUIRE(rig.to_zone());
-    namespace packets = test::achievement_fixture;
-    for (const auto& packet : {packets::catalog(), packets::primary(), packets::progress()})
-        net::GameConnectionTestAccess::handle_zone(rig.conn, packet);
+    // Construct semantic catalog, primary state and progress directly. The wire
+    // fixture is reserved for RoF2 decoder tests, not GameConnection ingress.
+    auto received_catalog = catalog();
+    received_catalog.definitions[1].name = "Second & <Achievement>";
+    auto& definition = received_catalog.definitions[1];
+    // This case tests the reward opcode for definition index 1, so that
+    // definition must actually advertise a reward.
+    definition.has_reward = true;
+    definition.components[0].push_back({200, 0, 3, "Runtime criterion", "Fixture component", 0});
+    definition.component_indices[0].emplace(200, 0);
+    definition.components[1].push_back({201, 1, 5, "Runtime criterion", "Fixture component", 0});
+    definition.component_indices[1].emplace(201, 0);
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::AchievementDefinitions, std::move(received_catalog)});
+    net::AchievementPrimary primary;
+    primary.serial = 1;
+    primary.dense = true;
+    auto first = own_state();
+    first.satisfied[1] = {0};
+    primary.updates.push_back({0, std::move(first)});
+    net::AchievementState second;
+    second.satisfied[0] = {0};
+    second.satisfied[1] = {0};
+    second.counts[0] = {std::nullopt};
+    second.counts[1] = {std::nullopt};
+    primary.updates.push_back({1, std::move(second)});
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::AchievementPrimary, std::move(primary)});
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::AchievementProgress,
+                                           std::vector<net::AchievementProgress>{{900, 201, 70000, 1, 2}}});
     AchievementLua lua(rig.conn);
     const auto before = outgoing.size();
     lua.check(R"lua(

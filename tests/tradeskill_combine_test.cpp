@@ -1,4 +1,4 @@
-// CContainerWnd::HandleCombine @0x65f7b0's last step against the mock EQEmu (net/game_connection_progress.cpp): a
+// CContainerWnd::HandleCombine @0x65f7b0's last step against the mock EQEmu (net/connection/game_connection_progress.cpp): a
 // combine is sent at once, but a transformation mold (container types 0x37 / 0x38) asks first (ConfirmationDialog
 // 0x86); ConfirmationDialog_HandleResponse's 0x86 sends the kept request on a yes and drops the pending one on a no.
 
@@ -8,8 +8,8 @@
 #include <string>
 
 #include "mock_server/harness.h"
-#include "net/door_packets.h"
-#include "net/trade_packets.h"
+#include "net/protocol/rof2/packets/door_packets.h"
+#include "net/protocol/rof2/packets/trade_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::net;
@@ -30,7 +30,7 @@ Item bag_with_one(std::uint32_t id, std::uint8_t type, std::int16_t slot) {
     return bag;
 }
 
-std::size_t combines(const MockEqServer& server) { return MockEqServer::count(server.zone_log, Op::TradeSkillCombine); }
+std::size_t combines(const MockEqServer& server) { return MockEqServer::count(server.zone_log, rof2::Op::TradeSkillCombine); }
 
 } // namespace
 
@@ -67,14 +67,14 @@ TEST_CASE("mock server: a transformation mold's combine asks first; yes sends, n
     CHECK(conn.combine_pending());
     REQUIRE(rig.until([&] { return combines(server) == 1; }));
     for (const auto& p : server.zone_log)
-        if (from_wire(p.opcode) == Op::TradeSkillCombine) {
+        if (rof2::from_wire(p.opcode) == rof2::Op::TradeSkillCombine) {
             REQUIRE(p.data.size() == kTradeSkillCombineSize);
             CHECK(std::to_integer<int>(p.data[0]) == 0);  // possessions
             CHECK(std::to_integer<int>(p.data[4]) == 25); // the mold's slot
         }
 
     // The server's answer ends the request; an ordinary container combines without a question.
-    server.zone.send_reliable(AppPacket(to_wire(Op::TradeSkillCombine)));
+    server.zone.send_reliable(AppPacket(rof2::to_wire(rof2::Op::TradeSkillCombine)));
     REQUIRE(rig.until([&] { return !conn.combine_pending(); }));
     CHECK(conn.combine_container(26));
     CHECK_FALSE(conn.confirmation().has_value());

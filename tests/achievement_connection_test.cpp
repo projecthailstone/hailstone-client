@@ -2,7 +2,9 @@
 
 #include <algorithm>
 
-#include "achievement_test_packets.h"
+#include "rof2/achievement_test_packets.h" // Retained only for independent malformed-wire checks and metadata text.
+#include "net/messages/achievement.h"
+#include "net/messages/message.h"
 #include "manual_clock.h"
 #include "mock_server/harness.h"
 #include "mq_test_world.h"
@@ -12,6 +14,108 @@ using namespace hailstone;
 using namespace hailstone::net;
 using namespace hailstone::test;
 namespace fixture = hailstone::test::achievement_fixture;
+
+namespace semantic {
+using messages::GameMessage;
+using messages::GameOpcode;
+
+GameMessage catalog(std::string_view name = fixture::second_name, std::uint32_t definitions = 2,
+                    std::uint32_t bucket1_components = 1) {
+    AchievementCatalog catalog;
+    AchievementCategory category;
+    category.id = 7;
+    category.name = "Fixture category";
+    category.description = "Independent achievements";
+    for (std::uint32_t index = 0; index < definitions; ++index) {
+        const auto id = index < fixture::ids.size() ? fixture::ids[index] : 10000u + index;
+        category.associations.push_back({id, {}, 0});
+        AchievementDefinition definition;
+        definition.id = id;
+        definition.name = index ? std::string(name) : "First achievement";
+        definition.description = "Fixture definition";
+        definition.version = 1;
+        for (std::uint8_t type = 0; type < 4; ++type) {
+            const auto count = type == 2 ? 0u : type == 1 ? bucket1_components : 1u;
+            for (std::uint32_t component = 0; component < count; ++component) {
+                AchievementComponent entry;
+                entry.id = type == 3 ? 303u : 100u + index * 100u + type + component * 1000u;
+                entry.type = type;
+                entry.required_count = type == 0 ? 3 : 5;
+                entry.name = type == 3 ? "Descriptive criterion" : "Runtime criterion";
+                entry.description = "Fixture component";
+                definition.component_indices[type][entry.id] = definition.components[type].size();
+                definition.components[type].push_back(std::move(entry));
+            }
+        }
+        definition.points = index ? 10 : 5;
+        definition.has_reward = index != 0;
+        catalog.definition_indices[id] = catalog.definitions.size();
+        catalog.definitions.push_back(std::move(definition));
+    }
+    catalog.category_indices[category.id] = 0;
+    catalog.categories.push_back(std::move(category));
+    return {GameOpcode::AchievementDefinitions, std::move(catalog)};
+}
+AchievementState state(AchievementStatus status = AchievementStatus::Open, bool complete = false,
+                       bool with_counts = false, std::uint32_t count = 2, std::uint32_t components = 1) {
+    AchievementState value;
+    value.status = status;
+    value.satisfied[1].assign(components, complete ? 1 : 0);
+    value.counts[1].resize(components);
+    value.satisfied[0] = {static_cast<std::uint8_t>(complete)};
+    value.counts[0].resize(1);
+    if (status == AchievementStatus::Completed) value.completed_at = 123456;
+    if (with_counts) {
+        for (auto& item : value.counts[1]) item = count;
+        value.counts[0][0] = count;
+    }
+    return value;
+}
+GameMessage primary(std::uint32_t serial = 1, bool complete_second = false,
+                    std::uint32_t definitions = 2, std::uint32_t components = 1) {
+    AchievementPrimary primary;
+    primary.serial = serial;
+    primary.dense = true;
+    for (std::uint32_t index = 0; index < definitions; ++index) {
+        const bool completed = complete_second && index == 1;
+        primary.updates.push_back({index, state(completed ? AchievementStatus::Completed : AchievementStatus::Open,
+                                               completed, false, 2, components)});
+    }
+    return {GameOpcode::AchievementPrimary, std::move(primary)};
+}
+GameMessage progress(std::uint32_t count = 2, std::uint32_t requirement = 70000) {
+    return {GameOpcode::AchievementProgress,
+            std::vector<AchievementProgress>{{900, 201, requirement, 1, count}}};
+}
+GameMessage comparison(bool complete = true, std::uint32_t definitions = 2,
+                       std::uint32_t components = 1) {
+    std::vector<AchievementState> snapshot;
+    for (std::uint32_t index = 0; index < definitions; ++index) {
+        const bool completed = complete && index == 1;
+        snapshot.push_back(state(completed ? AchievementStatus::Completed : AchievementStatus::Open,
+                                 completed, false, 2, components));
+    }
+    return {GameOpcode::AchievementSnapshot, std::move(snapshot)};
+}
+GameMessage inspect(std::string_view player = "Peer", std::uint32_t id = 900,
+                    std::uint32_t count = 4, std::uint32_t components = 1) {
+    return {GameOpcode::AchievementInspect,
+            AchievementInspect{std::string(player), id, state(AchievementStatus::Open, false, true, count, components), 0}};
+}
+AchievementLink link(std::string_view player, std::uint32_t count = 5) {
+    const std::string metadata = std::string(player) + "^900^0^1^1^123456^5^3^";
+    auto result = AchievementLink{std::string(player), 900, state(AchievementStatus::Completed, true, true, count), metadata};
+    result.state.counts[1][0] = 5;
+    result.state.counts[0][0] = 3;
+    return result;
+}
+GameMessage earned(std::uint32_t spawn, std::string_view player, std::uint32_t sound = 17) {
+    return {GameOpcode::AchievementEarned, AchievementEarned{spawn, 900, sound, link(player)}};
+}
+GameMessage guild(std::string_view player) {
+    return {GameOpcode::AchievementGuild, AchievementGuild{std::string(player), 900, link(player)}};
+}
+} // namespace semantic
 
 namespace {
 std::size_t requests(const Rig& rig, std::uint16_t opcode) {
@@ -24,17 +128,17 @@ const AppPacket& last_request(const Rig& rig, std::uint16_t opcode) {
     REQUIRE(it != rig.server.zone_log.rend()); return *it;
 }
 void received(Rig& rig, bool primary = true) {
-    rig.conn.receive_zone_packet_for_test(fixture::catalog());
+    rig.conn.receive_zone_message_for_test(semantic::catalog());
     REQUIRE(rig.conn.achievements().catalog());
     if (primary) {
-        rig.conn.receive_zone_packet_for_test(fixture::primary());
+        rig.conn.receive_zone_message_for_test(semantic::primary());
         REQUIRE(rig.conn.achievements().primary_ready());
     }
 }
 void barrier(Rig& rig) {
-    const auto before = requests(rig, 0x7f01);
-    rig.conn.send_zone_packet(AppPacket(0x7f01));
-    REQUIRE(rig.until([&] { return requests(rig, 0x7f01) != before; }));
+    const auto before = requests(rig, rof2::to_wire(rof2::Op::RandomReq));
+    rig.conn.send_zone_message(messages::outgoing(messages::GameOpcode::RandomReq, RandomRollIntent{1, 1}));
+    REQUIRE(rig.until([&] { return requests(rig, rof2::to_wire(rof2::Op::RandomReq)) != before; }));
 }
 void peer(Rig& rig, const std::string& name = "Peer") {
     REQUIRE(rig.conn.world().player());
@@ -70,11 +174,11 @@ TEST_CASE("achievement connection: received catalog indices, unknown counts, exa
     CHECK(rig.conn.achievements().states()[1]->counts[3].empty());
     CHECK_FALSE(rig.conn.achievement_chat_link(token, 1)); // satisfaction bits do not invent shareable counts
     auto invalid = fixture::catalog(); invalid.data.pop_back();
-    rig.conn.receive_zone_packet_for_test(invalid);
+    CHECK_FALSE(decode_achievement_catalog(invalid));
     CHECK(rig.conn.achievements().catalog_token() == token);
     CHECK(rig.conn.achievements().revision() == revision);
-    rig.conn.receive_zone_packet_for_test(fixture::progress(2, 70000));
-    rig.conn.receive_zone_packet_for_test(fixture::progress(3, 70001));
+    rig.conn.receive_zone_message_for_test(semantic::progress(2, 70000));
+    rig.conn.receive_zone_message_for_test(semantic::progress(3, 70001));
     REQUIRE(rig.conn.achievements().states()[1]->counts[1][0]);
     CHECK(*rig.conn.achievements().states()[1]->counts[1][0] == 5);
     CHECK(rig.conn.achievements().requirements(900).size() == 2);
@@ -93,7 +197,7 @@ TEST_CASE("achievement connection: received catalog indices, unknown counts, exa
     REQUIRE(rig.until([&] { return requests(rig, 0x6411) == 1; }));
     ByteReader reward(last_request(rig, 0x6411).data);
     CHECK(reward.le<std::uint32_t>() == 5); CHECK(reward.le<std::uint32_t>() == 1); CHECK(reward.empty());
-    rig.conn.receive_zone_packet_for_test(fixture::catalog("Replacement catalog"));
+    rig.conn.receive_zone_message_for_test(semantic::catalog("Replacement catalog"));
     CHECK_FALSE(rig.conn.open_achievement(token, 1));
     CHECK_FALSE(rig.conn.achievement_reward(token, 1));
     CHECK_FALSE(rig.conn.achievement_chat_link(token, 1));
@@ -102,7 +206,7 @@ TEST_CASE("achievement connection: received catalog indices, unknown counts, exa
 
 TEST_CASE("achievement connection: comparison is target incarnation scoped and late snapshots drain safely") {
     ManualClock clock;
-    auto options = quick_options(); options.session.clock = clock.source();
+    auto options = quick_options(); options.world_protocol.session_config.clock = clock.source(); options.zone_protocol.session_config.clock = clock.source();
     Rig rig(MockConfig::standard(), options);
     REQUIRE(rig.to_zone()); received(rig); peer(rig);
     clock.hold();
@@ -114,7 +218,7 @@ TEST_CASE("achievement connection: comparison is target incarnation scoped and l
     CHECK(request.empty());
     CHECK_FALSE(rig.conn.compare_achievements());
     CHECK(rig.conn.achievement_message() == "Waiting for the selected player's achievement comparison.");
-    rig.conn.receive_zone_packet_for_test(fixture::comparison());
+    rig.conn.receive_zone_message_for_test(semantic::comparison());
     REQUIRE(rig.conn.achievements().comparison().size() == 2);
     CHECK(rig.conn.achievement_message().empty()); // the reply shown: no longer waiting
     CHECK(rig.conn.achievements().comparison_name() == "Peer");
@@ -130,7 +234,7 @@ TEST_CASE("achievement connection: comparison is target incarnation scoped and l
     rig.server.add_spawn(make_spawn("Peer", 77, 0, 1, position.x, position.y, position.z)); // same name/ID, new full spawn
     const bool replaced = rig.until([&] { return rig.conn.world().spawns.at(77).incarnation != incarnation; });
     REQUIRE(replaced);
-    rig.conn.receive_zone_packet_for_test(fixture::comparison());
+    rig.conn.receive_zone_message_for_test(semantic::comparison());
     CHECK(rig.conn.achievements().comparison().empty());
     CHECK_FALSE(rig.conn.achievements().compare_pending());
     clock.advance(std::chrono::milliseconds(1000));
@@ -140,7 +244,7 @@ TEST_CASE("achievement connection: comparison is target incarnation scoped and l
     CHECK(rig.conn.achievements().compare_pending()); // no invented wire nonce or timeout reuse
     CHECK(rig.conn.achievement_message().starts_with("The comparison timed out."));
     CHECK_FALSE(rig.conn.compare_achievements());
-    rig.conn.receive_zone_packet_for_test(fixture::comparison());
+    rig.conn.receive_zone_message_for_test(semantic::comparison());
     CHECK_FALSE(rig.conn.achievements().compare_pending());
     CHECK(rig.conn.achievement_message().empty()); // the late reply drained
     CHECK(rig.conn.achievements().comparison().empty());
@@ -149,10 +253,10 @@ TEST_CASE("achievement connection: comparison is target incarnation scoped and l
 
 TEST_CASE("achievement connection: clicked snapshots are independent of target and never replace own progress") {
     ManualClock clock;
-    auto options = quick_options(); options.session.clock = clock.source();
+    auto options = quick_options(); options.world_protocol.session_config.clock = clock.source(); options.zone_protocol.session_config.clock = clock.source();
     Rig rig(MockConfig::standard(), options);
     REQUIRE(rig.to_zone()); received(rig);
-    rig.conn.receive_zone_packet_for_test(fixture::progress(2));
+    rig.conn.receive_zone_message_for_test(semantic::progress(2));
     GameConnectionTestAccess::world(rig.conn).target_id = 0;
     REQUIRE(rig.conn.inspect_achievement_link(fixture::metadata())); // offline snapshot has no wire request
     REQUIRE(rig.conn.achievements().detail_link());
@@ -167,14 +271,14 @@ TEST_CASE("achievement connection: clicked snapshots are independent of target a
     CHECK(rig.conn.achievements().detail_state()->counts[1][0] == 4);
     CHECK(rig.conn.achievements().states()[1]->counts[1][0] == 2);
     GameConnectionTestAccess::world(rig.conn).target_id = 101; // unrelated target changes do not retire chat metadata
-    rig.conn.receive_zone_packet_for_test(fixture::inspect("SomeoneElse", 900, 9));
+    rig.conn.receive_zone_message_for_test(semantic::inspect("SomeoneElse", 900, 9));
     CHECK(rig.conn.achievements().link_pending());
     CHECK(rig.conn.achievements().detail_state()->counts[1][0] == 4);
-    rig.conn.receive_zone_packet_for_test(fixture::inspect("Peer", 900, 9));
+    rig.conn.receive_zone_message_for_test(semantic::inspect("Peer", 900, 9));
     CHECK_FALSE(rig.conn.achievements().link_pending());
     CHECK(rig.conn.achievements().detail_state()->counts[1][0] == 9);
     CHECK(rig.conn.achievements().states()[1]->counts[1][0] == 2);
-    rig.conn.receive_zone_packet_for_test(fixture::inspect("Peer", 900, 99));
+    rig.conn.receive_zone_message_for_test(semantic::inspect("Peer", 900, 99));
     CHECK(rig.conn.achievements().detail_state()->counts[1][0] == 9); // unsolicited duplicate cannot mutate view
     clock.hold(); clock.advance(std::chrono::milliseconds(1000));
     REQUIRE(rig.conn.inspect_achievement_link(fixture::metadata()));
@@ -185,7 +289,7 @@ TEST_CASE("achievement connection: clicked snapshots are independent of target a
     CHECK(rig.conn.achievements().link_pending());
     CHECK(rig.conn.achievements().link_retired());
     CHECK(requests(rig, kOpAchievementLinkRequest) == 2);
-    rig.conn.receive_zone_packet_for_test(fixture::inspect());
+    rig.conn.receive_zone_message_for_test(semantic::inspect());
     CHECK_FALSE(rig.conn.achievements().link_pending());
     CHECK_FALSE(rig.conn.achievements().detail_shown());
     rig.server.request_zone_change(2, 10, 20, 30);
@@ -204,16 +308,15 @@ TEST_CASE("achievement connection: old-schema replies drain across catalog count
         REQUIRE(rig.conn.compare_achievements());
         REQUIRE(rig.conn.inspect_achievement_link(fixture::metadata()));
         REQUIRE(rig.until([&] { return requests(rig, 0x1665) == 1 && requests(rig, kOpAchievementLinkRequest) == 1; }));
-        rig.conn.receive_zone_packet_for_test(fixture::catalog("Intermediate catalog", 1, 17));
+        rig.conn.receive_zone_message_for_test(semantic::catalog("Intermediate catalog", 1, 17));
         const auto* retired = rig.conn.achievements().comparison_reply_catalog();
         REQUIRE(retired);
         CHECK(retired == rig.conn.achievements().inspection_reply_catalog());
         const std::uint32_t definitions = change_components ? 2 : 3;
         const std::uint32_t components = change_components ? 17 : 1;
-        rig.conn.receive_zone_packet_for_test(fixture::catalog("Current catalog", definitions, components));
-        rig.conn.receive_zone_packet_for_test(fixture::primary(1, false, definitions, components));
-        ByteWriter progress; progress.le<std::uint32_t>(0);
-        rig.conn.receive_zone_packet_for_test({kOpAchievementProgress, progress.take()});
+        rig.conn.receive_zone_message_for_test(semantic::catalog("Current catalog", definitions, components));
+        rig.conn.receive_zone_message_for_test(semantic::primary(1, false, definitions, components));
+        rig.conn.receive_zone_message_for_test({messages::GameOpcode::AchievementProgress, std::vector<AchievementProgress>{}});
         const auto token = rig.conn.achievements().catalog_token();
         REQUIRE(rig.conn.open_achievement(token, 0));
         CHECK(rig.conn.achievements().comparison_reply_catalog() == retired);
@@ -222,12 +325,12 @@ TEST_CASE("achievement connection: old-schema replies drain across catalog count
 
         auto malformed_comparison = fixture::comparison(); malformed_comparison.data.pop_back();
         auto malformed_inspection = fixture::inspect(); malformed_inspection.data.pop_back();
-        rig.conn.receive_zone_packet_for_test(malformed_comparison);
-        rig.conn.receive_zone_packet_for_test(malformed_inspection);
-        rig.conn.receive_zone_packet_for_test(fixture::inspect("Other"));
+        CHECK_FALSE(decode_achievement_snapshot(malformed_comparison, rig.conn.achievements().comparison_reply_catalog()));
+        CHECK_FALSE(decode_achievement_inspect(malformed_inspection, rig.conn.achievements().inspection_reply_catalog()));
+        rig.conn.receive_zone_message_for_test(semantic::inspect("Other"));
         CHECK(rig.conn.achievements().compare_pending()); CHECK(rig.conn.achievements().link_pending());
-        rig.conn.receive_zone_packet_for_test(fixture::comparison());
-        rig.conn.receive_zone_packet_for_test(fixture::inspect("Peer", 900, 99));
+        rig.conn.receive_zone_message_for_test(semantic::comparison());
+        rig.conn.receive_zone_message_for_test(semantic::inspect("Peer", 900, 99));
         CHECK_FALSE(rig.conn.achievements().compare_pending()); CHECK_FALSE(rig.conn.achievements().link_pending());
         CHECK(rig.conn.achievements().comparison().empty());
         REQUIRE(rig.conn.achievements().selection());
@@ -240,8 +343,8 @@ TEST_CASE("achievement connection: old-schema replies drain across catalog count
         REQUIRE(rig.conn.compare_achievements());
         REQUIRE(rig.conn.inspect_achievement_link(fixture::metadata("Peer", 900, 4, components)));
         REQUIRE(rig.until([&] { return requests(rig, 0x1665) == 2 && requests(rig, kOpAchievementLinkRequest) == 2; }));
-        rig.conn.receive_zone_packet_for_test(fixture::comparison(true, definitions, components));
-        rig.conn.receive_zone_packet_for_test(fixture::inspect("Peer", 900, 9, components));
+        rig.conn.receive_zone_message_for_test(semantic::comparison(true, definitions, components));
+        rig.conn.receive_zone_message_for_test(semantic::inspect("Peer", 900, 9, components));
         CHECK_FALSE(rig.conn.achievements().compare_pending()); CHECK_FALSE(rig.conn.achievements().link_pending());
         CHECK(rig.conn.achievements().comparison().size() == definitions);
         CHECK(rig.conn.achievements().comparison_name() == "Peer");
@@ -265,7 +368,7 @@ TEST_CASE("achievement connection: outgoing link hooks cannot send or reopen a r
             [&](AppPacket&) {
                 if (mode == 0) return plugin::Flow::Drop;
                 if (mode == 1) rig.conn.close_achievement_detail();
-                if (mode == 2) rig.conn.receive_zone_packet_for_test(fixture::catalog("Replaced during handoff"));
+                if (mode == 2) rig.conn.receive_zone_message_for_test(semantic::catalog("Replaced during handoff"));
                 if (mode == 3) rig.conn.disconnect();
                 return plugin::Flow::Continue;
             });
@@ -294,7 +397,7 @@ TEST_CASE("achievement connection: a late inspection cannot replace a different 
     REQUIRE(removed);
     REQUIRE(rig.conn.achievements().detail_link());
     CHECK(rig.conn.achievements().detail_link()->player_name == "Offline"); // retiring A's actor cannot clear B's view
-    rig.conn.receive_zone_packet_for_test(fixture::inspect("Peer", 900, 99));
+    rig.conn.receive_zone_message_for_test(semantic::inspect("Peer", 900, 99));
     CHECK_FALSE(rig.conn.achievements().link_pending());
     REQUIRE(rig.conn.achievements().detail_link());
     CHECK(rig.conn.achievements().detail_link()->achievement_id == 42);
@@ -316,7 +419,7 @@ TEST_CASE("achievement connection: old local owner incarnation cannot replace th
     rig.server.add_spawn(make_spawn("Peer", 77, 0, 1, position.x, position.y, position.z));
     const bool replaced = rig.until([&] { return rig.conn.world().spawns.at(77).incarnation != old; });
     REQUIRE(replaced);
-    rig.conn.receive_zone_packet_for_test(fixture::inspect("Peer", 900, 99));
+    rig.conn.receive_zone_message_for_test(semantic::inspect("Peer", 900, 99));
     CHECK_FALSE(rig.conn.achievements().link_pending());
     REQUIRE(rig.conn.achievements().selection());
     CHECK(rig.conn.achievements().selection()->source == game::AchievementDetailSource::Own);
@@ -339,11 +442,11 @@ TEST_CASE("achievement connection: earned chat callbacks retire old overlay soun
             if (line.text.find(" completed ") != std::string::npos) {
                 called = true;
                 if (disconnect) rig.conn.disconnect();
-                else rig.conn.receive_zone_packet_for_test(fixture::catalog("Changed inside earned chat"));
+                else rig.conn.receive_zone_message_for_test(semantic::catalog("Changed inside earned chat"));
             }
             return plugin::Flow::Continue;
         });
-        rig.conn.receive_zone_packet_for_test(fixture::earned(rig.conn.world().player_id, rig.conn.character_name()));
+        rig.conn.receive_zone_message_for_test(semantic::earned(rig.conn.world().player_id, rig.conn.character_name()));
         CHECK(called);
         CHECK_FALSE(rig.conn.text_overlay().active());
         CHECK(rig.conn.take_sound_cues().empty());
@@ -362,7 +465,7 @@ TEST_CASE("achievement connection: outgoing reward hook cannot send a replaced c
     hooks.on_packet(owner, plugin::Stream::Zone, plugin::Direction::Out, 0x6411, [&](AppPacket& packet) {
         ByteReader reader(packet.data);
         if (reader.le<std::uint32_t>() == 5)
-            rig.conn.receive_zone_packet_for_test(fixture::catalog("Replaced during reward handoff"));
+            rig.conn.receive_zone_message_for_test(semantic::catalog("Replaced during reward handoff"));
         return plugin::Flow::Continue;
     });
     CHECK_FALSE(rig.conn.achievement_reward(rig.conn.achievements().catalog_token(), 1));
@@ -378,7 +481,7 @@ TEST_CASE("achievement connection: unsolicited guild achievements are filtered d
     for (const int setting : {0, 1, 2}) {
         CAPTURE(setting);
         rig.conn.set_chat_filter(32, setting); // show all, own only, hide
-        rig.conn.receive_zone_packet_for_test(fixture::guild("Offline"));
+        rig.conn.receive_zone_message_for_test(semantic::guild("Offline"));
         const auto other = rig.chat();
         CHECK(other.size() == (setting == 0 ? 1u : 0u));
         if (!other.empty()) {
@@ -387,7 +490,7 @@ TEST_CASE("achievement connection: unsolicited guild achievements are filtered d
             CHECK(other.front().peer == "Offline");
             CHECK(other.front().text.find(std::string("\x12") + "3Offline^900^") != std::string::npos);
         }
-        rig.conn.receive_zone_packet_for_test(fixture::guild(rig.conn.character_name()));
+        rig.conn.receive_zone_message_for_test(semantic::guild(rig.conn.character_name()));
         const auto own = rig.chat();
         CHECK(own.size() == (setting != 2 ? 1u : 0u));
         if (!own.empty()) CHECK(own.front().color == 348);
@@ -398,13 +501,14 @@ TEST_CASE("achievement connection: unsolicited guild achievements are filtered d
         CHECK_FALSE(rig.conn.achievements().states()[1]->counts[1][0]);
     }
     rig.conn.set_chat_filter(32, 0);
-    rig.conn.receive_zone_packet_for_test(fixture::guild("Offline", "Different"));
+    CHECK_FALSE(decode_achievement_guild(fixture::guild("Offline", "Different"),
+                                        rig.conn.achievements().catalog() ? &*rig.conn.achievements().catalog() : nullptr));
     CHECK(rig.chat().empty()); // header and caret metadata must name the same player
     auto malformed = fixture::guild("Offline"); malformed.data.pop_back();
-    rig.conn.receive_zone_packet_for_test(malformed);
+    CHECK_FALSE(decode_achievement_guild(malformed, rig.conn.achievements().catalog() ? &*rig.conn.achievements().catalog() : nullptr));
     CHECK(rig.chat().empty());
     rig.conn.disconnect();
-    rig.conn.receive_zone_packet_for_test(fixture::guild("Offline"));
+    rig.conn.receive_zone_message_for_test(semantic::guild("Offline"));
     CHECK(rig.chat().empty());
 }
 
@@ -415,11 +519,11 @@ TEST_CASE("achievement connection: earned chat filters do not invent completion 
     for (const int setting : {0, 1, 2}) {
         CAPTURE(setting);
         rig.conn.set_chat_filter(32, setting);
-        rig.conn.receive_zone_packet_for_test(fixture::earned(77, "WrongName"));
+        rig.conn.receive_zone_message_for_test(semantic::earned(77, "WrongName"));
         CHECK(rig.chat().empty());
         CHECK(rig.conn.take_sound_cues().empty());
         CHECK_FALSE(const_cast<game::Achievements&>(rig.conn.achievements()).take_earned());
-        rig.conn.receive_zone_packet_for_test(fixture::earned(77, "Peer"));
+        rig.conn.receive_zone_message_for_test(semantic::earned(77, "Peer"));
         const auto other = rig.chat();
         CHECK(other.size() == (setting == 0 ? 1u : 0u));
         if (!other.empty()) CHECK(other.front().color == 349);
@@ -429,7 +533,7 @@ TEST_CASE("achievement connection: earned chat filters do not invent completion 
         CHECK(sounds.front().kind == SoundCue::Kind::SpawnWave);
         CHECK(sounds.front().target == 77); CHECK(sounds.front().spell == 17);
         REQUIRE(const_cast<game::Achievements&>(rig.conn.achievements()).take_earned());
-        rig.conn.receive_zone_packet_for_test(fixture::earned(rig.conn.world().player_id, rig.conn.character_name()));
+        rig.conn.receive_zone_message_for_test(semantic::earned(rig.conn.world().player_id, rig.conn.character_name()));
         const auto own = rig.chat();
         CHECK(own.size() == (setting != 2 ? 1u : 0u));
         if (!own.empty()) CHECK(own.front().color == 348);

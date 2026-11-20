@@ -3,6 +3,7 @@
 #include <stdexcept>
 
 #include "app/login_launch.h"
+#include "net/messages/login.h"
 
 using namespace hailstone;
 
@@ -144,7 +145,7 @@ TEST_CASE("launcher login: malformed tickets are rejected without echoing secret
     app::LoginLaunch launch;
     parse(launch, {"--ticket", "dummy"});
     CHECK_THROWS(resolve(launch, true));
-    const std::string too_long(net::login_codec::kMaxLoginTokenBytes + 1, 'a');
+    const std::string too_long(net::messages::kMaxLoginTokenBytes + 1, 'a');
     app::LoginLaunch overlong;
     CHECK_THROWS(parse(overlong, {"--ticket", too_long}));
     const std::string with_nul("a\0b", 3);

@@ -14,8 +14,8 @@
 #include <string_view>
 #include <vector>
 
-#include "net/guild_bank_packets.h"
-#include "net/item_packets.h"
+#include "net/messages/guild_bank.h"
+#include "net/messages/item.h"
 
 namespace hailstone::game {
 

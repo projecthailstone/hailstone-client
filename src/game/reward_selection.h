@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-#include "net/reward_packets.h"
+#include "net/messages/reward.h"
 
 namespace hailstone::game {
 

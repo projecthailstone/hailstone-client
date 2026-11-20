@@ -18,10 +18,11 @@
 #include "core/game_dir.h"
 #include "game/hotbuttons.h"
 #include "game/pet_buttons.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
+#include "net/messages/pet.h"
 #include "core/byte_io.h"
-#include "net/packet_io.h"
-#include "net/pet_packets.h"
+#include "net/protocol/rof2/wire_io.h"
+#include "net/protocol/rof2/packets/pet_packets.h"
 #include "scratch_dir.h"
 
 using namespace hailstone;
@@ -218,10 +219,10 @@ TEST_CASE("Pet hot buttons: a pet window button dragged to a bar, lit while its 
 
         // OP_PetCommandState: follow (EQEmu PET_BUTTON_FOLLOW 3) on: the follow hot button is checked.
         CHECK(run(L, "return hs.HotButtonChecked('HotButtonWnd', 'HB_Button2')") == "false");
-        conn.receive_zone_packet_for_test(net::encode(net::PetCommandState{3, 1}));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::PetCommandState, net::PetButtonState{3, true}});
         CHECK(run(L, "return hs.HotButtonChecked('HotButtonWnd', 'HB_Button2')") == "true");
         CHECK(run(L, "return hs.HotButtonChecked('HotButtonWnd', 'HB_Button3')") == "false");
-        conn.receive_zone_packet_for_test(net::encode(net::PetCommandState{3, 0}));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::PetCommandState, net::PetButtonState{3, false}});
         CHECK(run(L, "return hs.HotButtonChecked('HotButtonWnd', 'HB_Button2')") == "false");
 
         // The right button down on a "none" button: the command menu (no pet seen yet: only "none").
@@ -258,10 +259,10 @@ TEST_CASE("Pet hot buttons: a pet window button dragged to a bar, lit while its 
         CHECK(host.cursor_button->slot == 9);
         CHECK(host.cursor_button->label == pet + " hold");
         run(L, "hs.ClickHotButton('HotButtonWnd', 'HB_Button5', 'left')");
-        conn.receive_zone_packet_for_test(net::encode(net::PetCommandState{6, 1}));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::PetCommandState, net::PetButtonState{6, true}});
         CHECK(run(L, "return hs.HotButtonChecked('HotButtonWnd', 'HB_Button5')") == "true");
         CHECK(run(L, "return select(2, hs.ChildState('PetInfoWindow', 'Pet9_Button'))") == "true");
-        conn.receive_zone_packet_for_test(net::encode(net::PetCommandState{6, 0}));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::PetCommandState, net::PetButtonState{6, false}});
         CHECK(run(L, "return hs.HotButtonChecked('HotButtonWnd', 'HB_Button5')") == "false");
         // the next login reads it back
         host.pet_buttons = {};
@@ -372,10 +373,10 @@ TEST_CASE("Pet toggles: /pet words save PetButtonToggleState, a new pet gets the
         CHECK(text().find("PetButtonToggleState1=1") != std::string::npos);
         CHECK(text().find("PetButtonToggleState0=0") != std::string::npos);
         // the server's state changes the byte (the lit state) but not the ini
-        conn.receive_zone_packet_for_test(net::encode(net::PetCommandState{6, 0}));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::PetCommandState, net::PetButtonState{6, false}});
         CHECK_FALSE(conn.pet_toggles()[6]);
         CHECK(text().find("PetButtonToggleState6=1") != std::string::npos);
-        conn.receive_zone_packet_for_test(net::encode(net::PetCommandState{6, 1}));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::PetCommandState, net::PetButtonState{6, true}});
 
         // A pet comes (here by OP_Charm): ReissueToggledPetCommands asks CanUsePetCommand for the toggles that are
         // on, in index order (guard 5, hold 0xf); a second spawn with the pet there already does not.
@@ -393,11 +394,7 @@ TEST_CASE("Pet toggles: /pet words save PetButtonToggleState, a new pet gets the
         world.spawns[11].id = 11;
         world.spawns[12].id = 12;
         auto charm = [&](std::uint32_t pet) {
-            ByteWriter b;
-            b.le<std::uint32_t>(10);
-            b.le<std::uint32_t>(pet);
-            b.le<std::uint32_t>(1);
-            conn.receive_zone_packet_for_test(net::make_packet(net::Op::Charm, std::move(b)));
+            conn.receive_zone_message_for_test({net::messages::GameOpcode::Charm, net::PetCharmState{10, pet, true}});
         };
         charm(11);
         CHECK(conn.pets().focused == 11);
@@ -406,13 +403,10 @@ TEST_CASE("Pet toggles: /pet words save PetButtonToggleState, a new pet gets the
         charm(12);
         CHECK(asked.empty());
         // gone (the spawn deleted), then a new one
-        conn.receive_zone_packet_for_test(net::encode(net::PetCommandState{4, 0}));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::PetCommandState, net::PetButtonState{4, false}});
         world.spawns.erase(11);
         world.spawns.erase(12);
-        ByteWriter del;
-        del.le<std::uint32_t>(12);
-        del.le<std::uint8_t>(0);
-        conn.receive_zone_packet_for_test(net::make_packet(net::Op::DeleteSpawn, std::move(del)));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::DeleteSpawn, net::SpawnDespawn{12}});
         CHECK(conn.pets().focused == 0);
         world.spawns[13].id = 13;
         charm(13);
@@ -424,11 +418,7 @@ TEST_CASE("Pet toggles: /pet words save PetButtonToggleState, a new pet gets the
         w2.player_id = 10;
         w2.spawns[10].id = 10;
         w2.spawns[11].id = 11;
-        ByteWriter b2;
-        b2.le<std::uint32_t>(10);
-        b2.le<std::uint32_t>(11);
-        b2.le<std::uint32_t>(1);
-        conn2.receive_zone_packet_for_test(net::make_packet(net::Op::Charm, std::move(b2)));
+        conn2.receive_zone_message_for_test({net::messages::GameOpcode::Charm, net::PetCharmState{10, 11, true}});
         game::PetToggleStates taunt{};
         game::set_pet_toggle(taunt, 9, true);
         conn2.load_pet_toggles(taunt);
@@ -453,11 +443,7 @@ TEST_CASE("Pet window: a pet there before the UI ini is read still pops the wind
         world.player_id = 10;
         world.spawns[10].id = 10;
         world.spawns[11].id = 11;
-        ByteWriter b;
-        b.le<std::uint32_t>(10);
-        b.le<std::uint32_t>(11);
-        b.le<std::uint32_t>(1);
-        conn.receive_zone_packet_for_test(net::make_packet(net::Op::Charm, std::move(b)));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::Charm, net::PetCharmState{10, 11, true}});
         api.begin_frame(); // a frame sees the pet before the character's UI ini is loaded
         const auto ini = scratch.path() / "char" / "UI_test.ini";
         std::filesystem::create_directories(ini.parent_path());

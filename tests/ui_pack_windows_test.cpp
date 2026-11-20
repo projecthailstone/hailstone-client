@@ -28,18 +28,24 @@
 
 #include "app/lua_ui.h"
 #include "app/gamepad.h"
-#include "core/byte_io.h"
+#include "net/messages/zone_offer.h"
 #include "core/config.h"
 #include "core/game_dir.h"
-#include "net/aa_packets.h"
-#include "net/game_connection.h"
-#include "net/evolving_packets.h"
-#include "net/group_packets.h"
-#include "net/merchant_packets.h"
-#include "net/packet_io.h"
-#include "net/social_packets.h"
-#include "net/spell_packets.h"
-#include "net/task_packets.h"
+#include "net/messages/spell.h"
+#include "net/messages/shroud.h"
+#include "net/messages/task.h"
+#include "net/connection/game_connection.h"
+#include "net/messages/progression.h"
+#include "net/messages/group.h"
+#include "net/messages/evolving.h"
+#include "net/protocol/rof2/packets/group_packets.h"
+#include "net/protocol/rof2/packets/evolving_packets.h"
+#include "net/protocol/rof2/packets/social_packets.h"
+#include "net/messages/merchant.h"
+#include "net/wire/byte_codec.h"
+#include "net/messages/social.h"
+#include "net/messages/zone.h"
+#include "net/protocol/rof2/packets/task_packets.h"
 #include "game/mechanics/character.h"
 #include "game/mechanics/tables.h"
 #include "ui/dev_screens.h"
@@ -105,6 +111,17 @@ struct Session {
     }
 };
 
+// ImGui retains window objects after the window stops drawing. Check the Lua host's
+// current errors, not whether a stale "UI errors" ImGui window was ever allocated.
+std::string ui_errors(const ui::lua::LuaUi& lua) {
+    std::string errors;
+    for (const auto& error : lua.load_status().errors) {
+        if (!errors.empty()) errors += "\n";
+        errors += error;
+    }
+    return errors;
+}
+
 struct ReplacementCheck {
     explicit ReplacementCheck(const app::UiApi& api) {
         ui::lua::set_replaced_check([p = &api](std::string_view screen) { return p->replaces(screen); });
@@ -112,41 +129,20 @@ struct ReplacementCheck {
     ~ReplacementCheck() { ui::lua::set_replaced_check({}); }
 };
 
-net::AppPacket respawn_window_packet(std::uint8_t validity) {
-    ByteWriter w;
-    w.le<std::uint32_t>(0);
-    w.le<std::uint32_t>(60000);
-    w.le<std::uint32_t>(0);
-    w.le<std::uint32_t>(2);
-    for (std::uint32_t id = 0; id < 2; ++id) {
-        w.le(id);
-        w.le<std::uint32_t>(2);
-        for (int i = 0; i < 4; ++i) w.f32(0);
-        const std::string_view name = id == 0 ? "Bind Location" : "Resurrect";
-        w.bytes(std::as_bytes(std::span(name.data(), name.size())));
-        w.le<std::uint8_t>(0);
-        w.le<std::uint8_t>(id == 0 ? 0 : validity);
-    }
-    return net::AppPacket(net::to_wire(net::Op::RespawnWindow), w.take());
+net::RespawnWindow respawn_window(std::uint8_t validity) {
+    net::RespawnWindow window;
+    window.time_remaining_ms = 60000;
+    window.options = {{0, 2, 0, 0, 0, 0, "Bind Location", 0},
+                      {1, 2, 0, 0, 0, 0, "Resurrect", validity}};
+    return window;
 }
 
-net::AppPacket resurrection_offer_packet() {
-    ByteWriter w;
-    w.le<std::uint32_t>(0);
-    w.le<std::uint16_t>(2);
-    w.le<std::uint16_t>(0);
-    w.f32(30);
-    w.f32(40);
-    w.f32(12);
-    w.le<std::uint32_t>(0);
-    w.fixed_string("Gennro", 64);
-    w.le<std::uint32_t>(0);
-    w.fixed_string("Healer", 64);
-    w.le<std::uint32_t>(100);
-    w.fixed_string("Gennro's corpse", 64);
-    w.le<std::uint32_t>(0);
-    w.zeros(8);
-    return net::AppPacket(net::to_wire(net::Op::RezzRequest), w.take());
+net::ZoneOffer resurrection_offer() {
+    net::ZoneOffer offer;
+    offer.kind = net::ZoneOfferKind::Resurrection;
+    offer.zone = 2;
+    offer.source = "Healer";
+    return offer;
 }
 
 // Windows the packs redid from the Classic UI's (and a few more of theirs): shown one after another.
@@ -289,7 +285,7 @@ TEST_CASE("UI packs (gamepad): stock Raid and Map stay inside narrow and short n
         net::RaidUpdate update; update.general.action = net::kRaidAddMember;
         update.general.player_name = "Member"+std::to_string(member); update.general.parameter = static_cast<std::uint32_t>(member/6);
         update.class_ = 2; update.level = 60;
-        s.conn.receive_zone_packet_for_test(net::encode_raid_update(update));
+        s.conn.receive_zone_message_for_test({net::messages::GameOpcode::RaidUpdate, update});
     }
     REQUIRE(s.conn.raid().active); REQUIRE(s.conn.raid().members.size() == 72);
     REQUIRE(s.lua.run_for_test("", "hs.UI.windows.Show('RaidWindow',true) hs.UI.windows.Show('MapViewWnd',true) return true") == "true");
@@ -343,14 +339,14 @@ TEST_CASE("UI packs: every script of the shipped UIs loads, and their windows dr
         {
             Session s(dir, pack);
             s.frames(3);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             lua_State* L = s.lua.state();
             for (const char* screen : kScreens) {
                 INFO(screen);
                 std::string show = std::string("hs.ShowWindow('") + screen + "', true)";
                 REQUIRE(luaL_dostring(L, show.c_str()) == LUA_OK);
                 s.frames(2);
-                CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+                CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
                 std::string hide = std::string("hs.ShowWindow('") + screen + "', false)";
                 REQUIRE(luaL_dostring(L, hide.c_str()) == LUA_OK);
             }
@@ -396,7 +392,7 @@ TEST_CASE("UI packs: evolving transfer reviews server previews and drawn confirm
             };
             const auto source = item(101, 11, 23, "Source evolving item");
             const auto destination = item(102, 12, 24, "Destination evolving item");
-            rig.conn.receive_zone_packet_for_test(net::encode_char_inventory({source, destination}));
+            rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::CharInventory, std::vector<net::Item>{source, destination}});
             rig.conn.open_evolving_transfer();
             REQUIRE(rig.conn.select_evolving_transfer(true, 11));
             REQUIRE(rig.conn.select_evolving_transfer(false, 12));
@@ -406,8 +402,8 @@ TEST_CASE("UI packs: evolving transfer reviews server previews and drawn confirm
             auto projected_destination = destination;
             projected_destination.name = "Projected destination";
             projected_destination.evolving.evolve_level = 4;
-            rig.conn.receive_zone_packet_for_test(net::encode(net::EvolvingTransferDetails{
-                11, 12, 75, 4, projected_source, projected_destination}));
+            rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::EvolveItem, net::EvolvingTransferDetails{
+                11, 12, 75, 4, projected_source, projected_destination}});
             REQUIRE(rig.conn.can_transfer_evolving());
             lua_State* L = s.lua.state();
             auto run = [&](const char* code) {
@@ -448,7 +444,7 @@ TEST_CASE("UI packs: evolving transfer reviews server previews and drawn confirm
                 }
             )lua");
             s.frames(30); // the gamepad's initial window-focus settling period
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             run("assert(lines['Compatibility: 75%'] and lines['Max transfer level: 4'])");
             run("assert(lines['Source after transfer: Projected source (level 1/5, 12.5% experience)'])");
             run("assert(lines['Destination after transfer: Projected destination (level 4/5, 12.5% experience)'])");
@@ -475,7 +471,7 @@ TEST_CASE("UI packs: evolving transfer reviews server previews and drawn confirm
                 s.frames(1);
                 io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
                 s.frames(2);
-                CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+                CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             };
             auto transfer_count = [&] {
                 int count = 0;
@@ -532,7 +528,7 @@ TEST_CASE("UI packs: evolving transfer reviews server previews and drawn confirm
             s.frames(3);
             rig.run_for(std::chrono::milliseconds(20));
             CHECK(transfer_count() == 1);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         }
         ImGui::DestroyContext(ctx);
     }
@@ -607,7 +603,7 @@ ui.DrawText = function(x, y, r, g, b, a, value)
 end
 )lua");
             s.frames(3);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             CHECK(run("return tostring(drewDiscTime and gaugeReads > 0 and discIcon ~= nil)") == "true");
             run("discFraction, discTime, drewDiscTime = 0.5, '30s', false");
             s.frames(2);
@@ -631,7 +627,7 @@ end
             run("gaugeReads, drewDiscTime, discIcon = 0, false, nil");
             s.frames(2);
             CHECK(run("return tostring(gaugeReads == 0 and not drewDiscTime and discIcon == nil)") == "true");
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         }
         ImGui::DestroyContext(ctx);
     }
@@ -718,7 +714,7 @@ ui.InvisibleButton = function(id, ...)
 end
 )lua");
         s.frames(240); // the pack takes the pad's focus for a window only from 3 seconds after zoning in
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         run("windowShown = true");
         s.frames(30); // the window appears with the focus; past its settle time
         CHECK(run("return tostring(rowFocused == true and effectFocused == false)") == "true");
@@ -737,7 +733,7 @@ end
         run("padPress = nil");
         s.frames(2);
         CHECK(run("return tostring(endClicks)") == "1");
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
     }
     ImGui::DestroyContext(ctx);
 }
@@ -864,7 +860,7 @@ ui.DrawText = function(x, y, r, g, b, a, value)
 end
 )lua");
             s.frames(20);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             CHECK(run("return tostring(offerTexts.TaskBeginsInFirst and offerPreviewRect ~= nil and #offerPreviewClicks == 0)") == "true");
             auto click_preview = [&] {
                 lua_getglobal(L, "offerPreviewRect");
@@ -895,11 +891,11 @@ end
             s.frames(2);
             click_preview();
             CHECK(run("return tostring(#offerPreviewClicks)") == "2");
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             if (std::string_view(pack) == "gamepad") {
                 run("offerWindowShown, activeTaskShown, offerPreviewRect, offerTexts = false, true, nil, {}");
                 s.frames(20);
-                CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+                CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
                 CHECK(run("return tostring(offerTexts.ActiveTaskDescription and offerTexts.ActiveObjective and offerPreviewRect ~= nil and activePreviewClicks == 0)") == "true");
                 click_preview();
                 CHECK(run("return tostring(activePreviewClicks)") == "1");
@@ -907,7 +903,7 @@ end
                 s.frames(2);
                 click_preview();
                 CHECK(run("return tostring(activePreviewClicks == 1 and #offerPreviewClicks == 2)") == "true");
-                CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+                CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             }
         }
         ImGui::DestroyContext(ctx);
@@ -1004,7 +1000,7 @@ ui.DrawText = function(x, y, r, g, b, a, value)
 end
 )lua");
             s.frames(3);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             run("redFills, redArea, timerDraws = 0, 0, 0");
             s.frames(1);
             CHECK(run("return tostring(redFills == 2 and timerDraws >= 2)") == "true");
@@ -1031,7 +1027,7 @@ end
             run("sharedLeft, redFills, timerDraws = 0, 0, 0");
             s.frames(1);
             CHECK(run("return tostring(redFills == 0 and timerDraws == 0)") == "true");
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         }
         ImGui::DestroyContext(ctx);
     }
@@ -1054,12 +1050,12 @@ TEST_CASE("UI packs: hover respawn draws available and unavailable choices witho
             test::ManualClock clock;
             clock.hold();
             net::ConnectionOptions options;
-            options.session.clock = clock.source();
+            options.world_protocol.session_config.clock = clock.source(); options.zone_protocol.session_config.clock = clock.source();
             Session s(dir, pack, std::move(options));
-            s.conn.receive_zone_packet_for_test(respawn_window_packet(1));
+            s.conn.receive_zone_message_for_test({net::messages::GameOpcode::RespawnWindow, respawn_window(1)});
             clock.advance(std::chrono::milliseconds(1));
             s.frames(3);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             ImGuiWindow* respawn = ImGui::FindWindowByName(std::string_view(pack) == "modern"
                 ? "###modern.RespawnWnd" : "Respawn");
             REQUIRE(respawn);
@@ -1069,15 +1065,15 @@ TEST_CASE("UI packs: hover respawn draws available and unavailable choices witho
 
             CHECK(s.api.click_list("RespawnWnd", "OptionsList", 1, 0));
             s.frames(2);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             CHECK(s.api.child_state("RespawnWnd", "SelectButton") == false);
             CHECK(s.api.click_child("RespawnWnd", "SelectButton"));
             CHECK_FALSE(s.conn.respawn_chosen());
 
-            s.conn.receive_zone_packet_for_test(respawn_window_packet(0));
+            s.conn.receive_zone_message_for_test({net::messages::GameOpcode::RespawnWindow, respawn_window(0)});
             clock.advance(std::chrono::milliseconds(1));
             s.frames(2);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             CHECK(s.api.child_state("RespawnWnd", "SelectButton") == true);
             CHECK(s.api.list_texts("RespawnWnd", "OptionsList") == std::vector<std::string>{"*", ""});
         }
@@ -1103,16 +1099,16 @@ TEST_CASE("UI packs: the respawn window leaves the focus alone for a question th
             test::ManualClock clock;
             clock.hold();
             net::ConnectionOptions options;
-            options.session.clock = clock.source();
+            options.world_protocol.session_config.clock = clock.source(); options.zone_protocol.session_config.clock = clock.source();
             Session s(dir, pack, std::move(options));
-            s.conn.receive_zone_packet_for_test(respawn_window_packet(1));
+            s.conn.receive_zone_message_for_test({net::messages::GameOpcode::RespawnWindow, respawn_window(1)});
             clock.advance(std::chrono::milliseconds(1));
             s.frames(3);
             app::UiHost::Confirm q;
             q.text = "A question of a window's own";
             s.host.confirm = std::move(q);
             s.frames(3);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             ImGuiWindow* confirm = ImGui::FindWindowByName(gamepad_pack ? "Confirm" : "###modern.ConfirmationDialogBox");
             ImGuiWindow* respawn = ImGui::FindWindowByName(gamepad_pack ? "Respawn" : "###modern.RespawnWnd");
             REQUIRE(confirm);
@@ -1148,7 +1144,7 @@ TEST_CASE("UI packs: resurrection keeps the original respawn choices and timer u
             {
                 test::ManualClock clock;
                 auto options = test::quick_options();
-                options.session.clock = clock.source();
+                options.world_protocol.session_config.clock = clock.source(); options.zone_protocol.session_config.clock = clock.source();
                 test::Rig rig(test::MockConfig::standard(), std::move(options));
                 REQUIRE(rig.to_zone());
                 clock.hold();
@@ -1184,15 +1180,15 @@ end
                 death.spawn_id = death.corpse_id = conn.world().player_id;
                 death.killer_id = 101;
                 death.damage = 5000;
-                conn.receive_zone_packet_for_test(net::encode(death));
-                conn.receive_zone_packet_for_test(respawn_window_packet(1));
+                conn.receive_zone_message_for_test({net::messages::GameOpcode::Death, death});
+                conn.receive_zone_message_for_test({net::messages::GameOpcode::RespawnWindow, respawn_window(1)});
                 if (manual_bind) CHECK(s.api.click_list("RespawnWnd", "OptionsList", 0, 0));
-                conn.receive_zone_packet_for_test(resurrection_offer_packet());
+                conn.receive_zone_message_for_test({net::messages::GameOpcode::RezzRequest, resurrection_offer()});
                 REQUIRE(conn.confirmation());
                 REQUIRE(conn.confirmation()->id == net::kConfirmRezz);
                 clock.advance(std::chrono::milliseconds(1));
                 s.frames(3); // both packets arrived before the first UI frame, within its initial three seconds
-                CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+                CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
                 ImGuiWindow* confirm = ImGui::FindWindowByName(gamepad_pack ? "Confirm" : "###modern.ConfirmationDialogBox");
                 REQUIRE(confirm);
                 CHECK(confirm->Active);
@@ -1234,7 +1230,7 @@ end
                 REQUIRE(GImGui->NavWindow);
                 CHECK(GImGui->NavWindow->RootWindow == respawn);
                 CHECK(confirm->Active);
-                CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+                CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
 
                 CHECK(s.api.click_child("ConfirmationDialogBox", accept ? "Yes_Button" : "No_Button"));
                 CHECK_FALSE(conn.confirmation());
@@ -1244,7 +1240,7 @@ end
                 const auto remaining = conn.respawn_ms_left();
                 clock.advance(std::chrono::milliseconds(2000));
                 s.frames(2);
-                CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+                CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
                 respawn = ImGui::FindWindowByName(respawn_name);
                 REQUIRE(respawn);
                 CHECK(respawn->Active);
@@ -1274,14 +1270,14 @@ end
                 CHECK(s.api.click_child("RespawnWnd", "SelectButton"));
                 CHECK(conn.respawn_chosen());
                 CHECK(s.api.child_state("RespawnWnd", "SelectButton") == false);
-                net::ZonePlayerToBind bind;
-                bind.zone_id = 2;
-                bind.zone_name = accept ? "Resurrection destination" : "Bind destination";
-                conn.receive_zone_packet_for_test(net::encode(bind));
+                net::BindZoneTransition bind;
+                bind.destination.zone = 2;
+                bind.destination.zone_name = accept ? "Resurrection destination" : "Bind destination";
+                conn.receive_zone_message_for_test({net::messages::GameOpcode::ZonePlayerToBind, bind});
                 s.frames(2);
                 CHECK_FALSE(conn.respawn_window());
                 CHECK_FALSE(respawn->Active);
-                CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+                CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             }
             ImGui::DestroyContext(ctx);
         }
@@ -1329,7 +1325,7 @@ TEST_CASE("UI packs: each draws the login, server select and character select sc
             REQUIRE(luaL_dostring(s.lua.state(), "ui.SetSetting('test.login', 'boxset')") == LUA_OK);
             s.frames(3);
             CHECK(s.api.replaces("LoginScreen"));
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             if (std::string(pack) == "modern") CHECK(ImGui::FindWindowByName("###modern.pregame.login.boxset") != nullptr);
             if (std::string(pack) == "gamepad") {
                 // An unavailable installed descriptor remains in the list, while controller cycling skips it.
@@ -1358,7 +1354,7 @@ RESTORE_INTERFACE_BUTTON = function() ui.InvisibleButton = original end
                 CHECK(s.lua.run_for_test("", "return INTERFACE_SEEN > 0") == "true");
                 REQUIRE(luaL_dostring(s.lua.state(), "RESTORE_INTERFACE_BUTTON()") == LUA_OK);
                 login.ui_packs.erase(login.ui_packs.begin() + 1);
-                CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+                CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             }
             // A returned ticket is an optional action, usable without a password, and hidden while busy.
             lua_State* login_lua = s.lua.state();
@@ -1405,7 +1401,7 @@ end
             login.session_ticket_available = false;
             s.frames(2);
             CHECK(session_buttons() == 0);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             // The updater's notice in each of its states (docs/updater.md).
             login.update.version = "9.0.0";
             login.update.current = "0.1.0-alpha";
@@ -1418,7 +1414,7 @@ end
                 login.update.error = "no network";
                 login.update.message = *state ? "" : "The update was cut off, so 0.1.0-alpha was put back.";
                 s.frames(2);
-                CHECK_MESSAGE(ImGui::FindWindowByName("UI errors") == nullptr, state);
+                CHECK_MESSAGE(s.lua.load_status().error_count == 0, state, ui_errors(s.lua));
             }
             login.update = {};
             // The corner: this build, each of the updater's words on it, What's new and the GitHub page.
@@ -1431,7 +1427,7 @@ end
                 login.update.check = check;
                 login.update.off_reason = "a development build";
                 s.frames(2);
-                CHECK_MESSAGE(ImGui::FindWindowByName("UI errors") == nullptr, check);
+                CHECK_MESSAGE(s.lua.load_status().error_count == 0, check, ui_errors(s.lua));
             }
             if (std::string(pack) == "gamepad") {
                 // What's new is a page of its own there (test.login = notes, as the screen appears again)
@@ -1440,12 +1436,12 @@ end
                 s.frames(2);
                 s.host.login = &login;
                 s.frames(3);
-                CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+                CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             }
             login.update = {};
             login.release_notes.clear();
             s.frames(2);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             // The add-on manager's panel (docs/addons.md): an install card, and rows of each group and state.
             login.addons.open = true;
             login.addons.available = true;
@@ -1537,16 +1533,16 @@ end
             }
             login.addons.browsed = true;
             s.frames(3);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             // A tool's install card: no permissions, the program's warning.
             login.addons.offer->kind = "tool";
             login.addons.offer->caps.clear();
             s.frames(2);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             // An upscaler's: no permissions, its own warning.
             login.addons.offer->kind = "upscaler";
             s.frames(2);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             login.addons.offer->kind = "plugin";
             login.addons.offer->caps = {"read the game state", "draw windows"};
             // An older version than the one installed: its warning and the button that says so.
@@ -1554,7 +1550,7 @@ end
             login.addons.offer->older = true;
             login.addons.offer->blocked.clear();
             s.frames(2);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             login.addons.offer->older = false;
             login.addons.offer->installed_version.clear();
             login.addons.offer->blocked = "an add-on named autoloot is installed already";
@@ -1562,33 +1558,33 @@ end
                 // the list of their own, then back to the store
                 REQUIRE(luaL_dostring(s.lua.state(), "ui.SetSetting('test.addontab', 'mine')") == LUA_OK);
                 s.frames(3);
-                CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+                CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
                 REQUIRE(luaL_dostring(s.lua.state(), "ui.SetSetting('test.addontab', 'store')") == LUA_OK);
             }
             login.addons.store.clear();
             login.addons.browsing = true;
             s.frames(2);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             login.addons.browsing = false;
             login.addons.store_error = "The list of add-ons could not be fetched.";
             s.frames(2);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             login.addons.offer.reset();
             login.addons.available = false;
             login.addons.why_off = "Add-ons cannot be fetched here.";
             s.frames(2);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             login.addons = {};
             // Suggested add-ons (docs/addons.md "Suggested add-ons"): the index's and a server's.
             login.addons.suggestions = {
                 {"servplug", "owner/servplug", "Alpha World has a Hailstone add-on for its own features: servplug.", false},
                 {"", "owner/extra", "Alpha suggests a Hailstone add-on: owner/extra.", true}};
             s.frames(2);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             login.addons.suggestions.front().required = true;
             login.addons.suggestions.front().text = "Required to play on this server: servplug.";
             s.frames(2);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             REQUIRE(luaL_dostring(s.lua.state(), "assert(hs.UI.pregame.LoginScreen().addons.suggestions[1].required); "
                                  "assert(not hs.UI.pregame.LoginDo('addonSuggestLater', 'owner/servplug')); "
                                  "assert(not hs.UI.pregame.LoginDo('addonSuggestNever', 'owner/servplug')); "
@@ -1600,7 +1596,7 @@ end
             login.transient = true;
             login.busy = true;
             s.frames(2);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             s.host.login = nullptr;
 
             ui::ServerSelectView worlds;
@@ -1615,10 +1611,10 @@ end
             REQUIRE(luaL_dostring(s.lua.state(), "local v=hs.ServerSelect(); assert(v.servers[2].status=='Locked' and v.servers[2].canJoin); "
                                      "assert(hs.ServerSelectDo('play',2)); assert(not hs.ServerSelectDo('play',3))") == LUA_OK);
             CHECK(s.host.server_select_action == static_cast<int>(ui::ServerSelectAction::Play));
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             worlds.addon_hint = "Open World has a Hailstone add-on: go Back and open Add-ons to look at it.";
             s.frames(2);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             s.host.server_select = nullptr;
 
             // Character select, with characters and without; with the scene and without.
@@ -1636,7 +1632,7 @@ end
             chars.selected = -1;
             chars.scene = false;
             s.frames(2);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             s.host.char_select = nullptr;
 
             // Character creation, with the scene and without, waiting on the world, and while customizing.
@@ -1655,7 +1651,7 @@ end
             s.host.char_create_view = &create;
             s.frames(3);
             CHECK(s.api.replaces("CharacterCreateScreen"));
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             create.name = "Bobby";
             create.scene = false;
             create.status = {"That name is taken.", true};
@@ -1668,7 +1664,7 @@ end
             create.options.clear(); // no tables from the server
             create.option = -1;
             s.frames(2);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             s.host.char_create_view = nullptr;
         }
         ImGui::DestroyContext(ctx);
@@ -1738,7 +1734,7 @@ ui.InvisibleButton = function(id, ...)
 end
 )lua") == LUA_OK);
             s.frames(3);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             CHECK(asked);
             CHECK(set.empty());
             if (std::string(pack) == "modern") {
@@ -1766,7 +1762,7 @@ clickPack = true
             CHECK(set == std::vector<int>{1});
             CHECK(chosen == 1);
             s.frames(2); // the note that it is used from the next start
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         }
         ImGui::DestroyContext(ctx);
     }
@@ -1822,7 +1818,7 @@ TEST_CASE("UI packs: the marketplace draws its shelves, details and pages from a
                     m.window.preview_tab = true;
                 }
                 s.frames(2);
-                CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+                CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             }
             REQUIRE(luaL_dostring(L, "local n = hs.ListInfo('MarketplaceWnd', 'MKPW_CategoriesTree') return n") == LUA_OK);
             CHECK(lua_tointeger(L, -1) >= 4);
@@ -1878,7 +1874,7 @@ TEST_CASE("UI packs: the spell book's sets and set editor draw; hs.SaveSpellSet 
             pp.class_ = 2; // a cleric: the book opens
             conn.set_profile_for_test(pp);
             for (std::uint32_t i = 0; i < 3; ++i)
-                conn.receive_zone_packet_for_test(net::encode(net::MemorizeSpell{i, 200 + i, net::kMemScribe, 0}));
+                conn.receive_zone_message_for_test({net::messages::GameOpcode::MemorizeSpell, net::messages::MemorizationEvent{i, static_cast<std::uint32_t>(200 + i), net::messages::kSpellMemScribe, 0}});
             REQUIRE(conn.spell_state().book[2] == 202);
             lua_State* L = s.lua.state();
             auto run = [&](const char* code) {
@@ -1922,7 +1918,7 @@ TEST_CASE("UI packs: the spell book's sets and set editor draw; hs.SaveSpellSet 
             run("hs.ShowWindow('SpellBookWnd', true)");
             REQUIRE(conn.spell_book_open());
             s.frames(3);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             const bool modern = std::string(pack) == "modern";
             const char* views[] = {"sets", "1", "new", "gems", "2"};
             const char* gamepad_views[] = {"sets", "edit1", "editnew", "edit2", "book"};
@@ -1933,7 +1929,7 @@ TEST_CASE("UI packs: the spell book's sets and set editor draw; hs.SaveSpellSet 
                 INFO(code);
                 run(code.c_str());
                 s.frames(3);
-                CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+                CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             }
             CHECK(ImGui::FindWindowByName(modern ? "###modern.SpellBookWnd" : "Spell Book") != nullptr);
             // all ten in use: a new name is refused, an existing one still saves
@@ -1944,7 +1940,7 @@ TEST_CASE("UI packs: the spell book's sets and set editor draw; hs.SaveSpellSet 
             CHECK(number("return hs.SaveSpellSet('Eleventh', { 200 }) or -1") == -1);
             CHECK(number("return hs.SaveSpellSet('pulls', { 201 })") > 0);
             s.frames(3);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         }
         ImGui::DestroyContext(ctx);
     }
@@ -2003,7 +1999,7 @@ TEST_CASE("UI packs (modern): an add-on's Remove asks, and its answer removes th
         }
         s.host.login = &login;
         s.frames(3);
-        REQUIRE(ImGui::FindWindowByName("UI errors") == nullptr);
+        REQUIRE_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         auto asked = [&](const std::string& q) {
             REQUIRE(luaL_dostring(L, "return table.concat(texts, '|')") == LUA_OK);
             const std::string all = lua_tostring(L, -1);
@@ -2021,7 +2017,7 @@ TEST_CASE("UI packs (modern): an add-on's Remove asks, and its answer removes th
             s.frames(1);
             REQUIRE(luaL_dostring(L, "press, seen, texts = nil, 0, {}") == LUA_OK);
             s.frames(2);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             CHECK(asked(std::string("Remove ") + name + "?"));
             CHECK_FALSE(s.host.login_action);
             // The question's Remove: drawn after both rows' buttons.
@@ -2032,7 +2028,7 @@ TEST_CASE("UI packs (modern): an add-on's Remove asks, and its answer removes th
             CHECK(login.addons.choice == name);
             s.frames(2);
         }
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
     }
     ImGui::DestroyContext(ctx);
 }
@@ -2061,12 +2057,12 @@ TEST_CASE("UI packs (modern): no two of the spell book's widgets share an ID") {
         pp.class_ = 2; // a cleric: the book opens
         conn.set_profile_for_test(pp);
         for (std::uint32_t i = 0; i < 3; ++i)
-            conn.receive_zone_packet_for_test(net::encode(net::MemorizeSpell{i, 200 + i, net::kMemScribe, 0}));
+            conn.receive_zone_message_for_test({net::messages::GameOpcode::MemorizeSpell, net::messages::MemorizationEvent{i, static_cast<std::uint32_t>(200 + i), net::messages::kSpellMemScribe, 0}});
         lua_State* L = s.lua.state();
         REQUIRE(luaL_dostring(L, "hs.ShowWindow('SpellBookWnd', true) ui.SetSetting('test.book.tab', 'details')"
                                  " ui.SetSetting('test.book.select', '200')") == LUA_OK);
         s.frames(3);
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         ImGuiWindow* book = ImGui::FindWindowByName("###modern.SpellBookWnd");
         REQUIRE(book != nullptr);
         const ImVec2 at = book->Pos, size = book->Size;
@@ -2133,19 +2129,19 @@ TEST_CASE("UI packs (modern): the spell book's Memorize replaces the spell of a 
             pp.class_ = 2; // a cleric: the book opens
             conn.set_profile_for_test(pp);
             for (std::uint32_t i = 0; i <= 12; ++i)
-                conn.receive_zone_packet_for_test(net::encode(net::MemorizeSpell{i, 200 + i, net::kMemScribe, 0}));
+                conn.receive_zone_message_for_test({net::messages::GameOpcode::MemorizeSpell, net::messages::MemorizationEvent{i, static_cast<std::uint32_t>(200 + i), net::messages::kSpellMemScribe, 0}});
             const int usable = conn.usable_gems();
             REQUIRE(usable >= 3);
             for (int g = 0; g < usable; ++g)
-                conn.receive_zone_packet_for_test(net::encode(net::MemorizeSpell{
-                    static_cast<std::uint32_t>(g), 200 + static_cast<std::uint32_t>(g), net::kMemMemorize, 0}));
+                conn.receive_zone_message_for_test({net::messages::GameOpcode::MemorizeSpell, net::messages::MemorizationEvent{
+                    static_cast<std::uint32_t>(g), 200 + static_cast<std::uint32_t>(g), net::messages::kSpellMemMemorize, 0}});
             conn.set_sitting(true);
             lua_State* L = s.lua.state();
             REQUIRE(luaL_dostring(L, "hs.ShowWindow('SpellBookWnd', true) ui.SetSetting('test.book.tab', 'details')"
                                      " ui.SetSetting('test.book.select', '212') ui.SetSetting('test.book.gem', '3')") ==
                     LUA_OK);
             s.frames(3);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             ImGuiWindow* book = ImGui::FindWindowByName("###modern.SpellBookWnd");
             REQUIRE(book != nullptr);
             // the mouse over the Memorize button, found by its ID
@@ -2165,7 +2161,7 @@ TEST_CASE("UI packs (modern): the spell book's Memorize replaces the spell of a 
             s.frames(1);
             ImGui::GetIO().AddMouseButtonEvent(ImGuiMouseButton_Left, false);
             s.frames(2);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             if (replace) {
                 REQUIRE(conn.spell_state().memorizing.has_value());
                 CHECK(conn.spell_state().memorizing->gem == 2);
@@ -2196,13 +2192,13 @@ TEST_CASE("UI packs: the inventory's alternate currencies draw, and a row select
         {
             Session s(dir, pack);
             std::vector<net::AltCurrencyEntry> entries{{31, 22000, 1500, 1000, true}, {32, 22001, 1501, 500, true}};
-            s.conn.receive_zone_packet_for_test(net::encode_alt_currency_populate(entries));
-            s.conn.receive_zone_packet_for_test(net::encode_alt_currency_update({31, 7}));
+            s.conn.receive_zone_message_for_test({net::messages::GameOpcode::AltCurrency, net::AltCurrencyPacket{entries, std::nullopt}});
+            s.conn.receive_zone_message_for_test({net::messages::GameOpcode::AltCurrency, net::AltCurrencyPacket{{}, net::AltCurrencyUpdate{31, 7}}});
             lua_State* L = s.lua.state();
             REQUIRE(luaL_dostring(L, "ui.SetSetting('test.inv.page', 'currency') hs.ShowWindow('InventoryWindow', true)") ==
                     LUA_OK);
             s.frames(3);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             // the page keeps the stock Display Missing off with nothing held (modern: Show all off)
             REQUIRE(luaL_dostring(L, "return (select(2, hs.ChildState('InventoryWindow', 'AltCurr_DisplayMissingButton')))") ==
                     LUA_OK);
@@ -2213,7 +2209,7 @@ TEST_CASE("UI packs: the inventory's alternate currencies draw, and a row select
             CHECK(lua_toboolean(L, -1)); // 31, held: Claim is on
             lua_settop(L, 0);
             s.frames(2);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         }
         ImGui::DestroyContext(ctx);
     }
@@ -2254,7 +2250,7 @@ TEST_CASE("UI packs: the Find window draws the zone's NPCs and follows hs.FindOp
             lua_State* L = s.lua.state();
             REQUIRE(luaL_dostring(L, "ui.SetSetting('map.npcMarks', '1') hs.FindOpen(true)") == LUA_OK);
             s.frames(3);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             if (std::string(pack) == "modern") {
                 CHECK(s.api.shown("MapViewWnd")); // the map opened on its Find page
                 REQUIRE(luaL_dostring(L, "hs.ShowWindow('MapViewWnd', false)") == LUA_OK);
@@ -2270,7 +2266,7 @@ TEST_CASE("UI packs: the Find window draws the zone's NPCs and follows hs.FindOp
                 REQUIRE(luaL_dostring(L, "hs.FindOpen(false)") == LUA_OK);
                 s.frames(2);
             }
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         }
         ImGui::DestroyContext(ctx);
     }
@@ -2304,14 +2300,8 @@ end)
     {
         Session s(dir, "modern");
         for (auto [slot, id, name] : {std::tuple{0u, 101u, std::string("a gnoll")}, std::tuple{1u, 102u, std::string("a pup")}}) {
-            ByteWriter b;
-            b.le<std::uint32_t>(5);
-            b.le<std::uint32_t>(1);
-            b.le<std::uint32_t>(slot);
-            b.le<std::uint8_t>(1);
-            b.le<std::uint32_t>(id);
-            b.fixed_string(name, name.size() + 1);
-            s.conn.receive_zone_packet_for_test(net::AppPacket(net::to_wire(net::Op::XTargetResponse), b.take()));
+            s.conn.receive_zone_message_for_test({net::messages::GameOpcode::XTargetResponse,
+                                                  net::XTargetResponse{5, {{static_cast<std::int32_t>(slot), 1, id, name}}}});
             game::Spawn& m = s.conn.world_for_test().spawns[id];
             m.id = id;
             m.name = name;
@@ -2322,7 +2312,7 @@ end)
         lua_State* L = s.lua.state();
         REQUIRE(luaL_dostring(L, "hs.ShowWindow('ExtendedTargetWnd', true)") == LUA_OK);
         s.frames(3);
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         // (the plugin's globals are its own: run in them)
         REQUIRE(luaL_loadstring(L, "return table.concat(drawn, ','), #styled") == LUA_OK);
         s.lua.push_folder_env_for_test("plug");
@@ -2357,14 +2347,8 @@ TEST_CASE("UI packs (modern): the extended target window shows empty slots and s
     {
         Session s(dir, "modern");
         // Five slots, the first holding a gnoll; the other four empty.
-        ByteWriter b;
-        b.le<std::uint32_t>(5);
-        b.le<std::uint32_t>(1);
-        b.le<std::uint32_t>(0);
-        b.le<std::uint8_t>(1);
-        b.le<std::uint32_t>(101);
-        b.fixed_string("a gnoll", 8);
-        s.conn.receive_zone_packet_for_test(net::AppPacket(net::to_wire(net::Op::XTargetResponse), b.take()));
+        s.conn.receive_zone_message_for_test({net::messages::GameOpcode::XTargetResponse,
+                                              net::XTargetResponse{5, {{0, 1, 101, "a gnoll"}}}});
         game::Spawn& m = s.conn.world_for_test().spawns[101];
         m.id = 101;
         m.name = "a gnoll";
@@ -2373,7 +2357,7 @@ TEST_CASE("UI packs (modern): the extended target window shows empty slots and s
         lua_State* L = s.lua.state();
         REQUIRE(luaL_dostring(L, "hs.ShowWindow('ExtendedTargetWnd', true)") == LUA_OK);
         s.frames(3);
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         auto rows = []() -> ImGuiWindow* {
             for (ImGuiWindow* win : GImGui->Windows)
                 if (std::string_view(win->Name).find("/##xtrows") != std::string_view::npos) return win;
@@ -2387,7 +2371,7 @@ TEST_CASE("UI packs (modern): the extended target window shows empty slots and s
         // A frame the player made short: the same rows, scrolling.
         REQUIRE(luaL_dostring(L, "ui.SetSetting('hud.size.ExtendedTargetWnd', '210,90')") == LUA_OK);
         s.frames(3);
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         area = rows();
         REQUIRE(area != nullptr);
         CHECK(area->ContentSize.y >= 5 * 33 - 4);
@@ -2412,25 +2396,21 @@ TEST_CASE("UI packs (modern): the extended target window starts six rows tall an
     {
         Session s(dir, "modern");
         // Twenty slots: slot 0 and slot 15 hold a spawn.
-        ByteWriter b;
-        b.le<std::uint32_t>(20);
-        b.le<std::uint32_t>(2);
+        net::XTargetResponse targets;
+        targets.max = 20;
         for (auto [slot, id, name] : {std::tuple{0u, 101u, std::string("a gnoll")}, std::tuple{15u, 102u, std::string("a pup")}}) {
-            b.le<std::uint32_t>(slot);
-            b.le<std::uint8_t>(1);
-            b.le<std::uint32_t>(id);
-            b.fixed_string(name, name.size() + 1);
+            targets.entries.push_back({static_cast<std::int32_t>(slot), 1, id, name});
             game::Spawn& m = s.conn.world_for_test().spawns[id];
             m.id = id;
             m.name = name;
             m.is_npc = true;
             m.hp_percent = 80;
         }
-        s.conn.receive_zone_packet_for_test(net::AppPacket(net::to_wire(net::Op::XTargetResponse), b.take()));
+        s.conn.receive_zone_message_for_test({net::messages::GameOpcode::XTargetResponse, targets});
         lua_State* L = s.lua.state();
         REQUIRE(luaL_dostring(L, "hs.UI.windows.Show('ExtendedTargetWnd', true)") == LUA_OK);
         s.frames(3);
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         auto rows = []() -> ImGuiWindow* {
             for (ImGuiWindow* win : GImGui->Windows)
                 if (std::string_view(win->Name).find("/##xtrows") != std::string_view::npos) return win;
@@ -2446,7 +2426,7 @@ TEST_CASE("UI packs (modern): the extended target window starts six rows tall an
         // Auto expand: tall enough for the rows down to slot 15 (16 rows); the four after it still scroll.
         REQUIRE(luaL_dostring(L, "ui.SetSetting('hud.expand.ExtendedTargetWnd', '1')") == LUA_OK);
         s.frames(3);
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         area = rows();
         REQUIRE(area != nullptr);
         CHECK(area->Size.y >= 16 * 33 - 4);
@@ -2527,7 +2507,7 @@ end)
             }
             a.prereq_groups = {0};
             a.prereq_ranks = {0};
-            s.conn.receive_zone_packet_for_test(net::encode_send_aa_table(a));
+            s.conn.receive_zone_message_for_test({net::messages::GameOpcode::SendAATable, a});
         }
         s.lua.set_folders({{"plug", dir / "plug"}});
         lua_State* L = s.lua.state();
@@ -2541,7 +2521,7 @@ return table.concat(out, ';'))lua") == LUA_OK);
         lua_settop(L, 0);
         REQUIRE(luaL_dostring(L, "hs.ShowWindow('AAWindow', true)") == LUA_OK);
         s.frames(3);
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         REQUIRE(luaL_loadstring(L, "return table.concat(drawn, ','), #styled, banners") == LUA_OK);
         s.lua.push_folder_env_for_test("plug");
         lua_setupvalue(L, -2, 1);
@@ -2557,7 +2537,7 @@ return table.concat(out, ';'))lua") == LUA_OK);
         // the Class tab's), and the list and the stock tab's list both show it selected.
         REQUIRE(luaL_dostring(L, "hs.ListClick('AAWindow', 'ModernList', 1, 'left')") == LUA_OK);
         s.frames(2);
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         REQUIRE(luaL_dostring(L, "local _, _, a = hs.ListInfo('AAWindow', 'ModernList') local _, _, b = "
                                  "hs.ListInfo('AAWindow', 'List3') return a, b, (hs.WindowText('AAWindow', "
                                  "'ModernSelected'))") == LUA_OK);
@@ -2604,7 +2584,7 @@ TEST_CASE("UI packs (modern): the AA window's selection follows its ability to t
             a.type = 1;
             a.prereq_groups = {0};
             a.prereq_ranks = {0};
-            s.conn.receive_zone_packet_for_test(net::encode_send_aa_table(a));
+            s.conn.receive_zone_message_for_test({net::messages::GameOpcode::SendAATable, a});
         }
         lua_State* L = s.lua.state();
         auto selected = [&] {
@@ -2621,7 +2601,7 @@ TEST_CASE("UI packs (modern): the AA window's selection follows its ability to t
         auto own = [&](std::uint32_t id) {
             net::RespondAA r;
             r.owned = {{id, 1, 0}};
-            s.conn.receive_zone_packet_for_test(net::encode(r));
+            s.conn.receive_zone_message_for_test({net::messages::GameOpcode::RespondAA, r});
         };
         own(100);
         CHECK(selected() == "101");
@@ -2680,13 +2660,13 @@ end)
             a.title_sid = title;
             a.prereq_groups = {0};
             a.prereq_ranks = {0};
-            s.conn.receive_zone_packet_for_test(net::encode_send_aa_table(a));
+            s.conn.receive_zone_message_for_test({net::messages::GameOpcode::SendAATable, a});
         }
         s.lua.set_folders({{"plug", dir / "plug"}});
         lua_State* L = s.lua.state();
         REQUIRE(luaL_dostring(L, "hs.ShowWindow('AAWindow', true)") == LUA_OK);
         s.frames(3);
-        REQUIRE(ImGui::FindWindowByName("UI errors") == nullptr);
+        REQUIRE_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         auto read = [&](double& part_x, double& top_y) {
             REQUIRE(luaL_loadstring(L, "return table.concat(drawn, ','), px, top") == LUA_OK);
             s.lua.push_folder_env_for_test("plug");
@@ -2738,7 +2718,7 @@ end)
         s.frames(2);
         CHECK(setting("aa.columns").starts_with("cost,name,"));
         CHECK(setting("aa.sort") == "cost:desc");
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
     }
     ImGui::DestroyContext(ctx);
 }
@@ -2849,7 +2829,7 @@ TEST_CASE("UI packs: the Lua Scripts window and hs.Scripts*: list, run, pause, s
                 "local ok, why = hs.ScriptRun('loop'); assert(not ok and why:find('may not run'))");
             run("hs.ShowWindow('ScriptsWnd', true)");
             s.frames(2);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             policy.set(plugin::Rules{}); // no hailstone.cfg: the player's scripts run
             run("local l = hs.Scripts(true); assert(l[1].allowed and l[1].caps ~= '')");
             // A plugin's code: a script of its own name alone, and no folders.
@@ -2883,7 +2863,7 @@ TEST_CASE("UI packs: the Lua Scripts window and hs.Scripts*: list, run, pause, s
             CHECK(scripts.autorun("other"));
             CHECK(fs::exists(dir / "chars" / "scripts.ini"));
             s.frames(2);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             run("hs.ShowWindow('ScriptsWnd', false)");
             s.host.scripts = nullptr;
         }
@@ -2943,7 +2923,7 @@ TEST_CASE("UI packs: the web browser window and hs.Web* with a browser") {
             run("assert(hs.WebNavigate(TAB, 'https://example.org/b'))");
             run("hs.WebNav(TAB, 'reload'); hs.WebText(TAB, 'hi')");
             s.frames(3);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             CHECK(wants_text == 0); // the page was never clicked: it has not the keyboard
             run("hs.ShowWindow('BrowserWnd', false)");
             // The page's input (hs.WebView): a click reaches the page (the stand-in paints the pixel white) and gives
@@ -2983,7 +2963,7 @@ TEST_CASE("UI packs: the web browser window and hs.Web* with a browser") {
             const int before = wants_text;
             s.frames(2);
             CHECK(wants_text == before); // the keyboard is back with the game
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             run("hs.WebClose(TAB); assert(hs.WebState(TAB) == nil)");
 
             // A plugin's window (its folder's ui/<pack>/): hs.Web* as "plugin:<name>", with the plugin's permissions.
@@ -3075,7 +3055,7 @@ TEST_CASE("UI packs (modern): the Options window's Window Transparency and a win
         ImGui::GetIO().MousePos = ImVec2(win->Pos.x + 5, win->Pos.y + 5);
         s.frames(40);
         CHECK(max_alpha(player) == 255);
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
     }
     ImGui::DestroyContext(ctx);
 }
@@ -3110,7 +3090,7 @@ TEST_CASE("UI packs (modern): a resizable dialog's Scale zooms the whole window"
         REQUIRE(luaL_dostring(L, "return ui.GetSetting('hud.size.GuildManagementWnd')") == LUA_OK);
         CHECK(std::string(lua_tostring(L, -1)) == "600,450");
         lua_settop(L, 0);
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
     }
     ImGui::DestroyContext(ctx);
 }
@@ -3139,14 +3119,14 @@ TEST_CASE("UI packs (modern): an invitation to a group pops up with who sent it"
         net::GroupInvite inv;
         inv.invitee = "Tester";
         inv.inviter = "Bob";
-        s.conn.receive_zone_packet_for_test(net::encode(inv));
+        s.conn.receive_zone_message_for_test({net::messages::GameOpcode::GroupInvite, inv});
         s.frames(2);
         CHECK(shown());
         CHECK(s.api.replaces("GroupInvite")); // the client's own prompt stays off: one popup, not two
         REQUIRE(luaL_dostring(L, "return (hs.WindowText('GroupWindow', 'Hailstone_Inviter'))") == LUA_OK);
         CHECK(std::string(lua_tostring(L, -1)) == "Bob");
         lua_settop(L, 0);
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
     }
     ImGui::DestroyContext(ctx);
 }
@@ -3175,7 +3155,7 @@ TEST_CASE("UI packs: each claims the achievement and reward windows while they a
             CHECK_FALSE(s.api.shown("RewardSelectionWnd"));
             CHECK(s.api.replaces("AchievementsWnd"));
             CHECK(s.api.replaces("RewardSelectionWnd"));
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         }
         ImGui::DestroyContext(ctx);
     }
@@ -3208,14 +3188,22 @@ TEST_CASE("UI packs: server shroud catalogs and storage draw in both packs") {
                 lua_settop(L, 0);
             };
             auto offer = [&](std::uint32_t context) {
-                ByteWriter payload;
-                payload.le(context);
-                payload.zeros(8);
-                net::detail::write_cstring(payload, "PROGRESSION\a" "12\a" "Scouts\a" "Scout forms\a"
-                    "BRANCH\a" "44\a" "Trackers\a" "Track a target\a" "50\a"
-                    "TEMPLATE\a" "Kobold\a" "391\a" "20\a" "1\a"
-                    "TEMPLATE\a" "Gnoll\a" "392\a" "25\a" "0");
-                rig.conn.receive_zone_packet_for_test(net::make_packet(net::Op::ShroudSelectionWindow, std::move(payload)));
+                net::ShroudSelection selection;
+                selection.context_id = context;
+                net::ShroudCategory category;
+                category.id = 12;
+                category.name = "Scouts";
+                category.description = "Scout forms";
+                net::ShroudBranch branch;
+                branch.id = 44;
+                branch.name = "Trackers";
+                branch.description = "Track a target";
+                branch.progress = 50;
+                branch.forms = {{391, 20, "Kobold", true}, {392, 25, "Gnoll", false}};
+                category.branches.push_back(std::move(branch));
+                selection.categories.push_back(std::move(category));
+                rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::ShroudSelectionWindow,
+                    std::move(selection)});
             };
             auto drawn = [&](std::string title, std::string_view screen) {
                 if (std::string_view(pack) == "modern") title += "###modern." + std::string(screen);
@@ -3244,7 +3232,7 @@ TEST_CASE("UI packs: server shroud catalogs and storage draw in both packs") {
             mission.task_id = 926;
             mission.title = "Scout the ruins";
             mission.type = game::kTaskTypeShared;
-            rig.conn.receive_zone_packet_for_test(net::encode_task_description(mission));
+            rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::TaskDescription, mission});
             offer(mission.task_id);
             s.frames(2);
             CHECK(s.api.shown("TaskTemplateSelectWnd"));
@@ -3253,18 +3241,10 @@ TEST_CASE("UI packs: server shroud catalogs and storage draw in both packs") {
             run(R"lua(hs.UI.windows.Show("TaskTemplateSelectWnd", false))lua");
             CHECK_FALSE(s.api.shown("TaskTemplateSelectWnd"));
 
-            ByteWriter roles;
-            roles.zeros(8);
-            roles.le(mission.task_id);
-            roles.zeros(5);
-            roles.le<std::uint32_t>(1);
-            roles.le<std::uint32_t>(913);
-            roles.le<std::int32_t>(1);
-            roles.le<std::int32_t>(1);
-            roles.zeros(4);
-            roles.le<std::uint8_t>(1);
-            net::detail::write_cstring(roles, "Watch Captain");
-            rig.conn.receive_zone_packet_for_test(net::make_packet(net::Op::MonsterMissionCatalog, std::move(roles)));
+            net::MonsterMissionCatalog catalog;
+            catalog.task_id = mission.task_id;
+            catalog.templates.push_back({913, 1, 1, true, "Watch Captain"});
+            rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::MonsterMissionCatalog, catalog});
             s.frames(2);
             CHECK(drawn("Monster Mission Selection", "TaskTemplateSelectWnd"));
             run(R"lua(
@@ -3277,18 +3257,13 @@ TEST_CASE("UI packs: server shroud catalogs and storage draw in both packs") {
                 assert(windows.ClickChild(screen, "Accept", "left"))
                 assert(windows.ChildState(screen, "Accept") == false)
             )lua");
-            ByteWriter refused;
-            refused.zeros(8);
-            refused.le<std::uint32_t>(913);
-            refused.le<std::uint32_t>(1);
-            rig.conn.receive_zone_packet_for_test(net::make_packet(net::Op::MonsterMissionResult, std::move(refused)));
+            rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::MonsterMissionResult,
+                net::MonsterMissionResult{913, 1}});
             run(R"lua(assert(hs.UI.windows.ChildState("TaskTemplateSelectWnd", "Accept")))lua");
-            rig.conn.receive_zone_packet_for_test(net::encode(std::vector<net::SharedTaskMember>{{"Helper", true, 0}}));
-            ByteWriter assignment;
-            assignment.zeros(8);
-            assignment.fixed_string("Helper", 64);
-            assignment.le<std::uint32_t>(913);
-            rig.conn.receive_zone_packet_for_test(net::make_packet(net::Op::MonsterMissionAssignment, std::move(assignment)));
+            rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::SharedTaskMemberList,
+                std::vector<net::SharedTaskMember>{{"Helper", true}}});
+            rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::MonsterMissionAssignment,
+                net::MonsterMissionAssignment{"Helper", 913}});
             s.frames(2);
             run(R"lua(
                 local screen = "TaskTemplateSelectWnd"
@@ -3299,12 +3274,17 @@ TEST_CASE("UI packs: server shroud catalogs and storage draw in both packs") {
                 windows.Show(screen, false)
             )lua");
 
-            ByteWriter progress;
-            progress.le<std::uint32_t>(1);
-            constexpr std::string_view progress_text = "PROGRESSION\a" "12\a" "Scouts\a" "Scout forms\a"
-                "1\a" "2\a" "Gnoll\a" "Gnoll form\a" "50";
-            progress.bytes(std::as_bytes(std::span(progress_text.data(), progress_text.size())));
-            rig.conn.receive_zone_packet_for_test(net::make_packet(net::Op::ShroudProgress, std::move(progress)));
+            net::ShroudProgress progress;
+            progress.category_id = 12;
+            progress.name = "Scouts";
+            progress.description = "Scout forms";
+            progress.unlocked = 1;
+            progress.total = 2;
+            progress.next_name = "Gnoll";
+            progress.next_description = "Gnoll form";
+            progress.percent = 50;
+            rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::ShroudProgress,
+                std::vector<net::ShroudProgress>{progress}});
             run(R"lua(
                 local windows = hs.UI.windows
                 assert(windows.ChildShown("InventoryWindow", "ShroudProgressButton") == true)
@@ -3323,19 +3303,13 @@ TEST_CASE("UI packs: server shroud catalogs and storage draw in both packs") {
             banker.motion.x = rig.conn.profile()->x;
             banker.motion.y = rig.conn.profile()->y;
             banker.motion.z = rig.conn.profile()->z;
-            rig.conn.receive_zone_packet_for_test(net::encode(banker));
-            ByteWriter open;
-            open.le<std::uint32_t>(0);
-            open.le(banker.spawn_id);
-            rig.conn.receive_zone_packet_for_test(net::make_packet(net::Op::AltStorage, std::move(open)));
-            ByteWriter items;
-            items.le<std::uint32_t>(3600);
-            items.le<std::uint32_t>(1);
-            net::detail::write_cstring(items, "Tracker's Ledger");
-            items.le<std::uint32_t>(431);
-            items.le<std::uint64_t>(937);
-            items.le<std::uint32_t>(2);
-            rig.conn.receive_zone_packet_for_test(net::make_packet(net::Op::AltStorageList, std::move(items)));
+            rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::ZoneEntry, banker});
+            rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::AltStorage,
+                net::AltStorageControl{net::AltStorageAction::Open, banker.spawn_id}});
+            net::AltStorageList storage;
+            storage.retention_seconds = 3600;
+            storage.entries.push_back({"Tracker's Ledger", 431, 937, 2});
+            rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::AltStorageList, storage});
             s.frames(2);
             CHECK(s.api.shown("AltStorageWnd"));
             CHECK(s.api.replaces("AltStorageWnd"));
@@ -3347,7 +3321,7 @@ TEST_CASE("UI packs: server shroud catalogs and storage draw in both packs") {
                 assert(windows.Text(screen, "TimerLabel") == "01:00:00")
                 assert(windows.ChildState(screen, "GetButton") == false)
             )lua");
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         }
         ImGui::DestroyContext(ctx);
     }
@@ -3431,12 +3405,12 @@ TEST_CASE("UI packs: the server plugins' question draws above the loading cover 
             ImGui::GetIO().AddMousePosEvent(consent->Pos.x > 40.0f ? 5.0f : 1595.0f, 895.0f);
             s.frames(1, nullptr, &loading);
             CHECK(ImGui::GetCurrentContext()->HoveredWindow == cover);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             prompt.reset();
             s.frames(2, nullptr, &loading);
             CHECK(consent_window() == nullptr);
             foreground_cover();
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         }
         ImGui::DestroyContext(ctx);
     }
@@ -3500,7 +3474,7 @@ end
             lua_getglobal(L, "closeSeen");
             CHECK((shown->HasCloseButton || lua_toboolean(L, -1))); // the player can put it away
             lua_settop(L, 0);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             lua_getglobal(L, "retryRect");
             REQUIRE(lua_istable(L, -1));
             float rect[4]{};
@@ -3533,7 +3507,7 @@ end
             view.serial = 3;
             s.frames(3);
             CHECK(window() == nullptr);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         }
         ImGui::DestroyContext(ctx);
     }
@@ -3618,7 +3592,7 @@ end
             click_answer();
             REQUIRE(answers.size() == 1);
             CHECK(answers[0] == std::optional<bool>(allow));
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         }
         ImGui::DestroyContext(ctx);
     }
@@ -3641,10 +3615,10 @@ TEST_CASE("UI packs (gamepad): an invitation to a group keeps the client's own p
         net::GroupInvite inv;
         inv.invitee = "Tester";
         inv.inviter = "Bob";
-        s.conn.receive_zone_packet_for_test(net::encode(inv));
+        s.conn.receive_zone_message_for_test({net::messages::GameOpcode::GroupInvite, inv});
         s.frames(2);
         CHECK_FALSE(s.api.replaces("GroupInvite"));
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
     }
     ImGui::DestroyContext(ctx);
 }
@@ -3707,7 +3681,7 @@ TEST_CASE("UI packs (modern): a dialog's corner and edge resize it, neither scal
         CHECK(setting("hud.scale.AAWindow").empty());
         CHECK(win->Size.x > grown.x + 30);
         CHECK(win->Size.y == doctest::Approx(grown.y).epsilon(0.01));
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
     }
     ImGui::DestroyContext(ctx);
 }
@@ -3771,7 +3745,7 @@ TEST_CASE("UI packs (modern): a frame's corner resizes it, never scales it") {
         CHECK(setting("hud.scale.PlayerWindow").empty());
         CHECK(player->Size.x == doctest::Approx(playerSize.x));
         CHECK(player->Size.y == doctest::Approx(playerSize.y));
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
     }
     ImGui::DestroyContext(ctx);
 }
@@ -3837,7 +3811,7 @@ TEST_CASE("UI packs (modern): a dialog rolls up from the button beside its close
         clickRollup();
         CHECK_FALSE(win->Collapsed);
         CHECK(run("return ui.GetSetting('hud.rolled.AAWindow') or ''") == "");
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
     }
     ImGui::DestroyContext(ctx);
 }
@@ -4274,7 +4248,7 @@ TEST_CASE("UI packs (gamepad): cached window contents follow a change") {
         s.frames(1);
         CHECK(saw("Another description"));
         CHECK_FALSE(saw("The first description"));
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
     }
     ImGui::DestroyContext(ctx);
 }
@@ -4362,7 +4336,7 @@ TEST_CASE("UI packs (gamepad): Final Result stays reachable and dispatches only 
         run("assert(finalTest.calls == 1) finalTest.shown = false finalTest.drawn = 0");
         s.frames(1);
         run("assert(finalTest.calls == 1 and finalTest.drawn == 0)");
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
     }
     ImGui::DestroyContext(ctx);
 }
@@ -4442,7 +4416,7 @@ TEST_CASE("UI packs (modern): an item display draws the shown item's stats, and 
         displays[0] = item(1003, "Other Blade", 11);
         s.frames(20);
         check("Other Blade");
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
     }
     ImGui::DestroyContext(ctx);
 }
@@ -4516,7 +4490,7 @@ TEST_CASE("UI packs: the item display compares the item with what you wear") {
             CHECK(seen("+50"));
             CHECK_FALSE(seen("+50 HP"));
             CHECK_FALSE(seen("+50 HP (" + std::to_string(ch.max_hp(true)) + " to " + std::to_string(ch.max_hp(true) + 50) + ")"));
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
 
             if (pack == std::string("modern")) {
                 // The tooltip: the verdict under the name, the HP change beside the item's HP, the rest as "+n NAME".
@@ -4584,7 +4558,7 @@ TEST_CASE("UI packs (modern): the inventory, loot, trade, raid, guild, merchant,
             INFO(screen);
             REQUIRE(luaL_dostring(L, (std::string("hs.ShowWindow('") + screen + "', true)").c_str()) == LUA_OK);
             s.frames(2);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             REQUIRE(luaL_dostring(L, (std::string("hs.ShowWindow('") + screen + "', false)").c_str()) == LUA_OK);
         }
         // the map's World view (the atlas and the zone finder, lib/atlas.lua) over the small atlas above, then a search
@@ -4597,14 +4571,14 @@ TEST_CASE("UI packs (modern): the inventory, loot, trade, raid, guild, merchant,
         };
         REQUIRE(luaL_dostring(L, "ui.SetSetting('map.view', 'world') hs.ShowWindow('MapViewWnd', true)") == LUA_OK);
         s.frames(3);
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         CHECK(finder_drawn());
         REQUIRE(luaL_dostring(L, "hs.ShowWindow('MapViewWnd', false)") == LUA_OK);
         s.frames(1);
         REQUIRE(luaL_dostring(L, "ui.SetSetting('atlas.route', 'qeytoqrg') ui.SetSetting('map.view', 'zone')"
                                  " hs.ShowWindow('MapViewWnd', true)") == LUA_OK);
         s.frames(3);
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         CHECK_FALSE(finder_drawn()); // the Zone view
         REQUIRE(luaL_dostring(L, "hs.ShowWindow('MapViewWnd', false) ui.SetSetting('atlas.route', '') ui.SetSetting('map.view', '')") == LUA_OK);
         s.frames(1);
@@ -4613,7 +4587,7 @@ TEST_CASE("UI packs (modern): the inventory, loot, trade, raid, guild, merchant,
                                  " ui.SetSetting('test.draw.PointMerchantWnd', '1')") == LUA_OK);
         s.frames(2);
         CHECK(ImGui::FindWindowByName("Zone Path###modern.ZonePathWnd") != nullptr);
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         REQUIRE(luaL_dostring(L, "ui.SetSetting('test.draw.MarketplaceWnd', '') ui.SetSetting('test.draw.ZonePathWnd', '')"
                                  " ui.SetSetting('test.draw.PointMerchantWnd', '')") == LUA_OK);
         s.frames(2);
@@ -4674,10 +4648,10 @@ TEST_CASE("UI packs: both guild banner pages draw the catalog and appearance edi
                 hs.ShowWindow(g, true)
             )lua") == LUA_OK);
             s.frames(3);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             REQUIRE(luaL_dostring(L, "assert(fixture.lists > 0); fixture.editing = true") == LUA_OK);
             s.frames(3);
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             CHECK(luaL_dostring(L, "assert(fixture.layers > 0)") == LUA_OK);
         }
         ImGui::DestroyContext(ctx);
@@ -4714,7 +4688,7 @@ TEST_CASE("UI packs (modern): the raid leader drags a member onto another group"
             u.general.parameter = group;
             u.class_ = 1;
             u.level = 50;
-            conn.receive_zone_packet_for_test(net::encode_raid_update(u));
+            conn.receive_zone_message_for_test({net::messages::GameOpcode::RaidUpdate, u});
         };
         raid(net::kRaidCreate, me);
         raid(net::kRaidAddMember, me, 0);
@@ -4727,7 +4701,7 @@ TEST_CASE("UI packs (modern): the raid leader drags a member onto another group"
         auto commands = [&] {
             std::vector<std::tuple<std::uint32_t, std::string, std::uint32_t>> v;
             for (const auto& p : rig.server.zone_log) {
-                if (p.opcode != net::to_wire(net::Op::RaidInvite)) continue;
+                if (p.opcode != net::rof2::to_wire(net::rof2::Op::RaidInvite)) continue;
                 ByteReader r(p.data);
                 std::uint32_t action = r.le<std::uint32_t>();
                 r.fixed_string(64);
@@ -4762,7 +4736,7 @@ TEST_CASE("UI packs (modern): the raid leader drags a member onto another group"
             hs.ShowWindow('RaidWindow', true)
         )lua");
         s.frames(4);
-        REQUIRE(ImGui::FindWindowByName("UI errors") == nullptr);
+        REQUIRE_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         auto at = [&](const char* text) -> ImVec2 {
             lua_getglobal(L, "drawn");
             lua_getfield(L, -1, text);
@@ -4811,7 +4785,7 @@ TEST_CASE("UI packs (modern): the raid leader drags a member onto another group"
         // unlocked: the drop locks the raid; nothing moves until the lock comes back
         CHECK(at("The game moves players only while the raid is locked. Dragging a player locks it for you.").x >= 0);
         drag(name("Alpha"), card("Group 3"));
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         REQUIRE(rig.until([&] { return count(net::kRaidCmdLock, me, 0) == 1; }));
         CHECK(count(net::kRaidMoveGroup, "Alpha", 2) == 0);
         raid(net::kRaidLock, me);
@@ -4833,7 +4807,7 @@ TEST_CASE("UI packs (modern): the raid leader drags a member onto another group"
         rig.run_for(std::chrono::milliseconds(100));
         CHECK(count(net::kRaidMoveGroup, "Bravo", 3) == 0);
         CHECK(count(net::kRaidCmdLock, me, 0) == 1); // (locked once only)
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
     }
     ImGui::DestroyContext(ctx);
 }
@@ -4876,7 +4850,7 @@ TEST_CASE("UI packs: raid member context menus and leadership hotkeys are reacha
             for (int i = 0; i < 18; ++i) {
                 raid.general.player_name = i ? "Member" + std::to_string(i) : me;
                 raid.general.parameter = static_cast<std::uint32_t>(i / 6);
-                conn.receive_zone_packet_for_test(net::encode_raid_update(raid));
+                conn.receive_zone_message_for_test({net::messages::GameOpcode::RaidUpdate, raid});
             }
             conn.set_raid_target("Member1");
             lua_State* L = s.lua.state();
@@ -4944,7 +4918,7 @@ TEST_CASE("UI packs: raid member context menus and leadership hotkeys are reacha
                 s.frames(1);
                 io.AddMouseButtonEvent(button, false);
                 s.frames(2);
-                CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+                CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             };
             auto click = [&](const std::string& id) {
                 const ImVec4 r = rectangle(id);
@@ -4976,7 +4950,7 @@ TEST_CASE("UI packs: raid member context menus and leadership hotkeys are reacha
             auto delegates = [&] {
                 std::vector<net::DelegateAbility> result;
                 for (const auto& p : rig.server.zone_log)
-                    if (p.opcode == net::to_wire(net::Op::RaidDelegateAbility))
+                    if (p.opcode == net::rof2::to_wire(net::rof2::Op::RaidDelegateAbility))
                         if (auto d = net::decode_delegate_ability(p)) result.push_back(*d);
                 return result;
             };
@@ -4994,7 +4968,7 @@ TEST_CASE("UI packs: raid member context menus and leadership hotkeys are reacha
             raid.general.player_name = raid.general.leader_name = me;
             raid.leadership[16] = 3;
             raid.leadership[0x13] = raid.leadership[0x14] = raid.leadership[0x1c] = 1;
-            conn.receive_zone_packet_for_test(net::encode_raid_update(raid));
+            conn.receive_zone_message_for_test({net::messages::GameOpcode::RaidUpdate, raid});
             s.frames(2);
             CHECK(conn.leadership_ability_active(0x13, 1));
             CHECK(conn.raid().leader == me);
@@ -5035,7 +5009,7 @@ TEST_CASE("UI packs: raid member context menus and leadership hotkeys are reacha
             raid = {};
             raid.general.action = net::kRaidSetLootType;
             raid.general.parameter = 3;
-            conn.receive_zone_packet_for_test(net::encode_raid_update(raid));
+            conn.receive_zone_message_for_test({net::messages::GameOpcode::RaidUpdate, raid});
             if (!modern) {
                 const ImVec4 r = rectangle("##assist");
                 auto& io = ImGui::GetIO();
@@ -5060,10 +5034,10 @@ TEST_CASE("UI packs: raid member context menus and leadership hotkeys are reacha
                 // Purchase is offered with any point, below the RoF2 cost too: the server's costs decide.
                 net::LeadershipExp points;
                 points.raid_points = 1;
-                conn.receive_zone_packet_for_test(net::encode(points));
+                conn.receive_zone_message_for_test({net::messages::GameOpcode::LeadershipExpUpdate, points});
                 run("assert(hs.ChildState('LeadershipWindow', 'LEW_PurchaseButton') == true)");
                 points.raid_points = 0;
-                conn.receive_zone_packet_for_test(net::encode(points));
+                conn.receive_zone_message_for_test({net::messages::GameOpcode::LeadershipExpUpdate, points});
                 run("assert(hs.ChildState('LeadershipWindow', 'LEW_PurchaseButton') == false)");
             }
             for (int n = 1; n <= 3; ++n) {
@@ -5128,11 +5102,8 @@ TEST_CASE("UI packs: leadership names follow received ranks, purchases and train
             s.host.conn = &conn;
             const std::string me = conn.character_name();
             auto owned = [&](std::uint32_t ability, std::uint32_t rank) {
-                ByteWriter w;
-                w.le(ability);
-                w.le(rank);
-                w.le<std::uint32_t>(0);
-                conn.receive_zone_packet_for_test(net::AppPacket(net::to_wire(net::Op::UpdateLeadershipAA), w.take()));
+                conn.receive_zone_message_for_test({net::messages::GameOpcode::UpdateLeadershipAA,
+                                                    net::LeadershipRank{ability, rank, 0}});
             };
             for (const std::uint32_t ability : {0u, 1u, 16u, 17u}) owned(ability, 1);
             owned(0, 3);
@@ -5145,12 +5116,12 @@ TEST_CASE("UI packs: leadership names follow received ranks, purchases and train
                     member.name = i ? "Friend" + std::to_string(i) : me;
                     u.members.push_back(member);
                 }
-                conn.receive_zone_packet_for_test(net::encode(u));
+                conn.receive_zone_message_for_test({net::messages::GameOpcode::GroupUpdateB, u});
             };
             net::GroupLeadershipUpdate active_group;
             active_group.ranks[0] = active_group.ranks[1] = active_group.ranks[8] = 1;
             group(2, "Friend1");
-            conn.receive_zone_packet_for_test(net::encode(active_group));
+            conn.receive_zone_message_for_test({net::messages::GameOpcode::GroupLeadershipAAUpdate, active_group});
             auto* L = s.lua.state();
             auto run = [&](const std::string& code) {
                 const int rc = luaL_dostring(L, code.c_str());
@@ -5191,7 +5162,7 @@ TEST_CASE("UI packs: leadership names follow received ranks, purchases and train
             auto render = [&] {
                 run("leadershipDrawn = {}");
                 s.frames(3);
-                REQUIRE(ImGui::FindWindowByName("UI errors") == nullptr);
+                REQUIRE_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
             };
             auto gold = [&](const char* list, const char* name) {
                 run(std::string("checkLeadershipColor('") + list + "', '" + name +
@@ -5220,7 +5191,7 @@ TEST_CASE("UI packs: leadership names follow received ranks, purchases and train
             conn.set_profile_for_test(profile);
             // The current leader's ranks take precedence even without a personal purchase.
             run("checkLeadershipColor('LEList1', 'Spell Awareness', 0, 1, 0, false)");
-            conn.receive_zone_packet_for_test(net::encode(net::GroupLeadershipUpdate{}));
+            conn.receive_zone_message_for_test({net::messages::GameOpcode::GroupLeadershipAAUpdate, net::GroupLeadershipUpdate{}});
             render();
             gold("LEList1", "NPC Health");
             gold("LEList1", "Mark NPC");
@@ -5230,28 +5201,28 @@ TEST_CASE("UI packs: leadership names follow received ranks, purchases and train
             run("checkLeadershipColor('LEList1', 'NPC Health', 192 / 255, 192 / 255, 192 / 255, true)");
             net::LeadershipExp points;
             points.group_points = 10;
-            conn.receive_zone_packet_for_test(net::encode(points));
+            conn.receive_zone_message_for_test({net::messages::GameOpcode::LeadershipExpUpdate, points});
             render();
             run("checkLeadershipColor('LEList1', 'NPC Health', 1, 1, 1, true)");
             run("checkLeadershipColor('LEList1', 'Delegate Mark NPC', 1, 1, 1, true)");
             owned(0, 0);
-            conn.receive_zone_packet_for_test(net::encode(points));
+            conn.receive_zone_message_for_test({net::messages::GameOpcode::LeadershipExpUpdate, points});
             render();
             run("checkLeadershipColor('LEList1', 'Delegate Mark NPC', 192 / 255, 192 / 255, 192 / 255, true)");
             owned(0, 0xffffffffu);
-            conn.receive_zone_packet_for_test(net::encode(points));
+            conn.receive_zone_message_for_test({net::messages::GameOpcode::LeadershipExpUpdate, points});
             render();
             run("checkLeadershipColor('LEList1', 'Mark NPC', 192 / 255, 192 / 255, 192 / 255, true)");
             run("checkLeadershipColor('LEList1', 'Delegate Mark NPC', 192 / 255, 192 / 255, 192 / 255, true)");
             owned(1, 1);
             render();
             gold("LEList1", "NPC Health");
-            conn.receive_zone_packet_for_test(net::encode(active_group));
+            conn.receive_zone_message_for_test({net::messages::GameOpcode::GroupLeadershipAAUpdate, active_group});
             group(2, "Friend1");
             render();
             CHECK_FALSE(conn.leadership_ability_active(1, 1));
             green("LEList1", "NPC Health");
-            conn.receive_zone_packet_for_test(net::encode_group_generic(net::Op::GroupDisbandYou, {me, me}));
+            conn.receive_zone_message_for_test({net::messages::GameOpcode::GroupDisbandYou, net::GroupGeneric{me, me}});
             render();
             gold("LEList1", "NPC Health");
 
@@ -5260,13 +5231,13 @@ TEST_CASE("UI packs: leadership names follow received ranks, purchases and train
             raid.general.leader_name = "Raider1";
             for (int i = 0; i < 17; ++i) {
                 raid.general.player_name = i ? "Raider" + std::to_string(i) : me;
-                conn.receive_zone_packet_for_test(net::encode_raid_update(raid));
+                conn.receive_zone_message_for_test({net::messages::GameOpcode::RaidUpdate, raid});
             }
             raid = {};
             raid.general.action = net::kRaidSetLeader;
             raid.general.leader_name = "Raider1";
             raid.leadership[16] = raid.leadership[17] = 1;
-            conn.receive_zone_packet_for_test(net::encode_raid_update(raid));
+            conn.receive_zone_message_for_test({net::messages::GameOpcode::RaidUpdate, raid});
             if (modern) {
                 std::optional<ImVec2> at;
                 ImGuiContext& g = *ImGui::GetCurrentContext();
@@ -5296,19 +5267,19 @@ TEST_CASE("UI packs: leadership names follow received ranks, purchases and train
             raid = {};
             raid.general.action = net::kRaidAddMember;
             raid.general.player_name = "Raider17";
-            conn.receive_zone_packet_for_test(net::encode_raid_update(raid));
+            conn.receive_zone_message_for_test({net::messages::GameOpcode::RaidUpdate, raid});
             render();
             CHECK(conn.leadership_ability_active(17, 1));
             CHECK_FALSE(conn.leadership_ability_active(16, 1));
             green("LEList2", "NPC Health");
             green("LEList2", "Mark NPC");
             raid.general.action = net::kRaidRemoveMember;
-            conn.receive_zone_packet_for_test(net::encode_raid_update(raid));
+            conn.receive_zone_message_for_test({net::messages::GameOpcode::RaidUpdate, raid});
             render();
             CHECK_FALSE(conn.leadership_ability_active(17, 1));
             green("LEList2", "NPC Health");
             raid.general.action = net::kRaidDisband;
-            conn.receive_zone_packet_for_test(net::encode_raid_update(raid));
+            conn.receive_zone_message_for_test({net::messages::GameOpcode::RaidUpdate, raid});
             render();
             gold("LEList2", "NPC Health");
         }
@@ -5367,7 +5338,7 @@ TEST_CASE("UI packs (modern): the Options window's Textures section picks the te
         // The Upscaler choices go on with the upscaler add-ons installed, one of them chosen.
         CHECK(asked.contains("upscaler"));
         CHECK(listed.contains("upscaler_providers"));
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
     }
     ImGui::DestroyContext(ctx);
 }
@@ -5499,7 +5470,7 @@ TEST_CASE("UI packs: Options changes the Find trail style and invisibility brack
             click(point("Bracket Invis vs. Undead"));
             CHECK(brackets == 0);
             CHECK(bracket_changes == std::vector<int>{1, 0});
-            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+            CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         }
         ImGui::DestroyContext(ctx);
     }
@@ -5587,7 +5558,7 @@ TEST_CASE("UI packs (modern): a resized bag window lays its slots out to its wid
         win = window();
         REQUIRE(win);
         CHECK(win->Pos.y + win->Size.y >= bottomOfRows(3));
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
     }
     ImGui::DestroyContext(ctx);
 }
@@ -5664,7 +5635,7 @@ ui.InvisibleButton = function(id, ...)
 end
 )lua");
         s.frames(3);
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
         REQUIRE(run("return tostring(targetIcon ~= nil and petIcon ~= nil)") == "true");
         auto centre = [&](const char* name) {
             lua_getglobal(L, name);
@@ -5718,7 +5689,7 @@ end
         run("menuPick = nil");
         release();
         closeMenu();
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
     }
     ImGui::DestroyContext(ctx);
 }
@@ -5814,7 +5785,7 @@ TEST_CASE("UI packs (modern): the Options search draws every tab, and only the s
         // Nothing matches: no section's heading or empty table, only the key list's own heading.
         CHECK(headings_for("zzqqxx") == "Key Bindings");
         CHECK(headings_for("") == all);
-        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        CHECK_MESSAGE(s.lua.load_status().error_count == 0, ui_errors(s.lua));
     }
     ImGui::DestroyContext(ctx);
 }

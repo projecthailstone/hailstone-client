@@ -1,4 +1,4 @@
-// Using items (net/game_connection_item_use.cpp): CInvSlot::HandleRButtonUp's request, Handle_OP_ItemVerifyReply's
+// Using items (net/connection/game_connection_item_use.cpp): CInvSlot::HandleRButtonUp's request, Handle_OP_ItemVerifyReply's
 // eating and casting and Cmd_useitem's arguments, against the mock EQEmu. (The NMS plugin's scribe path is tested in
 // its own repository.)
 
@@ -8,12 +8,16 @@
 #include <ctime>
 
 #include "mock_server/harness.h"
-#include "net/ability_packets.h"
-#include "net/item_packets.h"
+#include "net/messages/message.h"
+#include "net/messages/notice.h"
+#include "net/messages/spell.h"
+#include "net/protocol/rof2/packets/ability_packets.h"
+#include "net/protocol/rof2/packets/item_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::net;
 using namespace hailstone::test;
+namespace messages = hailstone::net::messages;
 
 namespace {
 
@@ -23,9 +27,9 @@ std::uint32_t u32_at(const AppPacket& p, std::size_t at) {
     return v;
 }
 
-const AppPacket* last_of(const std::vector<AppPacket>& log, Op op) {
+const AppPacket* last_of(const std::vector<AppPacket>& log, rof2::Op op) {
     for (auto it = log.rbegin(); it != log.rend(); ++it)
-        if (from_wire(it->opcode) == op) return &*it;
+        if (rof2::from_wire(it->opcode) == op) return &*it;
     return nullptr;
 }
 
@@ -58,8 +62,8 @@ TEST_CASE("item use: a right click sends OP_ItemVerifyRequest; the reply eats th
     REQUIRE(rig.to_zone());
     const ItemSlot rations = ItemSlot::possessions(23);
     CHECK(conn.right_click_item(rations) == GameConnection::SlotRightClick::None);
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::ItemVerifyRequest) == 1; }));
-    const AppPacket* req = last_of(rig.server.zone_log, Op::ItemVerifyRequest);
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::ItemVerifyRequest) == 1; }));
+    const AppPacket* req = last_of(rig.server.zone_log, rof2::Op::ItemVerifyRequest);
     REQUIRE(req);
     REQUIRE(req->data.size() == kItemVerifyRequestSize);
     CHECK(u32_at(*req, 0) == 0);           // possessions
@@ -69,28 +73,28 @@ TEST_CASE("item use: a right click sends OP_ItemVerifyRequest; the reply eats th
     // IsItemPending: a second click waits for the answer.
     conn.right_click_item(rations);
     rig.run_for(std::chrono::milliseconds(30));
-    CHECK(MockEqServer::count(rig.server.zone_log, Op::ItemVerifyRequest) == 1);
+    CHECK(MockEqServer::count(rig.server.zone_log, rof2::Op::ItemVerifyRequest) == 1);
 
     // EQEmu's reply (spell 0): hunger 5999 + 30 x 100 / 2 caps at 6000, OP_Consume {slot, -1, 1, 1}, one fewer.
     drain_chat(conn);
-    conn.receive_zone_packet_for_test(encode(ItemVerifyReply{rations, 0, 0}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemVerifyReply, ItemVerifyReply{rations, 0, 0}});
     CHECK(conn.spell_state().pending == 0);
     CHECK(conn.spell_state().hunger == 6000);
     CHECK(conn.inventory().at(rations)->stack_count == 4);
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::Consume) == 1; }));
-    const AppPacket* eat = last_of(rig.server.zone_log, Op::Consume);
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::Consume) == 1; }));
+    const AppPacket* eat = last_of(rig.server.zone_log, rof2::Op::Consume);
     REQUIRE(eat->data.size() == 24);
     CHECK(u32_at(*eat, 12) == 0xffffffffu);
     CHECK(u32_at(*eat, 16) == 1);
     CHECK(u32_at(*eat, 20) == 1);
 
     // Full now: 12074, nothing eaten or sent.
-    conn.receive_zone_packet_for_test(encode(ItemVerifyReply{rations, 0, 0}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemVerifyReply, ItemVerifyReply{rations, 0, 0}});
     CHECK(conn.inventory().at(rations)->stack_count == 4);
     rig.run_for(std::chrono::milliseconds(30));
-    CHECK(MockEqServer::count(rig.server.zone_log, Op::Consume) == 1);
+    CHECK(MockEqServer::count(rig.server.zone_log, rof2::Op::Consume) == 1);
     // A negative spell stops at the dispatch, after taking back the pending count (none left: stays 0).
-    conn.receive_zone_packet_for_test(encode(ItemVerifyReply{rations, -1, 0}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemVerifyReply, ItemVerifyReply{rations, -1, 0}});
     CHECK(conn.spell_state().pending == 0);
 }
 
@@ -104,7 +108,7 @@ TEST_CASE("item use: a food duration past 2^31 / 100 wraps as the original's 32-
     auto& conn = rig.conn;
     REQUIRE(rig.to_zone());
     const ItemSlot rations = ItemSlot::possessions(23);
-    conn.receive_zone_packet_for_test(encode(ItemVerifyReply{rations, 0, 0}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemVerifyReply, ItemVerifyReply{rations, 0, 0}});
     CHECK(conn.spell_state().hunger == static_cast<std::uint32_t>(5999 - 469762048));
 }
 
@@ -116,12 +120,10 @@ TEST_CASE("item use: the meal's add wraps in 32 bits from any level the server s
     Rig rig(config);
     auto& conn = rig.conn;
     REQUIRE(rig.to_zone());
-    ByteWriter st;
-    st.le<std::uint32_t>(0x80000000u);
-    st.le<std::uint32_t>(6000);
-    conn.receive_zone_packet_for_test(AppPacket(to_wire(Op::Stamina), st.take()));
+    conn.receive_zone_message_for_test({messages::GameOpcode::Stamina,
+                                        messages::HungerThirst{0x80000000u, 6000}});
     REQUIRE(conn.spell_state().hunger == 0x80000000u);
-    conn.receive_zone_packet_for_test(encode(ItemVerifyReply{ItemSlot::possessions(23), 0, 0}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemVerifyReply, ItemVerifyReply{ItemSlot::possessions(23), 0, 0}});
     CHECK(conn.spell_state().hunger == 6000);
 }
 
@@ -139,10 +141,10 @@ TEST_CASE("item use: a bag toggles its container, the bank and corpse paths send
     // An empty slot: nothing.
     CHECK(conn.right_click_item(ItemSlot::possessions(30)) == GameConnection::SlotRightClick::None);
     rig.run_for(std::chrono::milliseconds(30));
-    CHECK(MockEqServer::count(rig.server.zone_log, Op::ItemVerifyRequest) == 0);
+    CHECK(MockEqServer::count(rig.server.zone_log, rof2::Op::ItemVerifyRequest) == 0);
     // The sword (a common item, no click spell) still goes to the server.
     conn.right_click_item(ItemSlot::possessions(13));
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::ItemVerifyRequest) == 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::ItemVerifyRequest) == 1; }));
 }
 
 TEST_CASE("item use: Cmd_useitem's arguments") {
@@ -168,8 +170,8 @@ TEST_CASE("item use: Cmd_useitem's arguments") {
     conn.send_command("/useitem 24 9");
     CHECK(has_line(drain_chat(conn), "That is an invalid bag slot index."));
     conn.send_command("/useitem 24 2"); // (the bag itself is no common item: nothing went for "24 9")
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::ItemVerifyRequest) == 1; }));
-    const AppPacket* req = last_of(rig.server.zone_log, Op::ItemVerifyRequest);
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::ItemVerifyRequest) == 1; }));
+    const AppPacket* req = last_of(rig.server.zone_log, rof2::Op::ItemVerifyRequest);
     CHECK(u32_at(*req, 4) == (24u | 2u << 16));
 }
 
@@ -180,18 +182,18 @@ TEST_CASE("item use: a poison applies through OP_ApplyPoison (CEverQuest::ApplyP
     auto& conn = rig.conn;
     REQUIRE(rig.to_zone());
     const ItemSlot at = ItemSlot::possessions(25);
-    conn.receive_zone_packet_for_test(encode_skill_update(SkillUpdate{6, 0, 0})); // (the mock's skill n is n)
+    conn.receive_zone_message_for_test({messages::GameOpcode::SkillUpdate, SkillUpdate{6, 0, 0}}); // (the mock's skill n is n)
     drain_chat(conn);
     // No Apply Poison skill: 12383, still standing.
-    conn.receive_zone_packet_for_test(encode(ItemVerifyReply{at, 0, 0}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemVerifyReply, ItemVerifyReply{at, 0, 0}});
     CHECK(has_line(drain_chat(conn), "[12383]"));
     CHECK_FALSE(conn.applying_poison());
     CHECK_FALSE(conn.sitting());
 
-    conn.receive_zone_packet_for_test(encode_skill_update(SkillUpdate{6, 50, 0}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::SkillUpdate, SkillUpdate{6, 50, 0}});
     drain_chat(conn);
     // Standing: sits down, then begins.
-    conn.receive_zone_packet_for_test(encode(ItemVerifyReply{at, 0, 0}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemVerifyReply, ItemVerifyReply{at, 0, 0}});
     CHECK(has_line(drain_chat(conn), "[12382]"));
     CHECK(conn.sitting());
     CHECK(conn.applying_poison());
@@ -201,32 +203,32 @@ TEST_CASE("item use: a poison applies through OP_ApplyPoison (CEverQuest::ApplyP
     CHECK_FALSE(conn.applying_poison());
 
     // Again, and let the time run out: OP_ApplyPoison {25, -1, -1, 0, 0}, both counters raised.
-    conn.receive_zone_packet_for_test(encode(ItemVerifyReply{at, 0, 0}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemVerifyReply, ItemVerifyReply{at, 0, 0}});
     REQUIRE(conn.applying_poison());
     conn.update();
-    CHECK(MockEqServer::count(rig.server.zone_log, Op::ApplyPoison) == 0);
+    CHECK(MockEqServer::count(rig.server.zone_log, rof2::Op::ApplyPoison) == 0);
     conn.expire_poison_timer_for_test();
     conn.update();
     CHECK_FALSE(conn.applying_poison());
     CHECK(conn.spell_state().pending == 1);
     CHECK(conn.transact_state().currently_interacting == 1);
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::ApplyPoison) == 1; }));
-    const AppPacket* sent = last_of(rig.server.zone_log, Op::ApplyPoison);
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::ApplyPoison) == 1; }));
+    const AppPacket* sent = last_of(rig.server.zone_log, rof2::Op::ApplyPoison);
     REQUIRE(sent->data.size() == kApplyPoisonSize);
     CHECK(u32_at(*sent, 0) == (25u | 0xffffu << 16));
     CHECK(u32_at(*sent, 4) == 0xffffu);
     CHECK(u32_at(*sent, 8) == 0);
     // While it is out, another poison does not start.
-    conn.receive_zone_packet_for_test(encode(ItemVerifyReply{at, 0, 0}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemVerifyReply, ItemVerifyReply{at, 0, 0}});
     CHECK_FALSE(conn.applying_poison());
 
     // The reply ends the interaction and reports.
     drain_chat(conn);
-    conn.receive_zone_packet_for_test(encode(ApplyPoison{25, -1, -1, 0, 1}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::ApplyPoison, ApplyPoison{25, -1, -1, 0, 1}});
     CHECK(has_line(drain_chat(conn), "[12905]"));
     CHECK(conn.spell_state().pending == 0);
     CHECK(conn.transact_state().currently_interacting == 0);
-    conn.receive_zone_packet_for_test(encode(ApplyPoison{25, -1, -1, 0, 0}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::ApplyPoison, ApplyPoison{25, -1, -1, 0, 0}});
     CHECK(has_line(drain_chat(conn), "[12906]"));
 }
 
@@ -254,14 +256,10 @@ TEST_CASE("item recast timers: the item's own and the type's (GetItemRecastTimer
     CHECK(conn.item_recast_timer(nullptr) == 0);
 
     // No item cast under way: the packet is taken only with ignore_casting_requirement, then only the type's.
-    AppPacket d(to_wire(Op::ItemRecastDelay), std::vector<std::byte>(12));
     const std::uint32_t delay = 30, type = 5;
-    std::memcpy(d.data.data(), &delay, 4);
-    std::memcpy(d.data.data() + 4, &type, 4);
-    conn.receive_zone_packet_for_test(d);
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemRecastDelay, ItemReuseNotice{delay, type, false}});
     CHECK(conn.item_recast_timer(t) == 0);
-    d.data[8] = std::byte{1};
-    conn.receive_zone_packet_for_test(d);
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemRecastDelay, ItemReuseNotice{delay, type, true}});
     const std::uint32_t got = conn.item_recast_timer(t);
     CHECK(got >= now + 30);
     CHECK(got <= now + 32);
@@ -314,7 +312,7 @@ TEST_CASE("item clicks: CastSpell's attune and CanUseItem checks refuse quietly 
     auto recast = [&](std::int16_t slot) { return conn.item_recast_timer(conn.inventory().at(ItemSlot::possessions(slot))); };
     auto reply = [&](std::int16_t slot) {
         drain_chat(conn);
-        conn.receive_zone_packet_for_test(encode(ItemVerifyReply{ItemSlot::possessions(slot), 0, 0}));
+        conn.receive_zone_message_for_test({messages::GameOpcode::ItemVerifyReply, ItemVerifyReply{ItemSlot::possessions(slot), 0, 0}});
         rig.run_for(std::chrono::milliseconds(30));
         return drain_chat(conn);
     };
@@ -330,7 +328,7 @@ TEST_CASE("item clicks: CastSpell's attune and CanUseItem checks refuse quietly 
     // Attuned, the eye casts from a general slot: locally only, its recast timer set, and nothing sent.
     reply(30);
     CHECK(recast(30) >= static_cast<std::uint32_t>(std::time(nullptr)) + 29);
-    CHECK(MockEqServer::count(rig.server.zone_log, Op::CastSpell) == 0);
+    CHECK(MockEqServer::count(rig.server.zone_log, rof2::Op::CastSpell) == 0);
 }
 
 TEST_CASE("item clicks: the reply casts without OP_CastSpell; the server cast it on the request (@0x4bff71)") {
@@ -362,25 +360,25 @@ TEST_CASE("item clicks: the reply casts without OP_CastSpell; the server cast it
     auto& conn = rig.conn;
     REQUIRE(rig.to_zone());
     conn.set_spell_table_for_test(table);
-    auto count = [&](Op op) { return MockEqServer::count(rig.server.zone_log, op); };
+    auto count = [&](rof2::Op op) { return MockEqServer::count(rig.server.zone_log, op); };
 
     // The instant one: one request, the reply, no OP_CastSpell and nothing left pending; it can be clicked again.
     for (int n = 1; n <= 2; ++n) {
         conn.right_click_item(ItemSlot::possessions(27));
-        REQUIRE(rig.until([&] { return count(Op::ItemVerifyRequest) == n; }));
-        conn.receive_zone_packet_for_test(encode(ItemVerifyReply{ItemSlot::possessions(27), 0, 0}));
+        REQUIRE(rig.until([&] { return count(rof2::Op::ItemVerifyRequest) == n; }));
+        conn.receive_zone_message_for_test({messages::GameOpcode::ItemVerifyReply, ItemVerifyReply{ItemSlot::possessions(27), 0, 0}});
         rig.run_for(std::chrono::milliseconds(30));
-        CHECK(count(Op::CastSpell) == 0);
+        CHECK(count(rof2::Op::CastSpell) == 0);
         CHECK(conn.spell_state().pending == 0);
         CHECK_FALSE(conn.spell_state().casting.casting());
     }
 
     // The 3 s one: the cast bar runs locally, still without OP_CastSpell.
     conn.right_click_item(ItemSlot::possessions(28));
-    REQUIRE(rig.until([&] { return count(Op::ItemVerifyRequest) == 3; }));
-    conn.receive_zone_packet_for_test(encode(ItemVerifyReply{ItemSlot::possessions(28), 0, 0}));
+    REQUIRE(rig.until([&] { return count(rof2::Op::ItemVerifyRequest) == 3; }));
+    conn.receive_zone_message_for_test({messages::GameOpcode::ItemVerifyReply, ItemVerifyReply{ItemSlot::possessions(28), 0, 0}});
     rig.run_for(std::chrono::milliseconds(30));
-    CHECK(count(Op::CastSpell) == 0);
+    CHECK(count(rof2::Op::CastSpell) == 0);
     CHECK(conn.spell_state().casting.casting());
     CHECK(conn.spell_state().casting.spell == 500);
     CHECK(conn.spell_state().casting.cast_time == 3000);
@@ -404,10 +402,10 @@ TEST_CASE("auto inventory: worn stacks first, then a worn slot by the class chec
     REQUIRE(rig.to_zone());
     REQUIRE(conn.inventory().cursor());
     CHECK(conn.auto_inventory());
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::MoveItem) >= 2; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::MoveItem) >= 2; }));
     std::vector<MoveItem> moves;
     for (const auto& p : rig.server.zone_log)
-        if (from_wire(p.opcode) == Op::MoveItem)
+        if (rof2::from_wire(p.opcode) == rof2::Op::MoveItem)
             if (auto mv = decode_move_item(p)) moves.push_back(*mv);
     REQUIRE(moves.size() == 2);
     CHECK(moves[0].to.slot == kSlotAmmo);
@@ -428,5 +426,5 @@ TEST_CASE("the inventory doll: a held item is auto-inventoried (CInventoryWnd::H
     REQUIRE(conn.inventory().cursor());
     conn.drop_on_doll();
     CHECK_FALSE(conn.inventory().cursor());
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::MoveItem) >= 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, rof2::Op::MoveItem) >= 1; }));
 }

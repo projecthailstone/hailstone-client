@@ -12,6 +12,7 @@
 #include "game/group_rules.h"
 #include "game/trade_rules.h"
 #include "game/zone_lines.h"
+#include "net/protocol/rof2/opcode_map.h"
 #include "vector_files.h"
 
 using namespace hailstone::game;
@@ -224,7 +225,8 @@ TEST_CASE("vectors: Handle_OP_GroupInvite2") {
         st.pending_word_148 = 0x5eedface; // the generator's untouched marker
         st.pending_inviter = "";
         GroupInviteInput g;
-        g.opcode = in["opcode"].u32();
+        g.first_invite_opcode = in["opcode"].u32() ==
+                                hailstone::net::rof2::to_wire(hailstone::net::rof2::Op::GroupInvite);
         g.inviter = in["inviter"].text;
         g.my_name = in["my_name"].text;
         g.word_148 = in["word_148"].u32();

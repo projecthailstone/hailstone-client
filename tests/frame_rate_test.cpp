@@ -19,7 +19,7 @@
 #include "game/spells.h"
 #include "game/world_state.h"
 #include "game/mechanics/collision_movement.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "scratch_dir.h"
 
 using namespace hailstone;

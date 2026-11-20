@@ -12,9 +12,9 @@
 #include "app/player_movement.h"
 #include "game/spells.h"
 #include "mock_server/harness.h"
-#include "net/game_connection.h"
-#include "net/spell_packets.h"
-#include "net/zone_packets.h"
+#include "net/connection/game_connection.h"
+#include "net/protocol/rof2/packets/spell_packets.h"
+#include "net/protocol/rof2/packets/zone_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::net;
@@ -22,12 +22,12 @@ using game::mechanics::FlyMode;
 
 namespace {
 
-AppPacket fly_appearance(std::uint32_t id, std::uint32_t mode) {
+messages::GameMessage fly_appearance(std::uint32_t id, std::uint32_t mode) {
     SpawnAppearance a;
     a.spawn_id = static_cast<std::uint16_t>(id);
     a.type = 19;
     a.parameter = mode;
-    return encode(a);
+    return {messages::GameOpcode::SpawnAppearance, a};
 }
 
 // A spells_us.txt line: one effect in slot 1 (the rest 254) with its base and Base2, a long duration.
@@ -50,7 +50,7 @@ std::string spell_line(int id, int spa, int base2 = 0) {
 }
 
 void buff(GameConnection& conn, std::uint32_t slot, std::uint32_t spell, bool fade = false) {
-    BuffPacket bp;
+    messages::BuffChange bp;
     bp.entity_id = conn.world().player_id;
     bp.slot = slot;
     bp.fade = fade ? 1u : 0u;
@@ -59,7 +59,7 @@ void buff(GameConnection& conn, std::uint32_t slot, std::uint32_t spell, bool fa
     bp.buff.spell_id = spell;
     bp.buff.duration = 100;
     bp.buff.caster_id = conn.world().player_id;
-    conn.receive_zone_packet_for_test(encode(bp));
+    conn.receive_zone_message_for_test({messages::GameOpcode::Buff, bp});
 }
 
 struct FlyRig {
@@ -90,17 +90,17 @@ TEST_CASE("Fly mode: a server mode stands until the buffs change") {
     CHECK(r.frame() == FlyMode::Ground);
 
     // #set flymode 3 with no levitation: kept frame after frame.
-    conn.receive_zone_packet_for_test(fly_appearance(r.me(), 3));
+    conn.receive_zone_message_for_test(fly_appearance(r.me(), 3));
     CHECK(r.frame() == FlyMode::Water);
     CHECK(r.frame() == FlyMode::Water);
     // An unrelated buff lands: the cache rebuild puts it back on the ground.
     buff(conn, 0, 602);
     CHECK(r.frame() == FlyMode::Ground);
     // The same value again is a new setting.
-    conn.receive_zone_packet_for_test(fly_appearance(r.me(), 3));
+    conn.receive_zone_message_for_test(fly_appearance(r.me(), 3));
     CHECK(r.frame() == FlyMode::Water);
     // A value above 5 (PlayerPhysics_SetFlyMode throws) changes nothing.
-    conn.receive_zone_packet_for_test(fly_appearance(r.me(), 9));
+    conn.receive_zone_message_for_test(fly_appearance(r.me(), 9));
     CHECK(r.frame() == FlyMode::Water);
 }
 
@@ -110,7 +110,7 @@ TEST_CASE("Fly mode: #set flymode 0 while levitating lasts until the buffs chang
     r.frame();
     buff(conn, 0, 600);
     CHECK(r.frame() == FlyMode::Levitate);
-    conn.receive_zone_packet_for_test(fly_appearance(r.me(), 0));
+    conn.receive_zone_message_for_test(fly_appearance(r.me(), 0));
     CHECK(r.frame() == FlyMode::Ground);
     CHECK(r.frame() == FlyMode::Ground);
     buff(conn, 1, 602);
@@ -126,7 +126,7 @@ TEST_CASE("Fly mode: a server-set flying mode survives buff changes until a levi
     FlyRig r;
     auto& conn = r.rig.conn;
     r.frame();
-    conn.receive_zone_packet_for_test(fly_appearance(r.me(), 1));
+    conn.receive_zone_message_for_test(fly_appearance(r.me(), 1));
     CHECK(r.frame() == FlyMode::Flying);
     buff(conn, 0, 602);
     CHECK(r.frame() == FlyMode::Flying);
@@ -135,7 +135,7 @@ TEST_CASE("Fly mode: a server-set flying mode survives buff changes until a levi
     // A levitate buff landing replaces it, and its fading leaves the player on the ground.
     buff(conn, 1, 600);
     CHECK(r.frame() == FlyMode::Levitate);
-    conn.receive_zone_packet_for_test(fly_appearance(r.me(), 1));
+    conn.receive_zone_message_for_test(fly_appearance(r.me(), 1));
     CHECK(r.frame() == FlyMode::Flying);
     buff(conn, 1, 600, true);
     CHECK(r.frame() == FlyMode::Ground);
@@ -145,7 +145,7 @@ TEST_CASE("Fly mode: zoning in takes the spawn record, then the buffs") {
     FlyRig r;
     auto& conn = r.rig.conn;
     r.frame();
-    conn.receive_zone_packet_for_test(fly_appearance(r.me(), 4));
+    conn.receive_zone_message_for_test(fly_appearance(r.me(), 4));
     CHECK(r.frame() == FlyMode::Floating);
     // A reset (zoning) rebuilds from the buffs: no levitation, so the ground.
     r.m.reset({0, 0, 0}, 0);

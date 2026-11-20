@@ -20,7 +20,8 @@
 #include "game/spells.h"
 #include "game/world_state.h"
 #include "game_files.h"
-#include "net/zone_packets.h"
+#include "net/messages/zone.h"
+#include "net/protocol/rof2/packets/item_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::game;

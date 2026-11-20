@@ -34,10 +34,10 @@
 
 #include "game/coords.h"
 #include "game/world_state.h"
-#include "net/game_connection.h"
-#include "net/opcodes.h"
-#include "net/market_packets.h"
-#include "net/player_packets.h"
+#include "net/connection/game_connection.h"
+#include "net/protocol/rof2/opcode_map.h"
+#include "net/protocol/rof2/packets/market_packets.h"
+#include "net/protocol/rof2/packets/player_packets.h"
 
 namespace hailstone::probe {
 
@@ -70,14 +70,14 @@ public:
 
     void tap(const net::AppPacket& p) {
         if (!active()) return;
-        net::Op op = net::from_wire(p.opcode);
+        net::rof2::Op op = net::rof2::from_wire(p.opcode);
         switch (op) {
-        case net::Op::RequestDuel: case net::Op::DuelAccept: case net::Op::DuelDecline: case net::Op::InspectAnswer:
-        case net::Op::Trader: case net::Op::TraderShop: case net::Op::BecomeTrader: case net::Op::BazaarSearch:
-        case net::Op::TraderBulkSend: case net::Op::TraderDelItem: case net::Op::Barter: case net::Op::BuyerItems:
-        case net::Op::KeyRing: case net::Op::Surname: case net::Op::ReadBook: case net::Op::Bandolier:
-        case net::Op::ShopEnd: case net::Op::ShopEndConfirm: case net::Op::ItemPacket: case net::Op::MoneyUpdate: {
-            std::printf("  MARKET: got %s (%zu bytes):", net::op_name(op), p.data.size());
+        case net::rof2::Op::RequestDuel: case net::rof2::Op::DuelAccept: case net::rof2::Op::DuelDecline: case net::rof2::Op::InspectAnswer:
+        case net::rof2::Op::Trader: case net::rof2::Op::TraderShop: case net::rof2::Op::BecomeTrader: case net::rof2::Op::BazaarSearch:
+        case net::rof2::Op::TraderBulkSend: case net::rof2::Op::TraderDelItem: case net::rof2::Op::Barter: case net::rof2::Op::BuyerItems:
+        case net::rof2::Op::KeyRing: case net::rof2::Op::Surname: case net::rof2::Op::ReadBook: case net::rof2::Op::Bandolier:
+        case net::rof2::Op::ShopEnd: case net::rof2::Op::ShopEndConfirm: case net::rof2::Op::ItemPacket: case net::rof2::Op::MoneyUpdate: {
+            std::printf("  MARKET: got %s (%zu bytes):", net::rof2::op_name(op), p.data.size());
             for (std::size_t i = 0; i < p.data.size() && i < 32; ++i) std::printf(" %02x", std::to_integer<unsigned>(p.data[i]));
             std::printf("\n");
             break;
@@ -297,7 +297,7 @@ private:
                 b.item_id = cheapest->second.id;
                 b.price = cheapest->second.price;
                 b.quantity = 1;
-                conn.send_zone_packet(net::encode(b));
+                conn.send_zone_message(net::messages::outgoing(net::messages::GameOpcode::TraderShop, b));
                 std::printf("  MARKET: forced OP_TraderShop 10 for %s\n", b.item_name.c_str());
             }
             shop_at_ = now;

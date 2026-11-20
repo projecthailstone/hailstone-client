@@ -48,9 +48,6 @@ net::Item transfer_item(std::uint32_t number, std::uint64_t record, int slot) {
     item.evolving.progress = 12.5;
     return item;
 }
-void deliver(net::GameConnection& connection, const net::AppPacket& packet) {
-    net::GameConnectionTestAccess::handle_zone(connection, packet);
-}
 } // namespace
 
 TEST_CASE("hs evolving transfer: exact identities, approved pair and one confirmed request") {
@@ -114,7 +111,7 @@ TEST_CASE("hs evolving transfer: exact identities, approved pair and one confirm
     details.destination = destination;
     details.destination->name = "Projected destination";
     details.destination->evolving.evolve_level = 4;
-    deliver(rig.conn, net::encode(details));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::EvolveItem, details});
     lua.check(R"lua(
       local s=hs.ItemExpTransfer()
       _G.approved=s
@@ -150,7 +147,7 @@ TEST_CASE("hs evolving transfer: clearing, removed items and inactive sessions i
         and hs.ItemExpTransferSelect('source','11')
         and hs.ItemExpTransferSelect('destination','12')
     )lua");
-    deliver(rig.conn, net::encode(net::EvolvingTransferDetails{11,12,100,5,source,destination}));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::EvolveItem, net::EvolvingTransferDetails{11,12,100,5,source,destination}});
     lua.check(R"lua(
       _G.before=hs.ItemExpTransfer()
       return before.canTransfer and hs.ItemExpTransferSelect('destination','')
@@ -158,7 +155,7 @@ TEST_CASE("hs evolving transfer: clearing, removed items and inactive sessions i
         and not hs.ItemExpTransferConfirm(before.source,before.destination,before.revision)
         and hs.ItemExpTransferSelect('destination','12')
     )lua");
-    deliver(rig.conn, net::encode(net::EvolvingTransferDetails{11,12,100,5,source,destination}));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::EvolveItem, net::EvolvingTransferDetails{11,12,100,5,source,destination}});
     REQUIRE(inventory.take(source.slot));
     lua.check(R"lua(
       local s=hs.ItemExpTransfer()

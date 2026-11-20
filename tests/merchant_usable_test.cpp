@@ -11,9 +11,8 @@
 #include "game/mechanics/combat_ability.h"
 #include "game/spells.h"
 #include "mq_test_world.h"
-#include "net/item_packets.h"
-#include "net/merchant_packets.h"
-#include "net/packet_io.h"
+#include "net/messages/item.h"
+#include "net/messages/merchant.h"
 
 using namespace hailstone;
 
@@ -68,7 +67,7 @@ void open_merchant(net::GameConnection& c) {
     open.npc_id = m.id;
     open.player_id = world.player_id;
     open.rate = 1.0f;
-    c.receive_zone_packet_for_test(net::encode(open));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::ShopRequest, open});
     REQUIRE(c.merchant()->open);
 }
 
@@ -76,7 +75,7 @@ void open_merchant(net::GameConnection& c) {
 
 TEST_CASE("merchant: Show only items I can use leaves out what the character cannot use, and is on to start") {
     ImGuiContext* ctx = ImGui::CreateContext(); // the hs API reads the keyboard's modifiers
-    mq_test::World w("hailstone_merchant_usable_test"); // Tester: a human cleric
+    mq_test::World w("hailstone_merchant_usable_test", {}, true); // Tester: a human cleric
     auto& c = *w.conn;
 
     // Healing ranks 1..3 (group 900, subgroup 1); the book holds rank 3.
@@ -90,7 +89,24 @@ TEST_CASE("merchant: Show only items I can use leaves out what the character can
     c.set_spell_table_for_test(table);
     net::GameConnectionTestAccess::spells(c).book[0] = 803;
 
-    open_merchant(c);
+    auto& world = c.world_for_test();
+    game::Spawn m = *world.player();
+    m.id = 5001;
+    m.name = "Merchant00";
+    m.class_id = 41;
+    m.is_npc = true;
+    world.spawns[m.id] = m;
+    c.open_merchant(m.id);
+    net::MerchantClick open;
+    open.npc_id = m.id;
+    open.player_id = world.player_id;
+    open.rate = 1.0f;
+    c.receive_zone_message_for_test({net::messages::GameOpcode::ShopRequest, open});
+    REQUIRE(c.merchant()->open);
+    // The connected mock can populate a merchant catalog during zone entry.
+    // This test supplies exactly seven synthetic items; isolate that list from
+    // server fixtures so filtering assertions describe only these records.
+    net::GameConnectionTestAccess::merchant(c)->items.clear();
 
     auto potion = goods(1, "Potion");
     auto plate = goods(2, "Warrior Plate");
@@ -107,7 +123,7 @@ TEST_CASE("merchant: Show only items I can use leaves out what the character can
     shield.item.item_type = 20;
     shield.item.effects[net::kEffectScroll].effect = 810;
     for (const auto* ip : {&potion, &plate, &hat, &bag, &rk2, &shield})
-        c.receive_zone_packet_for_test(net::encode_item_packet(false, *ip));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::ItemPacket, *ip});
     REQUIRE(c.merchant()->items.size() == 6);
 
     app::UiHost host;
@@ -147,7 +163,7 @@ TEST_CASE("merchant: Show only items I can use leaves out what the character can
     REQUIRE(multiclass_table->get(811)->class_level[12] == 50);
     REQUIRE(prof.level < 50);
     c.set_spell_table_for_test(multiclass_table);
-    c.receive_zone_packet_for_test(net::encode_item_packet(false, mage_scroll));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::ItemPacket, mage_scroll});
     api.begin_frame();
     CHECK(lua.text(kNames) == "Potion,Satchel");
     c.set_player_classes(mage | enc | nec);
@@ -194,7 +210,7 @@ TEST_CASE("merchant: Usable only hides learned discipline tomes and lower ranks"
         item.item.classes = 1u << (profile.class_ - 1);
         item.item.item_type = net::kItemTypeScroll;
         item.item.effects[net::kEffectScroll].effect = static_cast<std::int32_t>(id);
-        c.receive_zone_packet_for_test(net::encode_item_packet(false, item));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::ItemPacket, item});
     };
     tome(1, "Tome: Guard", rank_one);
     tome(2, "Tome: Guard II", rank_two);

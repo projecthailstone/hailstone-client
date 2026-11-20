@@ -80,7 +80,6 @@ bool do_teleport(DoTeleportInput& in, const DoTeleportHooks& hooks);
 
 // SendTeleportIndexRequestAndWait @0x506560: +0x1f05 = 1, opcode 0xcadf {u32 index} on channel 4 (6 bytes),
 // then until the server's 0xcadf clears the flag: Sleep(100) and UdpManager_DeliverEvents(500).
-inline constexpr std::uint16_t kOpTeleportIndex = 0xcadf;
 
 // PlayerZoneClient::DoTeleportB @0x507ca0.
 struct TeleportBPlayer {
@@ -134,7 +133,6 @@ struct ZoneToBindPacket {
     std::uint8_t keep_items = 0;
     std::int32_t hp = 0, mana = 0, endurance = 0;
 };
-std::optional<ZoneToBindPacket> decode_zone_to_bind(std::span<const std::uint8_t> payload);
 struct ZoneToBindHooks {
     std::function<void()> deactivate_respawn_window;  // only when there is one; +0x1f5 = +0x196
     std::function<void()> activate_main_ui;           // unk_ApplyWindowPositions (ActivateMainUI)

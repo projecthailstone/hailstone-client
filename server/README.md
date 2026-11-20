@@ -148,7 +148,7 @@ Hailstone asks at the first zone-in of each login and holds the zone-in ("Downlo
 screen) until what changed has come.
 
 The zone they enter sends the files a 32 KB piece at a time as the client asks (`OP_HsFilesRequest` 0x1434,
-`OP_HsFiles` 0x1435; layout in the client's `src/net/server_files_packets.h`). It keeps up to eight files open, so
+`OP_HsFiles` 0x1435; layout in the client's `src/net/protocol/extensions/hailstone/server_files_packets.h`). It keeps up to eight files open, so
 players fetching different files do not make it reopen them at every piece.
 
 Rate limits:
@@ -192,7 +192,7 @@ archives are compressed inside.
 
 The Find window asks once a zone, the first time a player opens it there (`OP_HsQuestNpcsRequest` 0x1436). The
 script answers with the names of the zone's NPCs that have quests (`OP_HsQuestNpcs` 0x1437; layout in the client's
-`src/net/quest_npc_packets.h`).
+`src/net/protocol/extensions/hailstone/quest_npc_packets.h`).
 
 An NPC has quests when its own quest file handles `EVENT_ITEM` / `event_trade` (it takes hand-ins) or `EVENT_SAY` /
 `event_say` (it talks). The file is found as EQEmu finds it:
@@ -237,7 +237,7 @@ every quest folder, so the server's own `global_player` scripts keep running.
 
 The map window's zone finder shows the way from one zone to another (docs/navigation.md "Zone atlas"). The client
 asks once a session, the first time a player opens the map's World view (`OP_HsZoneLinksRequest` 0x1438), and gets
-every pair of zones a zone point joins (`OP_HsZoneLinks` 0x1439; layout in the client's `src/net/zone_link_packets.h`).
+every pair of zones a zone point joins (`OP_HsZoneLinks` 0x1439; layout in the client's `src/net/protocol/extensions/hailstone/zone_link_packets.h`).
 
 The list is:
 
@@ -277,4 +277,4 @@ The script then:
 
 Other clients, and Hailstone on a server without the script (or with `guild_invites_world` 0), keep EQEmu's
 same-zone invitation. Both packets are 80 bytes: `{u32 magic; u16 version 1; u16 action; char name[64];
-u32 guild id; u32 value}`; the actions are in `hailstone.lua` and `src/net/social_packets.h`.
+u32 guild id; u32 value}`; the actions are in `hailstone.lua` and `src/net/protocol/rof2/packets/social_packets.h`.

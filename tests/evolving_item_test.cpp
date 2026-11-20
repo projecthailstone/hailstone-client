@@ -14,12 +14,13 @@
 #include "game/item_display.h"
 #include "game/item_links.h"
 #include "mock_server/harness.h"
-#include "net/item_packets.h"
-#include "net/opcodes.h"
+#include "net/protocol/rof2/packets/item_packets.h"
+#include "net/protocol/rof2/opcode_map.h"
 #include "ui/item_windows.h"
 
 using namespace hailstone;
 using namespace hailstone::net;
+namespace messages = hailstone::net::messages;
 using namespace hailstone::test;
 
 namespace {
@@ -44,7 +45,7 @@ AppPacket progress(std::uint64_t key, std::uint32_t percent, std::uint32_t activ
     w.le(key);
     w.le(percent);
     w.le(active);
-    return AppPacket(to_wire(Op::EvolveItem), w.take());
+    return AppPacket(rof2::to_wire(rof2::Op::EvolveItem), w.take());
 }
 
 std::string final_link(const Item& item) {
@@ -55,16 +56,16 @@ std::string final_link(const Item& item) {
 
 std::size_t requests(const Rig& rig) {
     return static_cast<std::size_t>(std::count_if(rig.server.zone_log.begin(), rig.server.zone_log.end(),
-        [](const AppPacket& p) { return p.opcode == to_wire(Op::EvolveItem); }));
+        [](const AppPacket& p) { return p.opcode == rof2::to_wire(rof2::Op::EvolveItem); }));
 }
 
 void barrier(Rig& rig) {
     const auto count = [&] {
         return std::count_if(rig.server.zone_log.begin(), rig.server.zone_log.end(),
-            [](const AppPacket& p) { return p.opcode == 0x7f01; });
+            [](const AppPacket& p) { return p.opcode == rof2::to_wire(rof2::Op::RandomReq); });
     };
     const auto before = count();
-    rig.conn.send_zone_packet(AppPacket(0x7f01));
+    rig.conn.send_zone_message(messages::outgoing(messages::GameOpcode::RandomReq, RandomRollIntent{1, 1}));
     REQUIRE(rig.until([&] { return count() > before; }));
 }
 
@@ -178,7 +179,7 @@ TEST_CASE("evolving items: item-display links request native Final Result and sh
     Rig rig;
     REQUIRE(rig.to_zone());
     const Item item = evolving();
-    rig.conn.receive_zone_packet_for_test(encode_char_inventory({item}));
+    rig.conn.receive_zone_message_for_test({messages::GameOpcode::CharInventory, std::vector<Item>{item}});
     Display display(rig.conn);
     ui::show_item_info(display.windows, item);
     const auto link = final_link(item);
@@ -297,7 +298,7 @@ TEST_CASE("evolving items: received progress matches the full instance key and w
     bag.slot = ItemSlot::possessions(25);
     Item inside = evolving(bag_key, ItemSlot::possessions(25, 0));
     bag.contents.push_back({0, inside});
-    rig.conn.receive_zone_packet_for_test(encode_char_inventory({first, other, bag}));
+    rig.conn.receive_zone_message_for_test({messages::GameOpcode::CharInventory, std::vector<Item>{first, other, bag}});
     Display display(rig.conn);
     Item link_only = first;
     link_only.instance_id = link_only.parcel_item_id = 0;
@@ -327,7 +328,7 @@ TEST_CASE("evolving items: received progress matches the full instance key and w
     REQUIRE(after);
     CHECK(after->find("[6146] 2 5 125 ") != std::string::npos); // server reward overshoot does not grant a level
     const auto unchanged_revision = rig.conn.inventory().revision();
-    rig.conn.receive_zone_packet_for_test(progress(first_key, 125, 0));
+    rig.conn.receive_zone_message_for_test({messages::GameOpcode::EvolveItem, EvolvingItemUpdate{first_key, 125, 0}});
     CHECK(rig.conn.inventory().revision() == unchanged_revision);
     CHECK_FALSE(rig.conn.take_item_refresh());
 
@@ -338,9 +339,9 @@ TEST_CASE("evolving items: received progress matches the full instance key and w
     CHECK(display.windows.info[0].evolving.progress == 125);
     CHECK(display.windows.info[1].evolving.progress == 17);
     const auto revision = rig.conn.inventory().revision();
-    rig.conn.receive_zone_packet_for_test(progress(0x400000055ULL, 75));
-    rig.conn.receive_zone_packet_for_test(progress(first_key, 0x80000000u));
-    rig.conn.receive_zone_packet_for_test(progress(first_key, 25, 2));
+    rig.conn.receive_zone_message_for_test({messages::GameOpcode::EvolveItem, EvolvingItemUpdate{0x400000055ULL, 75, 1}});
+    rig.conn.receive_zone_message_for_test({messages::GameOpcode::EvolveItem, EvolvingItemUpdate{first_key, 0x80000000u, 1}});
+    rig.conn.receive_zone_message_for_test({messages::GameOpcode::EvolveItem, EvolvingItemUpdate{first_key, 25, 2}});
     CHECK(rig.conn.inventory().revision() == revision);
     CHECK_FALSE(rig.conn.take_item_refresh());
 

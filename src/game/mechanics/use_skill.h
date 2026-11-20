@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "game/mechanics/fpu.h"
+#include "game/mechanics/abilities.h"
 
 namespace hailstone::game::mechanics::useskill {
 
@@ -120,7 +121,7 @@ public:
     virtual void set_skill_last_used(std::uint32_t skill, std::int32_t time) = 0;
     virtual void set_skill_can_use(std::uint32_t skill, std::int32_t can_use) = 0;
     // UdpConnection::Send(4, buffer, 2 + payload): the opcode (CPacketScrambler::hton) and the payload.
-    virtual bool send(std::int32_t channel, std::uint16_t opcode, const std::vector<std::uint8_t>& payload) = 0;
+    virtual bool send(std::int32_t channel, const SkillSend& action) = 0;
     virtual void close_connection() = 0;                                           // NetMgr_CloseConnection
     virtual void debug_log_void_connection(std::uint32_t opcode) = 0;              // DebugLog_Printf
     virtual void send_ldon_inspect(std::int32_t a0, std::int32_t a1) = 0;

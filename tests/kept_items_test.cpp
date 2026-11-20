@@ -3,7 +3,7 @@
 #include <doctest/doctest.h>
 
 #include "game/kept_items.h"
-#include "net/item_packets.h"
+#include "net/protocol/rof2/packets/item_packets.h"
 
 using namespace hailstone;
 

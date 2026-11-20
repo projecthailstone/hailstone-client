@@ -20,8 +20,8 @@
 #include "app/lua_ui_menu.h"
 #include "game/slash_commands.h"
 #include "mock_server/harness.h"
-#include "net/merchant_packets.h"
-#include "net/tribute_packets.h"
+#include "net/protocol/rof2/packets/merchant_packets.h"
+#include "net/protocol/rof2/packets/tribute_packets.h"
 #include "ui/lua/lua_host.h"
 #include "scratch_dir.h"
 
@@ -279,7 +279,7 @@ TEST_CASE("Advanced Inventory selection and confirmation retain item instance an
     lua_pushlightuserdata(state, &mutation);
     lua_pushcclosure(state, [](lua_State* s) {
         const auto* change = static_cast<Mutation*>(lua_touserdata(s, lua_upvalueindex(1)));
-        change->conn->receive_zone_packet_for_test(net::encode_item_packet(false, {net::kItemPacketCharInventory, change->replacement}));
+        change->conn->receive_zone_message_for_test({net::messages::GameOpcode::ItemPacket, net::ItemPacket{net::kItemPacketCharInventory, change->replacement}});
         return 0;
     }, 1);
     lua_setglobal(state, "test_replace");
@@ -367,7 +367,7 @@ return selected.id, selected.serial, selected.quantity
     }
     SUBCASE("an unchanged selection starts the existing bulk job") { when = ChangeAt::Unchanged; }
     auto replace = [&] {
-        conn.receive_zone_packet_for_test(net::encode_item_packet(false, {net::kItemPacketCharInventory, mutation.replacement}));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::ItemPacket, net::ItemPacket{net::kItemPacketCharInventory, mutation.replacement}});
     };
     if (when == ChangeAt::Selection) {
         replace();
@@ -473,7 +473,7 @@ TEST_CASE("Advanced Inventory bulk destroy: what is chosen and carried, one item
     CHECK(plan[2].same(at(27)));
     CHECK(conn.start_bulk_job(M::Destroy, {at(13), at(23)}) == "Nothing chosen is something you carry that can be destroyed.");
 
-    const int moves = MockEqServer::count(rig.server.zone_log, net::Op::MoveItem);
+    const int moves = MockEqServer::count(rig.server.zone_log, net::rof2::Op::MoveItem);
     CHECK(conn.start_bulk_job(M::Destroy, chosen).empty());
     CHECK(conn.start_bulk_job(M::Destroy, chosen) == "Already busy with your items.");
     REQUIRE(conn.item_job());
@@ -488,8 +488,8 @@ TEST_CASE("Advanced Inventory bulk destroy: what is chosen and carried, one item
     CHECK(id_at(conn, 13) == 1001u);
     CHECK_FALSE(conn.inventory().cursor());
     // each one picked up, then destroyed from the cursor
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::Op::MoveItem) >= moves + 6; }));
-    CHECK(MockEqServer::count(rig.server.zone_log, net::Op::MoveItem) == moves + 6);
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::rof2::Op::MoveItem) >= moves + 6; }));
+    CHECK(MockEqServer::count(rig.server.zone_log, net::rof2::Op::MoveItem) == moves + 6);
 
     // not while something is held
     conn.click_slot(at(25), true, false);
@@ -530,12 +530,12 @@ TEST_CASE("Advanced Inventory bulk sell: the chosen carried items the open merch
     REQUIRE(conn.start_bulk_job(M::Sell, chosen).empty());
     // each sale waits for the merchant's answer
     for (int k = 1; k <= 2; ++k) {
-        REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::Op::ShopPlayerSell) == k; }));
+        REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::rof2::Op::ShopPlayerSell) == k; }));
         rig.run_for(std::chrono::milliseconds(200));
-        CHECK(MockEqServer::count(rig.server.zone_log, net::Op::ShopPlayerSell) == k);
+        CHECK(MockEqServer::count(rig.server.zone_log, net::rof2::Op::ShopPlayerSell) == k);
         std::optional<net::MerchantSell> sold;
         for (auto it = rig.server.zone_log.rbegin(); it != rig.server.zone_log.rend(); ++it)
-            if (net::from_wire(it->opcode) == net::Op::ShopPlayerSell) {
+            if (net::rof2::from_wire(it->opcode) == net::rof2::Op::ShopPlayerSell) {
                 sold = net::decode_merchant_sell(*it);
                 break;
             }
@@ -579,10 +579,10 @@ TEST_CASE("Advanced Inventory bulk tribute: donated one at a time to the open tr
 
     REQUIRE(conn.start_bulk_job(M::Tribute, chosen).empty());
     auto donation = [&](int k) {
-        REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::Op::TributeItem) == k; }));
+        REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::rof2::Op::TributeItem) == k; }));
         std::optional<net::TributeItem> t;
         for (auto it = rig.server.zone_log.rbegin(); it != rig.server.zone_log.rend() && !t; ++it)
-            if (net::from_wire(it->opcode) == net::Op::TributeItem) t = net::decode_tribute_item(*it);
+            if (net::rof2::from_wire(it->opcode) == net::rof2::Op::TributeItem) t = net::decode_tribute_item(*it);
         REQUIRE(t);
         CHECK(t->slot.same(net::ItemSlot::possessions(net::kSlotCursor))); // from the cursor, as the window's Donate
         CHECK(t->master_id == 77u);
@@ -592,7 +592,7 @@ TEST_CASE("Advanced Inventory bulk tribute: donated one at a time to the open tr
     net::TributeItem first = donation(1);
     CHECK(conn.inventory().cursor()->id == 2020u);
     rig.run_for(std::chrono::milliseconds(200)); // the next waits for the answer
-    CHECK(MockEqServer::count(rig.server.zone_log, net::Op::TributeItem) == 1);
+    CHECK(MockEqServer::count(rig.server.zone_log, net::rof2::Op::TributeItem) == 1);
     first.points = 50;
     rig.server.zone.send_reliable(net::encode(first));
     net::TributeItem second = donation(2);
@@ -736,7 +736,7 @@ return bank and bank.stale, ring and ring.stale, ring and ring.bag, live, age, n
         lua_settop(L, 0);
 
         // Nothing reaches the copy: a bank click, a withdraw, a destroy.
-        const int moves = MockEqServer::count(rig.server.zone_log, net::Op::MoveItem);
+        const int moves = MockEqServer::count(rig.server.zone_log, net::rof2::Op::MoveItem);
         REQUIRE(luaL_dostring(L, R"lua(
 hs.BankSlotClick(3, nil, "left", false)
 hs.BankSlotClick(3, 1, "left", false)
@@ -757,7 +757,7 @@ return w, d
         REQUIRE(luaL_dostring(L, "ui.SetSetting('advinv.view', 'grid')") == LUA_OK);
         frames();
         CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
-        CHECK(MockEqServer::count(rig.server.zone_log, net::Op::MoveItem) == moves);
+        CHECK(MockEqServer::count(rig.server.zone_log, net::rof2::Op::MoveItem) == moves);
 
         // Opened at a banker, the bank is what the server has: no longer stale (here, empty, as nothing came).
         REQUIRE(conn.activate_bank(rig.server.config.own_spawn_id));

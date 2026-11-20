@@ -6,14 +6,16 @@
 
 #include <cstring>
 #include <string>
+#include <vector>
+#include "net/messages/merchant.h"
 
 #include <imgui.h>
 #include <lua.hpp>
 
 #include "app/lua_ui.h"
 #include "mock_server/harness.h"
-#include "net/item_packets.h"
-#include "net/packet_io.h"
+#include "net/protocol/rof2/packets/item_packets.h"
+#include "net/protocol/rof2/wire_io.h"
 
 using namespace hailstone;
 using namespace hailstone::test;
@@ -32,14 +34,6 @@ void place_merchant(net::GameConnection& conn, std::uint8_t class_id) {
     m.class_id = class_id;
     m.is_npc = true;
     w.spawns[kMerchant] = m;
-}
-
-net::AppPacket text_packet(net::Op op, std::string_view prefix, const std::string& text) {
-    net::AppPacket p(net::to_wire(op), {});
-    for (char c : prefix) p.data.push_back(static_cast<std::byte>(c));
-    for (char c : text) p.data.push_back(static_cast<std::byte>(c));
-    p.data.push_back(std::byte{0});
-    return p;
 }
 
 struct Lua {
@@ -63,7 +57,7 @@ struct Lua {
 std::pair<std::uint32_t, std::string> last_link_request(const std::vector<net::AppPacket>& log) {
     const net::AppPacket* last = nullptr;
     for (const auto& p : log)
-        if (net::is_op(p, net::Op::ItemLinkResponse)) last = &p;
+        if (net::is_op(p, net::rof2::Op::ItemLinkResponse)) last = &p;
     REQUIRE(last);
     REQUIRE(last->data.size() == net::kItemLinkRequestSize);
     std::uint32_t id = 0, flags = 1;
@@ -80,7 +74,7 @@ void check_inspect(Rig& rig, Lua& lua, const std::string& window, const std::str
     auto& io = ImGui::GetIO();
     io.KeyShift = io.KeyCtrl = false;
     CHECK(lua.flag("return hs.ListClick('" + window + "', '" + list + "', 1, 'right', 0)"));
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::Op::ItemLinkResponse) >= 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::rof2::Op::ItemLinkResponse) >= 1; }));
     auto [id, sent] = last_link_request(rig.server.zone_log);
     CHECK(id == item_id);
     CHECK(sent == name);
@@ -89,12 +83,12 @@ void check_inspect(Rig& rig, Lua& lua, const std::string& window, const std::str
     CHECK(lua.flag("return hs.ListClick('" + window + "', '" + list + "', 1, 'left', 0)"));
     io.KeyCtrl = true;
     CHECK(lua.flag("return hs.ListClick('" + window + "', '" + list + "', 1, 'left', 0)"));
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::Op::ItemLinkResponse) >= 2; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::rof2::Op::ItemLinkResponse) >= 2; }));
 
     // Ctrl and a right click: the item preview, no inspect.
     CHECK(lua.flag("return hs.ListClick('" + window + "', '" + list + "', 1, 'right', 0)"));
-    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::Op::ItemPreviewRequest) >= 1; }));
-    CHECK(MockEqServer::count(rig.server.zone_log, net::Op::ItemLinkResponse) == 2);
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, net::rof2::Op::ItemPreviewRequest) >= 1; }));
+    CHECK(MockEqServer::count(rig.server.zone_log, net::rof2::Op::ItemLinkResponse) == 2);
     io.KeyCtrl = false;
 }
 
@@ -108,8 +102,10 @@ TEST_CASE("Adventure merchant (LDoN): a right click on a good inspects it") {
     place_merchant(conn, 61); // an LDoN merchant
     REQUIRE(conn.open_adventure_merchant(kMerchant));
     // Handle_OP_AdventureMerchantRequest: u8 count, then "^name|id|price|theme|stackable|lore|races|classes".
-    conn.receive_zone_packet_for_test(text_packet(net::Op::AdventureMerchantResponse, std::string(1, '\x02'),
-                                                  "^Cloak of Guk|1234|150|1|0|1|65535|65535^Ring of Takish|5678|40|5|0|1|65535|65535"));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::AdventureMerchantResponse,
+        std::vector<net::AdventureMerchantItem>{
+            {"Cloak of Guk", 1234, 150, 1, 65535, 65535, false, true},
+            {"Ring of Takish", 5678, 40, 5, 65535, 65535, false, true}}});
     REQUIRE(conn.adventure_merchant().items.size() == 2);
 
     app::UiHost host;
@@ -128,8 +124,8 @@ TEST_CASE("Alternate currency merchant: a right click on a good inspects it") {
     REQUIRE(rig.to_zone());
     place_merchant(conn, 70);
     REQUIRE(conn.open_point_merchant(kMerchant));
-    conn.receive_zone_packet_for_test(text_packet(net::Op::AltCurrencyMerchantReply, "",
-                                                  "31|1|31|2^Shiny Ring|1001|25|0|1|65535|65535^Old Boot|1002|3|0|1|1|2"));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::AltCurrencyMerchantReply,
+        net::PointMerchantList{31, {{"Shiny Ring", 1001, 25, 65535, 65535}, {"Old Boot", 1002, 3, 1, 2}}}});
     REQUIRE(conn.point_merchant().list.items.size() == 2);
 
     app::UiHost host;

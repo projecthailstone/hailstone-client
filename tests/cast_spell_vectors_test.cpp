@@ -30,7 +30,7 @@
 #include <vector>
 
 #include "game/mechanics/cast_spell.h"
-#include "net/spell_packets.h"
+#include "net/protocol/rof2/packets/spell_packets.h"
 #include "vector_files.h"
 
 using namespace hailstone::game::mechanics;

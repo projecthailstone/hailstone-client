@@ -11,7 +11,7 @@
 #include "game/mechanics/item_stats.h"
 #include "game/mechanics/shown_stats.h"
 #include "game/spells.h"
-#include "net/item_packets.h"
+#include "net/messages/item.h"
 
 namespace hailstone::game {
 

@@ -27,7 +27,7 @@ enum class NpcCategory : std::uint8_t {
     Guildmaster,     // 20..35, the class guildmasters (trainers)
     SpecialMerchant, // merchants for points and other currencies: 58, 59, 61, 67, 68, 70, 73
     Service,         // tribute (63, 64, 74), adventure recruiter (60), fellowship (69), mercenaries (71), real estate (72)
-    QuestGiver,      // none of the above, with quests by Hailstone's server script (net/quest_npc_packets.h)
+    QuestGiver,      // none of the above, with quests by Hailstone's server script (net/protocol/extensions/hailstone/quest_npc_packets.h)
     PointOfInterest, // on the server's findable list, and none of the above
 };
 inline constexpr int kNpcCategoryCount = 7;

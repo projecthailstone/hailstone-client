@@ -6,7 +6,8 @@
 #include "app/login_token_session.h"
 #include "core/wipe.h"
 #include "mock_server/harness.h"
-#include "net/login.h"
+#include "net/connection/login_client.h"
+#include "net/messages/login.h"
 
 using namespace hailstone;
 using namespace hailstone::net;
@@ -132,7 +133,7 @@ TEST_CASE("mock login: a launcher ticket authenticates through the world charact
 
 TEST_CASE("mock login: token authentication handles a fragmented maximum-size opaque ticket") {
     auto config = MockConfig::standard();
-    config.login_token = std::string(login_codec::kMaxLoginTokenBytes, 'x');
+    config.login_token = std::string(messages::kMaxLoginTokenBytes, 'x');
     const auto token = config.login_token;
     LoginRig rig(std::move(config));
     rig.client.start_token("127.0.0.1", rig.server.login.port(), token);
@@ -193,7 +194,7 @@ TEST_CASE("mock login: only the server's replacement token can authorize an expl
 TEST_CASE("mock login: invalid tokens fail locally before opening a session") {
     LoginRig rig;
     for (const auto& token : {std::string(), std::string("one\0two", 7),
-                              std::string(login_codec::kMaxLoginTokenBytes + 1, 'x')}) {
+                              std::string(messages::kMaxLoginTokenBytes + 1, 'x')}) {
         rig.client.start_token("127.0.0.1", rig.server.login.port(), token);
         CHECK(rig.client.state() == LoginState::Failed);
         CHECK(rig.client.error_id() == 0);

@@ -8,10 +8,10 @@
 #include "app/lua_ui.h"
 #include "core/byte_io.h"
 #include "mock_server/harness.h"
-#include "net/dz_packets.h"
-#include "net/group_packets.h"
-#include "net/social_packets.h"
-#include "net/task_packets.h"
+#include "net/protocol/rof2/packets/dz_packets.h"
+#include "net/protocol/rof2/packets/group_packets.h"
+#include "net/protocol/rof2/packets/social_packets.h"
+#include "net/protocol/rof2/packets/task_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::net;
@@ -25,7 +25,7 @@ void raid_update(GameConnection& conn, std::uint32_t action, const std::string& 
     update.general.action = action;
     update.general.player_name = name;
     update.general.leader_name = leader;
-    conn.receive_zone_packet_for_test(encode_raid_update(update));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::RaidUpdate, update});
 }
 
 struct RaidRequest {
@@ -36,7 +36,7 @@ struct RaidRequest {
 std::vector<RaidRequest> invitations(const MockEqServer& server) {
     std::vector<RaidRequest> result;
     for (const auto& packet : server.zone_log) {
-        if (packet.opcode != to_wire(Op::RaidInvite)) continue;
+        if (packet.opcode != rof2::to_wire(rof2::Op::RaidInvite)) continue;
         ByteReader reader(packet.data);
         auto action = reader.le<std::uint32_t>();
         std::string member = reader.fixed_string(64);
@@ -47,16 +47,16 @@ std::vector<RaidRequest> invitations(const MockEqServer& server) {
 }
 
 void expedition(GameConnection& conn) {
-    conn.receive_zone_packet_for_test(encode(DzInfo{true, 72, "Test expedition", "SomeoneElse"}));
-    conn.receive_zone_packet_for_test(encode(std::vector<DzMember>{{"gEnNrO", DzMemberStatus::Online},
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::DzExpeditionInfo, DzInfo{true, 72, "Test expedition", "SomeoneElse"}});
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::DzMemberList, std::vector<DzMember>{{"gEnNrO", DzMemberStatus::Online},
                                                                 {"existing", DzMemberStatus::Online},
-                                                                {"ExpeditionOnly", DzMemberStatus::Offline}}));
+                                                                {"ExpeditionOnly", DzMemberStatus::Offline}}});
 }
 
 void shared_task(GameConnection& conn) {
-    conn.receive_zone_packet_for_test(encode(std::vector<SharedTaskMember>{{"gEnNrO", false},
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::SharedTaskMemberList, std::vector<SharedTaskMember>{{"gEnNrO", false},
                                                                         {"Existing", true},
-                                                                        {"TaskOnly", false}}));
+                                                                        {"TaskOnly", false}}});
 }
 
 } // namespace
@@ -89,8 +89,8 @@ TEST_CASE("raid window: expedition and task buttons invite missing roster member
     CHECK(sent[1].leader == "Gennro");
     CHECK(conn.raid().members.size() == 2); // invitations wait for server acceptance
     for (const auto& packet : rig.server.zone_log) {
-        CHECK(packet.opcode != to_wire(Op::DzAddPlayer));
-        CHECK(packet.opcode != to_wire(Op::SharedTaskAddPlayer));
+        CHECK(packet.opcode != rof2::to_wire(rof2::Op::DzAddPlayer));
+        CHECK(packet.opcode != rof2::to_wire(rof2::Op::SharedTaskAddPlayer));
     }
 }
 
@@ -128,7 +128,7 @@ TEST_CASE("raid roster invitations recheck lock, leadership, capacity and source
     conn.send_command("/dzlisttimers"); // a later packet fences all preceding no-send paths
     REQUIRE(rig.until([&] {
         for (const auto& packet : rig.server.zone_log)
-            if (packet.opcode == to_wire(Op::DzListTimers)) return true;
+            if (packet.opcode == rof2::to_wire(rof2::Op::DzListTimers)) return true;
         return false;
     }));
     CHECK(invitations(rig.server).empty());
@@ -185,12 +185,12 @@ TEST_CASE("raid group moves retain delegates, marks and active ranks until a rea
     RaidUpdate ranks;
     ranks.general.action = kRaidSetLeaderAbilities;
     ranks.leadership[16] = 3;
-    conn.receive_zone_packet_for_test(encode_raid_update(ranks));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::RaidUpdate, ranks});
     const auto self = conn.world().player_id;
-    conn.receive_zone_packet_for_test(encode(DelegateAbility{4, 0, 0, self, "Gennro"}, Op::RaidDelegateAbility));
-    conn.receive_zone_packet_for_test(encode(DelegateAbility{3, 1, 0, 77, "Assist"}, Op::RaidDelegateAbility));
-    conn.receive_zone_packet_for_test(encode_mark_npc(Op::MarkRaidNPC, MarkNpc{101, 1, "Target"}));
-    conn.receive_zone_packet_for_test(encode_mark_npc(Op::SetGroupTarget, MarkNpc{101, 1, "Target"}));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::RaidDelegateAbility, DelegateAbility{4, 0, 0, self, "Gennro"}});
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::RaidDelegateAbility, DelegateAbility{3, 1, 0, 77, "Assist"}});
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::MarkRaidNPC, MarkNpc{101, 1, "Target"}});
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::SetGroupTarget, MarkNpc{101, 1, "Target"}});
 
     raid_update(conn, kRaidRemoveMember, "Assist");
     raid_update(conn, kRaidAddMember, "Assist");
@@ -235,7 +235,7 @@ TEST_CASE("raid delegation refuses stale clicks after rank or leadership changes
         update.general.leader_name = leader;
         update.leadership[19] = assist;
         update.leadership[20] = 1;
-        conn.receive_zone_packet_for_test(encode_raid_update(update));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::RaidUpdate, update});
     };
     ranks("Gennro", 1);
     conn.set_raid_target("Member0");
@@ -246,7 +246,7 @@ TEST_CASE("raid delegation refuses stale clicks after rank or leadership changes
     auto count = [&] {
         std::size_t result = 0;
         for (const auto& packet : rig.server.zone_log)
-            if (packet.opcode == to_wire(Op::RaidDelegateAbility)) ++result;
+            if (packet.opcode == rof2::to_wire(rof2::Op::RaidDelegateAbility)) ++result;
         return result;
     };
     REQUIRE(api.child_state("RaidWindow", "RAID_MainAssistButton") == true);

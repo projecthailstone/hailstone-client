@@ -1,7 +1,7 @@
 #pragma once
 
 // The tradeskill window (CTradeSkillWnd, EQUI_TradeskillWnd.xml): the recipes a tradeskill container can make, as
-// EQEmu's recipe packets give them (net/door_packets.h "recipes"), one recipe's components, favourites and the
+// EQEmu's recipe packets give them (net/protocol/rof2/packets/door_packets.h "recipes"), one recipe's components, favourites and the
 // auto combine (CTradeSkillWnd::WndNotification @0x77e7f0, HandleCombine @0x77e100, the button states of
 // sub_0077c9b0, the favourites of CTradeSkillWnd_LoadFavoritesFromIni @0x77c0c0 / SaveFavoritesToIni @0x77b7a0).
 
@@ -14,8 +14,8 @@
 #include <vector>
 
 #include "game/inventory.h"
-#include "net/door_packets.h"
-#include "net/item_packets.h"
+#include "net/messages/door.h"
+#include "net/messages/item.h"
 
 namespace hailstone::game {
 

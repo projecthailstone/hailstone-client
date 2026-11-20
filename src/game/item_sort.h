@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "game/inventory.h"
-#include "net/item_packets.h"
+#include "net/messages/item.h"
 
 namespace hailstone::game {
 

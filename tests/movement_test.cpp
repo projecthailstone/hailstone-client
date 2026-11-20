@@ -1,5 +1,5 @@
 // The original's movement rules (game/mechanics/movement.h, physics.h) and
-// the movement packets (net/movement_packets.h). Expected values are worked
+// the movement packets (net/protocol/rof2/packets/movement_packets.h). Expected values are worked
 // out by hand from the original's instructions (the addresses in the
 // headers).
 
@@ -14,7 +14,7 @@
 
 #include "game/mechanics/movement.h"
 #include "game/mechanics/physics.h"
-#include "net/movement_packets.h"
+#include "net/protocol/rof2/packets/movement_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::game::mechanics;

@@ -11,7 +11,7 @@
 
 #include "core/sha256.h"
 #include "core/binary_measurement.h"
-#include "net/item_packets.h"
+#include "net/protocol/rof2/packets/item_packets.h"
 #include "game/nameplate_canvas.h"
 #include "game/server_ext_chain.h"
 #include "mq/commands.h"
@@ -2136,14 +2136,13 @@ TEST_CASE("native plugins: get_raid_data_bulk roster, pets, positions and edge c
     CHECK(h.printed_line("[Probe] raid 72: M72 0 g0 f0 l50 c1 hp-1 mp-1 ep-1 pet0 ph-1"));
 }
 TEST_CASE("native plugins: cursor_origin gives the cursor item's origin, and needs 'read'") {
-    using A = net::GameConnectionTestAccess;
     auto server_item = [](std::uint32_t id) {
         net::ItemPacket ip;
         ip.type = net::kItemPacketTrade;
         ip.item.id = id;
         ip.item.name = "Found";
         ip.item.slot = net::ItemSlot::possessions(net::kSlotCursor);
-        return net::encode_item_packet(false, ip);
+        return net::messages::GameMessage{net::messages::GameOpcode::ItemPacket, ip};
     };
     {
         Host h(false, nullptr, HAILSTONE_PROBE_PLUGIN);
@@ -2151,7 +2150,7 @@ TEST_CASE("native plugins: cursor_origin gives the cursor item's origin, and nee
         REQUIRE(h.plugins->load("HostProbe"));
         h.run("/probecursor");
         CHECK(h.printed_line("[Probe] cursor origin 0")); // nothing held
-        A::handle_zone(*h.world.conn, server_item(2001));
+        h.world.conn->receive_zone_message_for_test(server_item(2001));
         REQUIRE(h.world.conn->inventory().cursor());
         h.run("/probecursor");
         CHECK(h.printed_line("[Probe] cursor origin 2")); // HAILSTONE_CURSOR_ORIGIN_SERVER
@@ -2159,7 +2158,7 @@ TEST_CASE("native plugins: cursor_origin gives the cursor item's origin, and nee
     Host h(false, nullptr, HAILSTONE_PROBE_PLUGIN);
     h.approve(plugin::kCapAll & ~plugin::kCapRead);
     REQUIRE(h.plugins->load("HostProbe"));
-    A::handle_zone(*h.world.conn, server_item(2001));
+    h.world.conn->receive_zone_message_for_test(server_item(2001));
     REQUIRE(h.world.conn->inventory().cursor());
     h.run("/probecursor");
     CHECK(h.printed_line("[Probe] cursor origin 0"));

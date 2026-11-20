@@ -11,8 +11,8 @@
 #include "game/death_report.h"
 #include "mock_server/harness.h"
 #include "mq_test_world.h"
-#include "net/packet_io.h"
-#include "net/player_packets.h"
+#include "net/protocol/rof2/wire_io.h"
+#include "net/protocol/rof2/packets/player_packets.h"
 #include "plugin/hooks.h"
 
 using namespace hailstone;
@@ -39,7 +39,7 @@ AppPacket tracking_reply(std::initializer_list<TrackRow> rows) {
         w.le<std::uint8_t>(0); // pet
         w.le<std::uint8_t>(0); // mercenary
     }
-    return make_packet(Op::Track, std::move(w));
+    return make_packet(rof2::Op::Track, std::move(w));
 }
 
 void publish_tracking(Rig& rig, std::initializer_list<TrackRow> rows) {
@@ -54,16 +54,16 @@ void publish_tracking(Rig& rig, std::initializer_list<TrackRow> rows) {
 
 void tracking_barrier(Rig& rig) {
     const auto before = rig.server.zone_log.size();
-    rig.conn.send_zone_packet(AppPacket(0x7f01));
+    rig.conn.send_zone_message(messages::outgoing(messages::GameOpcode::RandomReq, RandomRollIntent{1, 1}));
     REQUIRE(rig.until([&] {
-        return rig.server.zone_log.size() > before && rig.server.zone_log.back().opcode == 0x7f01;
+        return rig.server.zone_log.size() > before && rig.server.zone_log.back().opcode == rof2::to_wire(rof2::Op::RandomReq);
     }));
 }
 
 std::vector<std::uint32_t> tracked_packets(const Rig& rig) {
     std::vector<std::uint32_t> ids;
     for (const auto& p : rig.server.zone_log) {
-        if (!is_op(p, Op::TrackTarget)) continue;
+        if (!is_op(p, rof2::Op::TrackTarget)) continue;
         REQUIRE(p.data.size() == 4);
         ByteReader r(p.data);
         ids.push_back(r.le<std::uint32_t>());
@@ -145,7 +145,7 @@ TEST_CASE("Tracking death: a tracked spawn stops once and leaves the cached list
     c.set_track_sort(0);
     CHECK(tracking_ids(c) == (dead == c.world().player_id ? std::vector<std::int32_t>{} : std::vector<std::int32_t>{102}));
     c.track_spawn(static_cast<std::int32_t>(dead));
-    c.receive_zone_packet_for_test(encode(death_of(dead)));
+    c.receive_zone_message_for_test({messages::GameOpcode::Death, death_of(dead)});
     tracking_barrier(rig);
     CHECK(tracked_packets(rig) == std::vector<std::uint32_t>{0});
     CHECK_FALSE(has_line(rig.chat(), "[12102]"));
@@ -195,7 +195,7 @@ TEST_CASE("Tracking death: a death for an unknown world spawn leaves tracking al
     publish_tracking(rig, {{900, "Unknown_Spawn"}, {102, "Guard_Bob"}});
     begin_tracking(rig, 900);
     const auto revision = rig.conn.tracking().revision;
-    rig.conn.receive_zone_packet_for_test(encode(death_of(900)));
+    rig.conn.receive_zone_message_for_test({messages::GameOpcode::Death, death_of(900)});
     CHECK(rig.conn.tracking().tracked == 900);
     CHECK(rig.conn.tracking().revision == revision);
     CHECK(tracking_ids(rig.conn) == std::vector<std::int32_t>{900, 102});
@@ -217,7 +217,7 @@ TEST_CASE("Tracking death: an outgoing hook can replace tracking but cannot revi
     SUBCASE("attempt to track the dying spawn again") { replacement = 101; }
     const auto owner = hooks.new_owner("tracking replacement test");
     bool replaced = false;
-    hooks.on_packet(owner, plugin::Stream::Zone, plugin::Direction::Out, to_wire(Op::TrackTarget),
+    hooks.on_packet(owner, plugin::Stream::Zone, plugin::Direction::Out, rof2::to_wire(rof2::Op::TrackTarget),
         [&](AppPacket& p) {
             ByteReader r(p.data);
             if (r.le<std::uint32_t>() == 0 && !replaced) {

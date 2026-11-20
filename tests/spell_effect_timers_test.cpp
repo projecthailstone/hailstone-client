@@ -5,7 +5,7 @@
 
 #include "game/spell_effect_timers.h"
 #include "mock_server/harness.h"
-#include "net/spell_packets.h"
+#include "net/messages/spell.h"
 
 using namespace hailstone;
 using namespace hailstone::test;
@@ -106,10 +106,10 @@ TEST_CASE("effect packets: OP_SpellEffect and the nimbus packets reach the queue
     auto& conn = rig.conn;
     REQUIRE(rig.to_zone());
     conn.take_effect_packets();
-    conn.receive_zone_packet_for_test(net::encode(net::SpellEffectPacket{468, 12, 12, 500, 0, 3000, true, true, 0}));
-    conn.receive_zone_packet_for_test(net::encode(net::NimbusEffect{12, 468}, true));
-    conn.receive_zone_packet_for_test(net::encode(net::NimbusEffect{12, 468}, false));
-    conn.receive_zone_packet_for_test(net::encode(net::SpellEffectPacket{468, 12, 13, 0, 0, 0, false, false, 0}));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::SpellEffect, net::messages::SpellVisualEffect{468, 12, 12, 500, 0, 3000, true, true}});
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::AddNimbusEffect, net::messages::NimbusVisualEffect{12, 468}});
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::RemoveNimbusEffect, net::messages::NimbusVisualEffect{12, 468}});
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::SpellEffect, net::messages::SpellVisualEffect{468, 12, 13, 0, 0, 0, false, false}});
     auto q = conn.take_effect_packets();
     using Kind = net::EffectPacketCue::Kind;
     REQUIRE(q.size() == 4);

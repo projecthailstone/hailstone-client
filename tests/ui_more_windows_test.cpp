@@ -17,8 +17,10 @@
 #include "app/lua_ui_windows.h"
 #include "core/ini_file.h"
 #include "game_files.h"
-#include "net/game_connection.h"
-#include "net/opcodes.h"
+#include "net/connection/game_connection.h"
+#include "net/messages/name_change.h"
+#include "net/messages/zone.h"
+#include "net/messages/world.h"
 #include "ui/dev_screens.h"
 #include "scratch_dir.h"
 
@@ -58,18 +60,7 @@ struct Harness {
         ImGui::DestroyContext(ctx);
         fs::remove_all(dir);
     }
-    void packet(net::Op op, std::vector<std::byte> data = {}) {
-        conn.receive_zone_packet_for_test(net::AppPacket(net::to_wire(op), std::move(data)));
-    }
 };
-
-std::vector<std::byte> rename_answer(const std::string& name, std::int32_t result) {
-    std::vector<std::byte> b(0x84);
-    for (std::size_t i = 0; i < name.size(); ++i) b[i] = static_cast<std::byte>(name[i]);
-    auto r = static_cast<std::uint32_t>(result);
-    for (int i = 0; i < 4; ++i) b[0x80 + static_cast<std::size_t>(i)] = static_cast<std::byte>((r >> (8 * i)) & 0xff);
-    return b;
-}
 
 } // namespace
 
@@ -78,7 +69,7 @@ TEST_CASE("Name change window: the reminder, Disable Reminder, the command's che
     if (!game) return;
     Harness t(*game);
     CHECK_FALSE(t.api->shown("NameChangeWnd"));
-    t.packet(net::Op::InvokeNameChangeLazy);
+    t.conn.receive_zone_message_for_test({net::messages::GameOpcode::NameChangeNotice, net::messages::NameChangeNotice{net::messages::NameSubject::Character, true}});
     REQUIRE(t.api->shown("NameChangeWnd"));
     CHECK(t.api->child_text("NameChangeWnd", "NCW_CloseButton") == "Remind Me Later");
     CHECK(t.api->child_text("NameChangeWnd", "NCW_Prompt")->rfind("You are eligible for a name change!", 0) == 0);
@@ -90,9 +81,9 @@ TEST_CASE("Name change window: the reminder, Disable Reminder, the command's che
     CHECK_FALSE(t.api->shown("NameChangeWnd"));
     CHECK(t.char_ini["Preferences/DisableNameChangeReminder"] == "1");
     // The lazy invitation now stays away; the immediate one turns the reminder back on.
-    t.packet(net::Op::InvokeNameChangeLazy);
+    t.conn.receive_zone_message_for_test({net::messages::GameOpcode::NameChangeNotice, net::messages::NameChangeNotice{net::messages::NameSubject::Character, true}});
     CHECK_FALSE(t.api->shown("NameChangeWnd"));
-    t.packet(net::Op::InvokeNameChangeImmediate);
+    t.conn.receive_zone_message_for_test({net::messages::GameOpcode::NameChangeNotice, net::messages::NameChangeNotice{net::messages::NameSubject::Character, true, true}});
     CHECK(t.api->shown("NameChangeWnd"));
     CHECK(t.char_ini["Preferences/DisableNameChangeReminder"] == "0");
     CHECK(t.api->click_child("NameChangeWnd", "NCW_CloseButton"));
@@ -100,7 +91,7 @@ TEST_CASE("Name change window: the reminder, Disable Reminder, the command's che
     // The ini's flag is read when the character enters the world.
     t.char_ini["Preferences/DisablePetNameChangeReminder"] = "1";
     t.conn.load_name_change_flags();
-    t.packet(net::Op::InvokeChangePetName);
+    t.conn.receive_zone_message_for_test({net::messages::GameOpcode::NameChangeNotice, net::messages::NameChangeNotice{net::messages::NameSubject::Pet, true}});
     CHECK_FALSE(t.api->shown("NameChangePetWnd"));
     // /changepetname with no name: the manual window, Close and no Disable Reminder.
     t.conn.name_change_command(net::GameConnection::kNamePet, "");
@@ -116,7 +107,7 @@ TEST_CASE("Name change window: the reminder, Disable Reminder, the command's che
     CHECK(t.conn.confirmation()->text.find("Fluffy") != std::string::npos);
     t.conn.answer_confirmation(false);
     // The server's answer: printed, shown as an OK dialog, and a success closes the window.
-    t.packet(net::Op::ChangePetName, rename_answer("Fluffy", 1));
+    t.conn.receive_zone_message_for_test({net::messages::GameOpcode::NameChangeNotice, net::messages::NameChangeNotice{net::messages::NameSubject::Pet, false, false, true, 1}});
     REQUIRE(t.conn.confirmation());
     CHECK(t.conn.confirmation()->ok_only);
     t.conn.answer_confirmation(false);
@@ -438,7 +429,7 @@ TEST_CASE("Character creation (stock page): race, class, deity and city from wor
     data.combos.push_back({0, 1, 2, 202, 7, 2});
     data.combos.push_back({0, 1, 1, 201, 7, 2}); // Human Warrior
     data.combos.push_back({2, 128, 2, 202, 7, 106}); // an Iksar Cleric, Kunark required
-    t.conn.receive_world_packet_for_test(encode(data));
+    t.conn.receive_world_message_for_test({net::messages::GameOpcode::CharacterCreateRequest, data});
     REQUIRE(t.conn.char_create_data());
     std::string sent;
     net::CharCreate request;
@@ -489,39 +480,17 @@ TEST_CASE("Tribute trophy window: refused without House of Thule; the personal a
     CHECK(t.api->list_texts("TributeTrophyWnd", "TTW_AvailableTrophyBenefitList").empty());
 }
 
-namespace {
-std::vector<std::byte> special_message(std::uint8_t speak, std::uint8_t journal, const std::string& sayer, const std::string& text) {
-    std::vector<std::byte> b;
-    auto put = [&](std::uint32_t v, int n) {
-        for (int i = 0; i < n; ++i) b.push_back(static_cast<std::byte>((v >> (8 * i)) & 0xff));
-    };
-    put(speak, 1);
-    put(journal, 1);
-    put(0, 1);   // language
-    put(10, 4);  // type
-    put(0, 4);   // target
-    for (char c : sayer) b.push_back(static_cast<std::byte>(c));
-    b.push_back(std::byte{0});
-    put(10, 4), put(20, 4), put(30, 4);
-    for (char c : text) b.push_back(static_cast<std::byte>(c));
-    b.push_back(std::byte{0});
-    return b;
-}
-} // namespace
-
 TEST_CASE("NPC journal: OP_SpecialMesg lines kept while logging, the lists, a category, a search, Save") {
     const GameDir* game = test::game_dir();
     if (!game) return;
     Harness t(*game);
-    std::vector<std::byte> exp(68);
-    exp[64] = std::byte{0x30}; // Lost Dungeons of Norrath and Gates of Discord
-    t.conn.receive_world_packet_for_test(net::AppPacket(net::to_wire(net::Op::ExpansionInfo), exp));
+    t.conn.receive_world_message_for_test({net::messages::GameOpcode::ExpansionInfo, std::uint32_t{0x30}}); // Lost Dungeons and Gates
     // the character's UI ini with JournalLog on
     { std::ofstream(t.dir / "UI_Journal.ini") << "[JournalNPCWnd]\nJournalLog=1\n"; }
     t.api->load_layout(t.dir / "defaults.ini", t.dir / "UI_Journal.ini", {});
-    t.packet(net::Op::SpecialMesg, special_message(1, 2, "Guard Gehnus", "Hail, traveler."));
-    t.packet(net::Op::SpecialMesg, special_message(1, 0, "Guard Gehnus", "Not for the journal."));
-    t.packet(net::Op::SpecialMesg, special_message(1, 2, "Merchant Ilia", "Buy something!"));
+    t.conn.receive_zone_message_for_test({net::messages::GameOpcode::SpecialMesg, net::SpecialMessage{1, 2, 0, 10, 0, "Guard Gehnus", {10, 20, 30}, "Hail, traveler."}});
+    t.conn.receive_zone_message_for_test({net::messages::GameOpcode::SpecialMesg, net::SpecialMessage{1, 0, 0, 10, 0, "Guard Gehnus", {10, 20, 30}, "Not for the journal."}});
+    t.conn.receive_zone_message_for_test({net::messages::GameOpcode::SpecialMesg, net::SpecialMessage{1, 2, 0, 10, 0, "Merchant Ilia", {10, 20, 30}, "Buy something!"}});
     t.api->begin_frame(); // the window takes the lines
     t.api->show("JournalNPCWnd", true);
     REQUIRE(t.api->shown("JournalNPCWnd"));

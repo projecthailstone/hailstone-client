@@ -56,11 +56,10 @@ public:
     // the last one less than 1 s after the last sample is not taken.
     bool record(const std::array<float, 3>& position, std::uint32_t reason, std::uint32_t now, const Gate& gate);
 
-    // 0x56e680(buffer, force): the oldest samples, at most 10000, each as {f32 Y, f32 X, f32 Z, u8 reason, u16
-    // the sample time's low word, u16 the entry count (counting up)}; without `force` it stops at a sample not older
-    // than 2 s. Returns the payload (count x 17 + 1 bytes; the last byte is not written by the original: 0 here),
-    // empty when no sample was taken.
-    std::vector<std::byte> take(bool force, std::uint32_t now);
+    // The tracker emits values, not the RoF2 17-byte wire records. The per-entry ordinal
+    // is retained because the original increments it independently of the sample sequence.
+    struct HistoryEntry { Sample sample; std::uint16_t ordinal = 0; };
+    std::vector<HistoryEntry> take(bool force, std::uint32_t now);
 
     // 0x56e510.
     void flush();

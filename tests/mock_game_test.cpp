@@ -5,6 +5,8 @@
 
 #include <doctest/doctest.h>
 
+#include <any>
+
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -14,9 +16,10 @@
 #include "core/ini_file.h"
 #include "game/coords.h"
 #include "mock_server/harness.h"
-#include "net/chat_server.h"
-#include "net/door_packets.h"
-#include "net/packet_io.h"
+#include "net/connection/chat_client.h"
+#include "net/protocol/rof2/packets/door_packets.h"
+#include "net/protocol/rof2/wire_io.h"
+#include "net/session/soe/options.h"
 #include "platform/udp_socket.h"
 
 using namespace hailstone;
@@ -26,16 +29,52 @@ using namespace hailstone::test;
 namespace {
 
 // True when `want` occurs in `log` in this order (other packets may sit between).
-bool in_order(const std::vector<AppPacket>& log, std::initializer_list<Op> want) {
+bool in_order(const std::vector<AppPacket>& log, std::initializer_list<rof2::Op> want) {
     auto it = want.begin();
     for (const auto& p : log)
-        if (it != want.end() && from_wire(p.opcode) == *it) ++it;
+        if (it != want.end() && rof2::from_wire(p.opcode) == *it) ++it;
     return it == want.end();
 }
 
 bool near(float a, float b, float eps = 0.2f) { return std::fabs(a - b) <= eps; }
 
 } // namespace
+
+TEST_CASE("mock RoF2 fixtures have explicitly empty spell and race tables") {
+    EmptyGameDir dir;
+    GameDir game(dir.path());
+    auto spells = game.read("spells_us.txt");
+    REQUIRE(spells);
+    CHECK(spells->empty());
+    auto racedata = game.read("racedata.txt");
+    REQUIRE(racedata);
+    CHECK_FALSE(racedata->empty());
+}
+
+TEST_CASE("mock world handshake recognizes standard RoF2 control packets") {
+    MockConfig config = MockConfig::standard();
+    config.send_chat_server = true;
+    Rig rig(config);
+    REQUIRE(rig.to_zone());
+    CHECK(rig.conn.max_characters() == 8u);
+    CHECK(rig.conn.protocol_diagnostics().empty());
+}
+
+TEST_CASE("unknown zone opcodes log their raw value and size without assuming a stock RoF2 message") {
+    Rig rig;
+    REQUIRE(rig.to_zone());
+    REQUIRE(rig.conn.protocol_diagnostics().empty());
+    // An unknown application opcode can belong to a server-specific extension.
+    // Do not interpret its payload as a known stock message or log its bytes.
+    rig.server.zone.send_reliable(AppPacket{0xbeef, {std::byte{0x11}, std::byte{0x22}, std::byte{0x33}}});
+    REQUIRE(rig.until([&] { return !rig.conn.protocol_diagnostics().empty(); }));
+    const std::string& diagnostic = rig.conn.protocol_diagnostics().back();
+    CHECK(diagnostic.find("zone codec [rof2]") != std::string::npos);
+    CHECK(diagnostic.find("unrecognized application wire opcode") != std::string::npos);
+    CHECK(diagnostic.find("wire 0xbeef") != std::string::npos);
+    CHECK(diagnostic.find("payload 3 bytes") != std::string::npos);
+    CHECK(diagnostic.find("11 22 33") == std::string::npos);
+}
 
 // ---------------------------------------------------------------- world and zone-in
 
@@ -54,11 +93,11 @@ void check_full_zone_in(Rig& rig) {
     CHECK(server.login_infos[0].session_key == "ABCDEFGHIJ");
     CHECK_FALSE(server.login_infos[0].zoning);
     REQUIRE_FALSE(server.world_log.empty());
-    CHECK(from_wire(server.world_log[0].opcode) == Op::SendLoginInfo);
+    CHECK(rof2::from_wire(server.world_log[0].opcode) == rof2::Op::SendLoginInfo);
     CHECK(server.world_log[0].data.size() == kLoginInfoSize);
-    for (Op crc : {Op::World_Client_CRC1, Op::World_Client_CRC2, Op::World_Client_CRC3})
+    for (rof2::Op crc : {rof2::Op::World_Client_CRC1, rof2::Op::World_Client_CRC2, rof2::Op::World_Client_CRC3})
         CHECK(MockEqServer::count(server.world_log, crc) >= 1);
-    CHECK(in_order(server.world_log, {Op::SendLoginInfo, Op::World_Client_CRC1, Op::EnterWorld}));
+    CHECK(in_order(server.world_log, {rof2::Op::SendLoginInfo, rof2::Op::World_Client_CRC1, rof2::Op::EnterWorld}));
     REQUIRE(conn.characters().size() == 1);
     CHECK(conn.characters()[0].name == "Gennro");
     CHECK(conn.characters()[0].level == 50);
@@ -66,17 +105,17 @@ void check_full_zone_in(Rig& rig) {
 
     // Zone: OP_ZoneEntry (76 bytes, the character's name), then the client's own requests in the documented order.
     REQUIRE_FALSE(server.zone_log.empty());
-    CHECK(from_wire(server.zone_log[0].opcode) == Op::ZoneEntry);
+    CHECK(rof2::from_wire(server.zone_log[0].opcode) == rof2::Op::ZoneEntry);
     CHECK(server.zone_log[0].data.size() == kZoneEntryRequestSize);
     auto entry = decode_zone_entry_request(server.zone_log[0]);
     REQUIRE(entry);
     CHECK(entry->name == "Gennro");
-    CHECK(in_order(server.zone_log, {Op::ZoneEntry, Op::ReqClientSpawn, Op::SendExpZonein, Op::WorldObjectsSent,
-                                     Op::ClientReady}));
-    CHECK(MockEqServer::count(server.zone_log, Op::ReqClientSpawn) == 1);
-    CHECK(MockEqServer::count(server.zone_log, Op::SendExpZonein) == 1);
-    CHECK(MockEqServer::count(server.zone_log, Op::WorldObjectsSent) == 1);
-    CHECK(MockEqServer::count(server.zone_log, Op::ClientReady) == 1);
+    CHECK(in_order(server.zone_log, {rof2::Op::ZoneEntry, rof2::Op::ReqClientSpawn, rof2::Op::SendExpZonein, rof2::Op::WorldObjectsSent,
+                                     rof2::Op::ClientReady}));
+    CHECK(MockEqServer::count(server.zone_log, rof2::Op::ReqClientSpawn) == 1);
+    CHECK(MockEqServer::count(server.zone_log, rof2::Op::SendExpZonein) == 1);
+    CHECK(MockEqServer::count(server.zone_log, rof2::Op::WorldObjectsSent) == 1);
+    CHECK(MockEqServer::count(server.zone_log, rof2::Op::ClientReady) == 1);
     CHECK(server.zone_entries == 1);
 
     // Own character: the profile, own spawn and HP.
@@ -84,7 +123,6 @@ void check_full_zone_in(Rig& rig) {
     CHECK(conn.profile()->name == "Gennro");
     CHECK(conn.profile()->zone_id == 2);
     CHECK(conn.profile()->cur_hp == 4321);
-    CHECK(conn.profile()->trailing_bytes == 0);
     CHECK(conn.world().player_id == 7);
     CHECK(conn.player_status().level == 50);
     // OP_HPUpdate after OP_ClientReady carries the maxima the profile lacks.
@@ -135,8 +173,8 @@ void check_full_zone_in(Rig& rig) {
 
     // docs/protocol/rof2-packets.md (World): the checksums, then OP_WorldClientReady once (DoCharacterSelection);
     // OP_WorldComplete after OP_ZoneServerInfo, and the zone is connected after world dropped the link.
-    CHECK(MockEqServer::count(server.world_log, Op::WorldClientReady) == 1);
-    CHECK(in_order(server.world_log, {Op::World_Client_CRC3, Op::WorldClientReady, Op::EnterWorld, Op::WorldComplete}));
+    CHECK(MockEqServer::count(server.world_log, rof2::Op::WorldClientReady) == 1);
+    CHECK(in_order(server.world_log, {rof2::Op::World_Client_CRC3, rof2::Op::WorldClientReady, rof2::Op::EnterWorld, rof2::Op::WorldComplete}));
     // The membership world sent (EQEmu: gold, 25 entries of which the original keeps 22) and its feature table.
     REQUIRE(conn.membership());
     CHECK(conn.membership()->level == 2);
@@ -147,9 +185,9 @@ void check_full_zone_in(Rig& rig) {
     CHECK(conn.membership_details()->classes.size() == 1);
     // The tribute lists are asked for on the first zone-in: personal, then guild (not in a guild here), then the
     // client spawn (ProcessGame, then DoMainLoop).
-    CHECK(MockEqServer::count(server.zone_log, Op::SendTributes) == 1);
-    CHECK(MockEqServer::count(server.zone_log, Op::RequestGuildTributes) == 1);
-    CHECK(in_order(server.zone_log, {Op::UpdateAA, Op::SendTributes, Op::RequestGuildTributes, Op::ReqClientSpawn}));
+    CHECK(MockEqServer::count(server.zone_log, rof2::Op::SendTributes) == 1);
+    CHECK(MockEqServer::count(server.zone_log, rof2::Op::RequestGuildTributes) == 1);
+    CHECK(in_order(server.zone_log, {rof2::Op::UpdateAA, rof2::Op::SendTributes, rof2::Op::RequestGuildTributes, rof2::Op::ReqClientSpawn}));
 
     // The MOTD and the zone message reached the chat window.
     auto lines = rig.chat();
@@ -160,7 +198,7 @@ void check_full_zone_in(Rig& rig) {
 } // namespace
 
 TEST_CASE("mock server: world auth, character select and zone-in, with the original's session timers") {
-    // The only test that keeps the default SessionOptions: 150 ms multi-buffer hold, 20 ms service pass.
+    // The only test that keeps the default soe::Options: 150 ms multi-buffer hold, 20 ms service pass.
     Rig rig(MockConfig::standard(), ConnectionOptions{});
     check_full_zone_in(rig);
 }
@@ -224,9 +262,9 @@ TEST_CASE("mock server: chat, spawns, HP, items and position updates in zone") {
 
     // ---- chat from the client: OP_ChannelMessage on the say channel (8).
     conn.say("Hail, Guard_Bob");
-    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, Op::ChannelMessage) == 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, rof2::Op::ChannelMessage) == 1; }));
     auto sent = std::find_if(server.zone_log.begin(), server.zone_log.end(),
-                             [](const AppPacket& p) { return from_wire(p.opcode) == Op::ChannelMessage; });
+                             [](const AppPacket& p) { return rof2::from_wire(p.opcode) == rof2::Op::ChannelMessage; });
     auto said = decode_channel_message(*sent);
     REQUIRE(said);
     CHECK(said->sender == "Gennro");
@@ -309,7 +347,7 @@ TEST_CASE("mock server: chat, spawns, HP, items and position updates in zone") {
 
 TEST_CASE("mock server: OP_ClientUpdate is sent at most every 280 ms, with the current position, only when it changed") {
     // docs/protocol/rof2-packets.md: "OP_ClientUpdate (46 B) when moving"; the rate is the client's kPositionInterval
-    // (280 ms, net/game_connection.cpp). The client has no clock seam (game_connection.cpp reads
+    // (280 ms, net/connection/game_connection.cpp). The client has no clock seam (game_connection.cpp reads
     // steady_clock directly), so this test runs for real time, with bounds that hold however slow the machine is.
     Rig rig;
     REQUIRE(rig.to_zone());
@@ -392,16 +430,16 @@ TEST_CASE("mock server: zone lines and server-requested zoning go through world 
     REQUIRE(rig.until([&] { return !conn.zone_change_pending(); }));
     CHECK(has_line(rig.chat(), "You can't go there right now."));
     CHECK(conn.state() == ConnectionState::InZone);
-    CHECK(MockEqServer::count(server.zone_log, Op::ZoneChange) == 1);
+    CHECK(MockEqServer::count(server.zone_log, rof2::Op::ZoneChange) == 1);
 
     // "Not ready" (-1) within 7 s: the same request again 500 ms later (RequestZoneChangeStatusBlocking); then yes.
     server.zone_change_answers = {-1, 1};
     REQUIRE(conn.request_zone_change(1, 0, glm::vec3(10.0f, 20.0f, 3.0f)));
-    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, Op::ZoneChange) == 3; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, rof2::Op::ZoneChange) == 3; }));
     // Each request is OP_ClientUpdate (the zone point is chosen from it), then OP_ZoneChange.
     std::vector<ZoneChange> requests;
     for (const auto& p : server.zone_log)
-        if (is_op(p, Op::ZoneChange)) requests.push_back(*decode_zone_change(p));
+        if (is_op(p, rof2::Op::ZoneChange)) requests.push_back(*decode_zone_change(p));
     REQUIRE(requests.size() == 3);
     for (const auto& r : requests) {
         CHECK(r.char_name == "Gennro");
@@ -413,7 +451,7 @@ TEST_CASE("mock server: zone lines and server-requested zoning go through world 
         CHECK(r.y == 10.0f);
         CHECK(r.z == 3.0f);
     }
-    CHECK(in_order(server.zone_log, {Op::ClientUpdate, Op::ZoneChange}));
+    CHECK(in_order(server.zone_log, {rof2::Op::ClientUpdate, rof2::Op::ZoneChange}));
 
     // The answer: world again, with zoning set, then the new zone's zone-in.
     REQUIRE(rig.until([&] { return server.zone_entries == 2 && conn.state() == ConnectionState::InZone; }));
@@ -421,23 +459,23 @@ TEST_CASE("mock server: zone lines and server-requested zoning go through world 
     CHECK(server.login_infos[1].zoning);
     CHECK(server.login_infos[1].account_id == "77");
     CHECK(server.login_infos[1].session_key == "ABCDEFGHIJ");
-    CHECK(MockEqServer::count(server.world_log, Op::EnterWorld) == 2);
+    CHECK(MockEqServer::count(server.world_log, rof2::Op::EnterWorld) == 2);
     auto last_enter = std::find_if(server.world_log.rbegin(), server.world_log.rend(),
-                                   [](const AppPacket& p) { return is_op(p, Op::EnterWorld); });
+                                   [](const AppPacket& p) { return is_op(p, rof2::Op::EnterWorld); });
     REQUIRE(last_enter != server.world_log.rend());
     CHECK(decode_enter_world(*last_enter)->name == "Gennro"); // the name world sent while zoning
     CHECK_FALSE(conn.zone_change_pending());
     CHECK(has_line(rig.chat(), "Zoning..."));
     // MoveToZone: on the success answer OP_DeleteSpawn with our own id (4 bytes); the zone drops the link, then world.
     auto own_delete = std::find_if(server.zone_log.begin(), server.zone_log.end(),
-                                   [](const AppPacket& p) { return is_op(p, Op::DeleteSpawn); });
+                                   [](const AppPacket& p) { return is_op(p, rof2::Op::DeleteSpawn); });
     REQUIRE(own_delete != server.zone_log.end());
     CHECK(own_delete->data.size() == 4);
     CHECK(decode_delete_spawn(*own_delete) == 7u);
     CHECK(server.own_delete_spawns == 1);
-    CHECK(in_order(server.zone_log, {Op::ZoneChange, Op::DeleteSpawn}));
+    CHECK(in_order(server.zone_log, {rof2::Op::ZoneChange, rof2::Op::DeleteSpawn}));
     // The tribute lists are not asked for again.
-    CHECK(MockEqServer::count(server.zone_log, Op::SendTributes) == 1);
+    CHECK(MockEqServer::count(server.zone_log, rof2::Op::SendTributes) == 1);
     CHECK(conn.zone_id() == 1);
     REQUIRE(conn.zone_info());
     CHECK(conn.zone_info()->zone_short_name == "qeynos");
@@ -452,7 +490,7 @@ TEST_CASE("mock server: zone lines and server-requested zoning go through world 
     CHECK(server.zone.sessions() == 2); // a fresh zone session
 
     // The server may ask too (death, gate, #zone): OP_RequestClientZoneChange, answered with OP_ZoneChange.
-    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, Op::ClientReady) == 2; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, rof2::Op::ClientReady) == 2; }));
     server.request_zone_change(2, -285.0f, -148.0f, 3.5f);
     REQUIRE(rig.until([&] { return server.zone_entries == 3 && conn.state() == ConnectionState::InZone; }));
     CHECK(conn.zone_id() == 2);
@@ -460,7 +498,7 @@ TEST_CASE("mock server: zone lines and server-requested zoning go through world 
     CHECK(conn.world().spawns.count(101) == 1);
     CHECK(conn.world().spawns.count(201) == 0);
     auto last_change = std::find_if(server.zone_log.rbegin(), server.zone_log.rend(),
-                                    [](const AppPacket& p) { return is_op(p, Op::ZoneChange); });
+                                    [](const AppPacket& p) { return is_op(p, rof2::Op::ZoneChange); });
     REQUIRE(last_change != server.zone_log.rend());
     auto asked = decode_zone_change(*last_change);
     REQUIRE(asked);
@@ -486,9 +524,9 @@ TEST_CASE("mock server: a tradeskill station opens in the tradeskill window, its
     station.x = at.y;
     station.y = at.x;
     station.z = at.z;
-    conn.receive_zone_packet_for_test(encode(station));
+    conn.receive_zone_message_for_test({messages::GameOpcode::GroundSpawn, station});
     REQUIRE(conn.click_object(forge.drop_id));
-    conn.receive_zone_packet_for_test(encode(forge));
+    conn.receive_zone_message_for_test({messages::GameOpcode::ClickObjectAction, forge});
     REQUIRE(conn.world_container());
     CHECK(conn.tradeskill().open);
     CHECK(conn.tradeskill().world);
@@ -499,7 +537,7 @@ TEST_CASE("mock server: a tradeskill station opens in the tradeskill window, its
     CHECK_FALSE(conn.world_container()->window);
     // Experiment: the container in its own window, the tradeskill window closed.
     REQUIRE(conn.click_object(forge.drop_id));
-    conn.receive_zone_packet_for_test(encode(forge));
+    conn.receive_zone_message_for_test({messages::GameOpcode::ClickObjectAction, forge});
     REQUIRE(conn.tradeskill().open);
     conn.show_world_container_window();
     CHECK(conn.world_container()->window);
@@ -511,7 +549,7 @@ TEST_CASE("mock server: a tradeskill station opens in the tradeskill window, its
     box.type = 1;
     box.name = "Box";
     REQUIRE(conn.click_object(box.drop_id));
-    conn.receive_zone_packet_for_test(encode(box));
+    conn.receive_zone_message_for_test({messages::GameOpcode::ClickObjectAction, box});
     REQUIRE(conn.world_container());
     CHECK_FALSE(conn.tradeskill().open);
     CHECK(conn.world_container()->window);
@@ -536,9 +574,9 @@ TEST_CASE("mock server: camping sits, sends OP_Camp and ends when the zone drops
     CHECK(conn.sitting());
     REQUIRE(rig.until([&] { return server.camp_requests == 1; }));
     // Sitting down comes first: OP_SpawnAppearance {me, 14, 110}, then OP_Camp.
-    CHECK(in_order(server.zone_log, {Op::SpawnAppearance, Op::Camp}));
+    CHECK(in_order(server.zone_log, {rof2::Op::SpawnAppearance, rof2::Op::Camp}));
     auto appearance = std::find_if(server.zone_log.begin(), server.zone_log.end(),
-                                   [](const AppPacket& p) { return is_op(p, Op::SpawnAppearance); });
+                                   [](const AppPacket& p) { return is_op(p, rof2::Op::SpawnAppearance); });
     REQUIRE(appearance != server.zone_log.end());
     auto a = decode_spawn_appearance(*appearance);
     REQUIRE(a);
@@ -567,14 +605,14 @@ TEST_CASE("mock server: camping sits, sends OP_Camp and ends when the zone drops
     REQUIRE(conn.state() == ConnectionState::Camping);
     REQUIRE(rig.until([&] { return server.camp_requests == 3; }));
     // The camp saves first (Save(0, 1, 0x21): OP_Save), then OP_Camp {0}.
-    CHECK(in_order(server.zone_log, {Op::Save, Op::Camp}));
+    CHECK(in_order(server.zone_log, {rof2::Op::Save, rof2::Op::Camp}));
     auto save = std::find_if(server.zone_log.rbegin(), server.zone_log.rend(),
-                             [](const AppPacket& p) { return is_op(p, Op::Save); });
+                             [](const AppPacket& p) { return is_op(p, rof2::Op::Save); });
     REQUIRE(save != server.zone_log.rend());
     auto sv = decode_save(*save);
     REQUIRE(sv);
     CHECK(sv->kind == 0x21);
-    CHECK(MockEqServer::count(server.zone_log, Op::Save) == 3);
+    CHECK(MockEqServer::count(server.zone_log, rof2::Op::Save) == 3);
     // The zone dropping the link during the camp's 30 s is the original's link death (DoMainLoop's
     // HandleWorldDisconnect), not a camp's end: the app shows the disconnected screen, then goes the camp's way.
     server.zone.send_disconnect();
@@ -592,7 +630,7 @@ TEST_CASE("mock server: a zone change ends a camp, and the next zone starts with
     auto& conn = rig.conn;
     auto& server = rig.server;
     REQUIRE(rig.to_zone());
-    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, Op::ClientReady) == 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, rof2::Op::ClientReady) == 1; }));
     conn.say("/camp desk");
     REQUIRE(conn.state() == ConnectionState::Camping);
     REQUIRE(rig.until([&] { return server.camp_requests == 1; }));
@@ -619,7 +657,7 @@ TEST_CASE("mock server: fast camp sends OP_Logout right after OP_Camp and ends t
     conn.say("/camp desk");
     REQUIRE(rig.until([&] { return server.logouts == 1; }));
     CHECK(server.camp_requests == 1);
-    CHECK(in_order(server.zone_log, {Op::Save, Op::Camp, Op::Logout}));
+    CHECK(in_order(server.zone_log, {rof2::Op::Save, rof2::Op::Camp, rof2::Op::Logout}));
     REQUIRE(rig.until_state(ConnectionState::Disconnected));
     REQUIRE(conn.camped_out());
     CHECK(*conn.camped_out() == 1);
@@ -648,8 +686,8 @@ TEST_CASE("mock server: /camp on a mount camps from the saddle; getting off canc
     CHECK(conn.state() == ConnectionState::Camping);
     CHECK(!conn.sitting());
     REQUIRE(rig.until([&] { return server.camp_requests == 1; }));
-    CHECK(in_order(server.zone_log, {Op::Save, Op::Camp}));
-    CHECK(MockEqServer::count(server.zone_log, Op::SpawnAppearance) == 0); // no sit
+    CHECK(in_order(server.zone_log, {rof2::Op::Save, rof2::Op::Camp}));
+    CHECK(MockEqServer::count(server.zone_log, rof2::Op::SpawnAppearance) == 0); // no sit
     CHECK(has_line(rig.chat(), "CAMPING")); // eqstr 12293
     CHECK_FALSE(has_line(rig.chat(), "[12291]"));
     // Still mounted and standing: the camp tick keeps it.
@@ -692,10 +730,10 @@ TEST_CASE("mock server: on a boat the position goes out in its frame; a right cl
     // Two units ahead of the boat along its heading (world +y at heading 128), on its deck.
     conn.set_player_motion(glm::vec3(100.0f, 202.0f, -5.0f), 128.0f, glm::vec3(0.0f), true);
     conn.send_position_now();
-    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, Op::ClientUpdate) > 0; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, rof2::Op::ClientUpdate) > 0; }));
     std::optional<ClientPositionUpdate> u;
     for (const auto& p : server.zone_log)
-        if (is_op(p, Op::ClientUpdate)) u = decode_client_position_update(p);
+        if (is_op(p, rof2::Op::ClientUpdate)) u = decode_client_position_update(p);
     REQUIRE(u);
     CHECK(u->vehicle_id == 9001);
     // In the boat's frame: 2 forward (the frame's first axis is world x, sent as the server's y), 5 up, heading 0.
@@ -704,9 +742,9 @@ TEST_CASE("mock server: on a boat the position goes out in its frame; a right cl
     CHECK(u->motion.z == doctest::Approx(5.0f));
     CHECK(u->motion.heading == doctest::Approx(0.0f).scale(1.0));
     CHECK(conn.right_click_boat(9001));
-    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, Op::ControlBoat) == 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, rof2::Op::ControlBoat) == 1; }));
     auto take = std::find_if(server.zone_log.rbegin(), server.zone_log.rend(),
-                             [](const AppPacket& p) { return is_op(p, Op::ControlBoat); });
+                             [](const AppPacket& p) { return is_op(p, rof2::Op::ControlBoat); });
     REQUIRE(take->data.size() == 8);
     CHECK(std::to_integer<int>(take->data[0]) == 0x29); // 9001 = 0x2329
     CHECK(std::to_integer<int>(take->data[4]) == 1);
@@ -725,11 +763,7 @@ TEST_CASE("mock server: the boat being driven is forgotten on a zone change") {
     boat.race = 141;
     boat.gender = 2;
     boat.is_npc = true;
-    ByteWriter take;
-    take.le<std::uint32_t>(9001);
-    take.le<std::uint8_t>(1);
-    take.zeros(3);
-    conn.receive_zone_packet_for_test(AppPacket(to_wire(Op::ControlBoat), take.take()));
+    conn.receive_zone_message_for_test({messages::GameOpcode::ControlBoat, BoatControl{9001, true}});
     REQUIRE(conn.controlled_boat() == 9001);
     CHECK(conn.world().driven_id == 9001);
     server.zone_change_answers = {1};
@@ -747,7 +781,7 @@ TEST_CASE("mock server: /camp desk and /camp server send their kind; a camp ends
     REQUIRE(rig.to_zone());
     auto last_camp_kind = [&] {
         auto it = std::find_if(server.zone_log.rbegin(), server.zone_log.rend(),
-                               [](const AppPacket& p) { return is_op(p, Op::Camp); });
+                               [](const AppPacket& p) { return is_op(p, rof2::Op::Camp); });
         std::uint32_t kind = 0xffffffff;
         if (it != server.zone_log.rend() && it->data.size() >= 4) std::memcpy(&kind, it->data.data(), 4);
         return kind;
@@ -802,7 +836,7 @@ TEST_CASE("mock server: character list changes and a zone that is not available"
     rig.conn.delete_character("Gennro");
     REQUIRE(rig.until([&] { return rig.conn.characters().empty(); }));
     CHECK(rig.conn.state() == ConnectionState::CharacterSelect);
-    CHECK(MockEqServer::count(rig.server.world_log, Op::DeleteCharacter) == 1);
+    CHECK(MockEqServer::count(rig.server.world_log, rof2::Op::DeleteCharacter) == 1);
 }
 
 TEST_CASE("mock server: Return Home sends OP_EnterWorld with the home flag, a plain enter without it") {
@@ -812,7 +846,7 @@ TEST_CASE("mock server: Return Home sends OP_EnterWorld with the home flag, a pl
     REQUIRE(rig.to_character_select());
     auto last_enter = [&] {
         auto it = std::find_if(rig.server.world_log.rbegin(), rig.server.world_log.rend(),
-                               [](const AppPacket& p) { return is_op(p, Op::EnterWorld); });
+                               [](const AppPacket& p) { return is_op(p, rof2::Op::EnterWorld); });
         REQUIRE(it != rig.server.world_log.rend());
         return *it;
     };
@@ -830,7 +864,7 @@ TEST_CASE("mock server: Return Home sends OP_EnterWorld with the home flag, a pl
     CHECK(e->name == "Gennro");
     CHECK(e->tutorial == 0);
     // DoCharacterSelection: byte 0x44 the home flag, byte 0x45 set with it
-    CHECK(e->return_home == 0x101);
+    CHECK(e->return_home); // Semantic flag; the RoF2 wire stores 0x101.
     CHECK(p.data[0x44] == std::byte{1});
     CHECK(p.data[0x45] == std::byte{1});
 }
@@ -929,7 +963,7 @@ namespace {
 std::vector<std::string> said(const std::vector<AppPacket>& log) {
     std::vector<std::string> out;
     for (const auto& p : log)
-        if (is_op(p, Op::ChannelMessage))
+        if (is_op(p, rof2::Op::ChannelMessage))
             if (auto m = decode_channel_message(p)) out.push_back(m->message);
     return out;
 }
@@ -1026,7 +1060,7 @@ TEST_CASE("mock server: a world server that never answers fails the connection")
     auto local = platform::Endpoint::v4(127, 0, 0, 1, 0);
     REQUIRE(silent.open(platform::Endpoint::Family::V4, error, &local));
     ConnectionOptions options = quick_options();
-    options.session.connect_timeout = 250ms;
+    std::any_cast<net::soe::Options&>(options.world_protocol.session_config.parameters).connect_timeout = 250ms; std::any_cast<net::soe::Options&>(options.zone_protocol.session_config.parameters).connect_timeout = 250ms;
     EmptyGameDir dir;
     GameDir game(dir.path());
     GameConnection conn(game, options);
@@ -1047,9 +1081,9 @@ TEST_CASE("mock server: a silent zone link dies after the idle timeout, a keepal
     // sends a keepalive after 9 s of silence (docs/protocol/session.md, Timings). The sessions run on a held clock
     // from the zone-in on, so only the test's advances count.
     ConnectionOptions options = quick_options();
-    options.session.idle_timeout = 400ms;
+    std::any_cast<net::soe::Options&>(options.world_protocol.session_config.parameters).idle_timeout = 400ms; std::any_cast<net::soe::Options&>(options.zone_protocol.session_config.parameters).idle_timeout = 400ms;
     ManualClock clock;
-    options.session.clock = clock.source();
+    options.world_protocol.session_config.clock = clock.source(); options.zone_protocol.session_config.clock = clock.source();
     Rig rig(MockConfig::standard(), options);
     REQUIRE(rig.to_zone());
     clock.hold();
@@ -1087,11 +1121,11 @@ TEST_CASE("mock server: the Options' chat filters go to the zone (OP_SetServerFi
     REQUIRE(rig.to_zone());
     // Sent once the zone-in completes: [Defaults] ServerFilter, then the 34 settings, the defaults (guild chat shown:
     // 1, at EQEmu's FilterGuildChat 1).
-    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, Op::SetServerFilter) == 1; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, rof2::Op::SetServerFilter) == 1; }));
     auto filter_packet = [&](int n) {
         int seen = 0;
         for (const auto& p : server.zone_log)
-            if (from_wire(p.opcode) == Op::SetServerFilter && ++seen == n) return p;
+            if (rof2::from_wire(p.opcode) == rof2::Op::SetServerFilter && ++seen == n) return p;
         return AppPacket{};
     };
     auto setting = [](const AppPacket& p, int f) {
@@ -1108,7 +1142,7 @@ TEST_CASE("mock server: the Options' chat filters go to the zone (OP_SetServerFi
     CHECK(setting(first, game::kFilterBadWord) == 0);
     // PC spells to "group only" (2): sent again, kept for the next start.
     conn.change_chat_filter(7, 2);
-    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, Op::SetServerFilter) == 2; }));
+    REQUIRE(rig.until([&] { return MockEqServer::count(server.zone_log, rof2::Op::SetServerFilter) == 2; }));
     CHECK(setting(filter_packet(2), 7) == 2);
     CHECK(conn.chat_filters().mode(7) == 4);
     IniFile ini;
@@ -1126,7 +1160,7 @@ TEST_CASE("game clock: elapsed minutes carry through the EQ calendar") {
     ManualClock clock;
     clock.hold();
     ConnectionOptions options;
-    options.session.clock = clock.source();
+    options.world_protocol.session_config.clock = clock.source(); options.zone_protocol.session_config.clock = clock.source();
     EmptyGameDir dir;
     GameDir game(dir.path());
     GameConnection conn(game, options);
@@ -1141,7 +1175,7 @@ TEST_CASE("game clock: elapsed minutes carry through the EQ calendar") {
         CHECK(time->month == month);
         CHECK(time->year == year);
     };
-    conn.receive_zone_packet_for_test(encode(TimeOfDay{14, 58, 27, 12, 3200}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::TimeOfDay, TimeOfDay{14, 58, 27, 12, 3200}});
     check_time(14, 58, 27, 12, 3200);
     clock.advance(2999ms);
     check_time(14, 58, 27, 12, 3200);
@@ -1153,7 +1187,7 @@ TEST_CASE("game clock: elapsed minutes carry through the EQ calendar") {
     CHECK(conn.time_of_day()->hour == 14); // the sky's packet snapshot stays unchanged
     CHECK(conn.time_of_day()->minute == 58);
 
-    conn.receive_zone_packet_for_test(encode(TimeOfDay{24, 59, 28, 12, 3200}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::TimeOfDay, TimeOfDay{24, 59, 28, 12, 3200}});
     clock.advance(2999ms);
     check_time(24, 59, 28, 12, 3200);
     clock.advance(1ms);
@@ -1167,14 +1201,14 @@ TEST_CASE("game clock: every server time packet replaces the elapsed-time refere
     ManualClock clock;
     clock.hold();
     ConnectionOptions options;
-    options.session.clock = clock.source();
+    options.world_protocol.session_config.clock = clock.source(); options.zone_protocol.session_config.clock = clock.source();
     EmptyGameDir dir;
     GameDir game(dir.path());
     GameConnection conn(game, options);
-    const auto packet = encode(TimeOfDay{8, 59, 5, 6, 3200});
-    conn.receive_zone_packet_for_test(packet);
+    const TimeOfDay update{8, 59, 5, 6, 3200};
+    conn.receive_zone_message_for_test({messages::GameOpcode::TimeOfDay, update});
     clock.advance(2999ms);
-    conn.receive_zone_packet_for_test(packet); // even an identical packet starts a new reference
+    conn.receive_zone_message_for_test({messages::GameOpcode::TimeOfDay, update}); // even an identical packet starts a new reference
     clock.advance(1ms);
     auto time = conn.current_time_of_day();
     REQUIRE(time);
@@ -1186,7 +1220,7 @@ TEST_CASE("game clock: every server time packet replaces the elapsed-time refere
     CHECK(time->hour == 9);
     CHECK(time->minute == 0);
 
-    conn.receive_zone_packet_for_test(encode(TimeOfDay{4, 10, 2, 3, 3199}));
+    conn.receive_zone_message_for_test({messages::GameOpcode::TimeOfDay, TimeOfDay{4, 10, 2, 3, 3199}});
     time = conn.current_time_of_day();
     REQUIRE(time);
     CHECK(time->hour == 4);
@@ -1204,7 +1238,7 @@ TEST_CASE("game clock: every server time packet replaces the elapsed-time refere
 TEST_CASE("mock server: /time reports the advancing game hour and the local time") {
     ManualClock clock;
     ConnectionOptions options = quick_options();
-    options.session.clock = clock.source();
+    options.world_protocol.session_config.clock = clock.source(); options.zone_protocol.session_config.clock = clock.source();
     Rig rig(MockConfig::standard(), options);
     {
         std::ofstream strings(rig.dir.path() / "eqstr_us.txt", std::ios::app);
@@ -1214,7 +1248,7 @@ TEST_CASE("mock server: /time reports the advancing game hour and the local time
     REQUIRE(rig.to_zone());
     clock.hold();
     rig.chat();
-    rig.conn.receive_zone_packet_for_test(encode(TimeOfDay{13, 59, 28, 12, 3200}));
+    rig.conn.receive_zone_message_for_test({messages::GameOpcode::TimeOfDay, TimeOfDay{13, 59, 28, 12, 3200}});
     rig.conn.send_command("/time");
     auto lines = rig.chat();
     REQUIRE(lines.size() == 2);

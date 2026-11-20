@@ -16,8 +16,8 @@
 #include "core/ini_file.h"
 #include "mock_server/harness.h"
 #include "mq_test_world.h"
-#include "net/packet_io.h"
-#include "net/spell_packets.h"
+#include "net/protocol/rof2/wire_io.h"
+#include "net/protocol/rof2/packets/spell_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::test;
@@ -56,7 +56,7 @@ TEST_CASE("Blocked buffs: a buff's spell id in the window's edit box, then Add, 
         lua_close(L);
         auto sent = [&] {
             return std::find_if(server.zone_log.begin(), server.zone_log.end(),
-                                [](const net::AppPacket& p) { return net::is_op(p, net::Op::BlockedBuffs); });
+                                [](const net::AppPacket& p) { return net::is_op(p, net::rof2::Op::BlockedBuffs); });
         };
         REQUIRE(until([&] { return sent() != server.zone_log.end(); }));
         auto b = net::decode_blocked_buffs(*sent());
@@ -102,11 +102,11 @@ TEST_CASE("Blocked buffs: kept in the character ini, sent at the zone-in; a new 
     conn.enter_world("Gennro");
     REQUIRE(until([&] { return conn.state() == net::ConnectionState::InZone && conn.player_status().max_hp != 0; }));
     // With a character ini the zone-in itself sends nothing; the app's restore does, from the ini.
-    CHECK(MockEqServer::count(server.zone_log, net::Op::BlockedBuffs) == 0);
+    CHECK(MockEqServer::count(server.zone_log, net::rof2::Op::BlockedBuffs) == 0);
     conn.restore_blocked_buffs();
-    REQUIRE(until([&] { return MockEqServer::count(server.zone_log, net::Op::BlockedBuffs) == 2; }));
+    REQUIRE(until([&] { return MockEqServer::count(server.zone_log, net::rof2::Op::BlockedBuffs) == 2; }));
     for (const auto& packet : server.zone_log) {
-        if (!net::is_op(packet, net::Op::BlockedBuffs)) continue;
+        if (!net::is_op(packet, net::rof2::Op::BlockedBuffs)) continue;
         auto sent = net::decode_blocked_buffs(packet);
         REQUIRE(sent);
         CHECK(sent->initialise);
@@ -130,13 +130,13 @@ TEST_CASE("Blocked buffs: kept in the character ini, sent at the zone-in; a new 
     pet_icons.all_buffs = 1;
     pet_icons.entries.push_back({2, 12, 10, 0, "Gennro"});
     auto pet_packet = net::encode(pet_icons, false);
-    pet_packet.opcode = net::to_wire(net::Op::PetBuffWindow);
+    pet_packet.opcode = net::rof2::to_wire(net::rof2::Op::PetBuffWindow);
     server.zone.send_reliable(pet_packet);
     REQUIRE(until([&] {
         return conn.spell_state().buffs[4].spell == 12 && conn.spell_state().buffs[5].spell == 13 &&
                conn.pet_buffs().size() == 1;
     }));
-    const auto removals = [&] { return MockEqServer::count(server.zone_log, net::Op::BuffRemoveRequest); };
+    const auto removals = [&] { return MockEqServer::count(server.zone_log, net::rof2::Op::BuffRemoveRequest); };
 
     // An initialise answer takes nothing off.
     net::BlockedBuffs answer;
@@ -156,7 +156,7 @@ TEST_CASE("Blocked buffs: kept in the character ini, sent at the zone-in; a new 
     server.zone.send_reliable(net::encode(answer));
     REQUIRE(until([&] { return removals() == 1; }));
     auto removed = std::find_if(server.zone_log.begin(), server.zone_log.end(),
-                                [](const net::AppPacket& p) { return net::is_op(p, net::Op::BuffRemoveRequest); });
+                                [](const net::AppPacket& p) { return net::is_op(p, net::rof2::Op::BuffRemoveRequest); });
     CHECK(removed->data == net::encode_buff_remove_request(4, server.config.own_spawn_id).data);
     CHECK(ini.get_int("BlockedSpells", "BlockedSpellID0", 0) == 13);
     CHECK(ini.get_int("BlockedSpells", "BlockedSpellID1", 0) == 11);
@@ -169,7 +169,7 @@ TEST_CASE("Blocked buffs: kept in the character ini, sent at the zone-in; a new 
     server.zone.send_reliable(net::encode(pet));
     REQUIRE(until([&] { return removals() == 2; }));
     removed = std::find_if(server.zone_log.rbegin(), server.zone_log.rend(),
-                           [](const net::AppPacket& p) { return net::is_op(p, net::Op::BuffRemoveRequest); })
+                           [](const net::AppPacket& p) { return net::is_op(p, net::rof2::Op::BuffRemoveRequest); })
                   .base() -
               1;
     CHECK(removed->data == net::encode_buff_remove_request(2, kPet).data);

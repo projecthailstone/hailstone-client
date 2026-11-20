@@ -1,4 +1,4 @@
-// An adventure recruiter's Request (net/game_connection_adventure.cpp): stock EQEmu drops one from a player in no
+// An adventure recruiter's Request (net/connection/game_connection_adventure.cpp): stock EQEmu drops one from a player in no
 // group or raid unanswered, so the client stops it with its own line; a server extension's solo_adventure switch
 // (game/server_ext.h) lets it go out.
 #include <doctest/doctest.h>
@@ -10,7 +10,8 @@
 #include "game/server_ext.h"
 #include "mock_server/harness.h"
 #include "mq_test_world.h"
-#include "net/packet_io.h"
+#include "net/protocol/rof2/packets/adventure_packets.h"
+#include "net/protocol/rof2/wire_io.h"
 
 using namespace hailstone;
 
@@ -18,7 +19,7 @@ namespace {
 
 constexpr const char* kRefusal = "You must be in a group or raid to request an adventure.";
 
-net::AppPacket adventure_text(net::Op op, std::string_view text) {
+net::AppPacket adventure_text(net::rof2::Op op, std::string_view text) {
     ByteWriter w;
     net::detail::write_cstring(w, text);
     return net::make_packet(op, std::move(w));
@@ -44,7 +45,7 @@ TEST_CASE("adventure: a solo request is stopped unless a server extension takes 
     auto ext = std::make_shared<Solo>();
     net::ConnectionOptions opts;
     opts.plugins = ext;
-    mq_test::World w("hailstone_adventure_request_test", opts);
+    mq_test::World w("hailstone_adventure_request_test", opts, true);
     solo_at_recruiter(w);
 
     w.conn->adventure_request(2, 1);
@@ -57,7 +58,7 @@ TEST_CASE("adventure: a solo request is stopped unless a server extension takes 
 }
 
 TEST_CASE("adventure: a grouped request goes out without the switch") {
-    mq_test::World w("hailstone_adventure_request_test");
+    mq_test::World w("hailstone_adventure_request_test", {}, true);
     w.add(20, "Mannis_McGuyett000", true, 65, game::server_to_world({0, 10, 0}));
     net::GameConnectionTestAccess::world(*w.conn).spawns[20].class_id = 60;
     REQUIRE(w.conn->open_adventure_recruiter(20)); // the test world's player is in a group
@@ -66,14 +67,14 @@ TEST_CASE("adventure: a grouped request goes out without the switch") {
 }
 
 TEST_CASE("adventure: status can open without a recruiter and a departed recruiter cannot be used") {
-    mq_test::World w("hailstone_adventure_window");
+    mq_test::World w("hailstone_adventure_window", {}, true);
     auto& c = *w.conn;
     c.set_adventure_window_open(true);
     CHECK(c.adventure().window_open);
     CHECK_FALSE(c.adventure_request_ready());
     solo_at_recruiter(w);
     CHECK(c.adventure_recruiter_available());
-    c.receive_zone_packet_for_test(adventure_text(net::Op::AdventureInfo, "Greetings."));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::AdventureInfo, std::string("Greetings.")});
     c.close_adventure_recruiter(); // the recruiter's words dismissed: the recruiter is forgotten
     CHECK_FALSE(c.adventure().window_open);
     CHECK(c.adventure().recruiter == 0);
@@ -85,7 +86,7 @@ TEST_CASE("adventure: status can open without a recruiter and a departed recruit
     CHECK(c.adventure_recruiter_available());
     recruiter.position = game::server_to_world({0, 20.01f, 0});
     CHECK_FALSE(c.adventure_recruiter_available());
-    c.receive_zone_packet_for_test(adventure_text(net::Op::AdventureInfo, "Greetings."));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::AdventureInfo, std::string("Greetings.")});
     net::GameConnectionTestAccess::world(c).spawns.erase(20);
     c.adventure_frame();
     CHECK(c.adventure().window_open); // Refresh processing must not bypass the native range-check timer.
@@ -97,15 +98,15 @@ TEST_CASE("adventure: status can open without a recruiter and a departed recruit
 }
 
 TEST_CASE("adventure: hiding assigned status stops recruiter checks without abandoning the mission") {
-    mq_test::World w("hailstone_adventure_hide_assigned");
+    mq_test::World w("hailstone_adventure_hide_assigned", {}, true);
     solo_at_recruiter(w);
     auto& c = *w.conn;
     net::AdventureData active;
     active.assigned = true;
     active.text = "Complete the mission.";
     active.time_left = 600;
-    c.receive_zone_packet_for_test(net::encode(active));
-    c.receive_zone_packet_for_test(adventure_text(net::Op::AdventureInfo, "Recruiter notice."));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::AdventureData, active});
+    c.receive_zone_message_for_test({net::messages::GameOpcode::AdventureInfo, std::string("Recruiter notice.")});
     c.set_adventure_window_open(false);
     CHECK(c.adventure().data.assigned);
     CHECK_FALSE(c.adventure().window_open);
@@ -128,10 +129,10 @@ void mock_recruiter(test::Rig& rig) {
     REQUIRE(rig.conn.open_adventure_recruiter(77));
 }
 
-std::vector<net::AppPacket> requests(const test::Rig& rig, net::Op op) {
+std::vector<net::AppPacket> requests(const test::Rig& rig, net::rof2::Op op) {
     std::vector<net::AppPacket> out;
     for (const auto& p : rig.server.zone_log)
-        if (p.opcode == net::to_wire(op)) out.push_back(p);
+        if (p.opcode == net::rof2::to_wire(op)) out.push_back(p);
     return out;
 }
 
@@ -149,31 +150,31 @@ TEST_CASE("adventure: mock server receives requests and one-byte accept and decl
     mock_recruiter(rig);
     rig.conn.adventure_request(2, 3);
     rig.conn.adventure_request(1, 0); // the server silently drops requests during its five-second guard
-    REQUIRE(rig.until([&] { return requests(rig, net::Op::AdventureRequest).size() == 1; }));
-    auto sent = requests(rig, net::Op::AdventureRequest);
+    REQUIRE(rig.until([&] { return requests(rig, net::rof2::Op::AdventureRequest).size() == 1; }));
+    auto sent = requests(rig, net::rof2::Op::AdventureRequest);
     ByteReader r(sent.front().data);
     CHECK(r.le<std::uint32_t>() == 2);
     CHECK(r.le<std::uint32_t>() == 77);
     CHECK(r.le<std::uint32_t>() == 3);
 
-    rig.server.zone.send_reliable(adventure_text(net::Op::AdventureDetails, "Locate the scout."));
+    rig.server.zone.send_reliable(adventure_text(net::rof2::Op::AdventureDetails, "Locate the scout."));
     REQUIRE(rig.until([&] { return !rig.conn.adventure().offer.empty(); }));
     rig.conn.adventure_answer(true);
     rig.conn.adventure_answer(true); // already answered
-    REQUIRE(rig.until([&] { return requests(rig, net::Op::LDoNButton).size() == 1; }));
-    CHECK(requests(rig, net::Op::LDoNButton).front().data == std::vector<std::byte>{std::byte{1}});
+    REQUIRE(rig.until([&] { return requests(rig, net::rof2::Op::LDoNButton).size() == 1; }));
+    CHECK(requests(rig, net::rof2::Op::LDoNButton).front().data == std::vector<std::byte>{std::byte{1}});
 
-    rig.server.zone.send_reliable(adventure_text(net::Op::AdventureDetails, "A different scout."));
+    rig.server.zone.send_reliable(adventure_text(net::rof2::Op::AdventureDetails, "A different scout."));
     REQUIRE(rig.until([&] { return !rig.conn.adventure().offer.empty(); }));
     rig.conn.adventure_answer(false);
-    REQUIRE(rig.until([&] { return requests(rig, net::Op::LDoNButton).size() == 2; }));
-    CHECK(requests(rig, net::Op::LDoNButton).back().data == std::vector<std::byte>{std::byte{0}});
+    REQUIRE(rig.until([&] { return requests(rig, net::rof2::Op::LDoNButton).size() == 2; }));
+    CHECK(requests(rig, net::rof2::Op::LDoNButton).back().data == std::vector<std::byte>{std::byte{0}});
 
-    rig.server.zone.send_reliable(adventure_text(net::Op::AdventureDetails, "An offer to close."));
+    rig.server.zone.send_reliable(adventure_text(net::rof2::Op::AdventureDetails, "An offer to close."));
     REQUIRE(rig.until([&] { return !rig.conn.adventure().offer.empty(); }));
     rig.conn.set_adventure_window_open(false);
-    REQUIRE(rig.until([&] { return requests(rig, net::Op::LDoNButton).size() == 3; }));
-    CHECK(requests(rig, net::Op::LDoNButton).back().data == std::vector<std::byte>{std::byte{0}});
+    REQUIRE(rig.until([&] { return requests(rig, net::rof2::Op::LDoNButton).size() == 3; }));
+    CHECK(requests(rig, net::rof2::Op::LDoNButton).back().data == std::vector<std::byte>{std::byte{0}});
     CHECK(rig.conn.adventure().offer.empty());
     CHECK(rig.conn.adventure().recruiter == 0);
     CHECK_FALSE(rig.conn.adventure().window_open);
@@ -186,8 +187,8 @@ TEST_CASE("adventure: mock server receives requests and one-byte accept and decl
     REQUIRE(rig.until([&] { return rig.conn.adventure().data.assigned; }));
     CHECK_FALSE(rig.conn.adventure_request_ready());
     rig.conn.adventure_leave();
-    REQUIRE(rig.until([&] { return requests(rig, net::Op::LeaveAdventure).size() == 1; }));
-    CHECK(requests(rig, net::Op::LeaveAdventure).front().data.empty());
+    REQUIRE(rig.until([&] { return requests(rig, net::rof2::Op::LeaveAdventure).size() == 1; }));
+    CHECK(requests(rig, net::rof2::Op::LeaveAdventure).front().data.empty());
     rig.server.zone.send_reliable(net::encode(net::AdventureData{}));
     REQUIRE(rig.until([&] { return !rig.conn.adventure().data.assigned; }));
     CHECK(rig.conn.adventure().count.total == 0);
@@ -204,49 +205,49 @@ TEST_CASE("adventure: an answer to a request whose window was closed shows the w
     ext->on = true;
     auto options = test::quick_options();
     options.plugins = ext;
-    options.session.clock = clock.source();
+    options.world_protocol.session_config.clock = clock.source(); options.zone_protocol.session_config.clock = clock.source();
     options.servers_dir = files.path() / "servers";
     test::Rig rig(test::MockConfig::standard(), options);
     REQUIRE(rig.to_zone());
     mock_recruiter(rig);
     clock.hold();
-    rig.server.zone.send_reliable(adventure_text(net::Op::AdventureInfo, "Greetings."));
+    rig.server.zone.send_reliable(adventure_text(net::rof2::Op::AdventureInfo, "Greetings."));
     REQUIRE(rig.until([&] { return !rig.conn.adventure().npc_text.empty(); }));
     rig.conn.adventure_request(1, 0);
-    REQUIRE(rig.until([&] { return requests(rig, net::Op::AdventureRequest).size() == 1; }));
+    REQUIRE(rig.until([&] { return requests(rig, net::rof2::Op::AdventureRequest).size() == 1; }));
     rig.conn.set_adventure_window_open(false);
     CHECK_FALSE(rig.conn.adventure().window_open);
     CHECK(rig.conn.adventure().recruiter == 77); // kept for the answer
 
-    rig.server.zone.send_reliable(adventure_text(net::Op::AdventureDetails, "A late offer."));
+    rig.server.zone.send_reliable(adventure_text(net::rof2::Op::AdventureDetails, "A late offer."));
     REQUIRE(rig.until([&] { return !rig.conn.adventure().offer.empty(); }));
     CHECK(rig.conn.adventure().window_open);
     rig.step();
-    CHECK(requests(rig, net::Op::LDoNButton).empty()); // not declined behind the player's back
+    CHECK(requests(rig, net::rof2::Op::LDoNButton).empty()); // not declined behind the player's back
     rig.conn.adventure_answer(true);
-    REQUIRE(rig.until([&] { return requests(rig, net::Op::LDoNButton).size() == 1; }));
-    CHECK(requests(rig, net::Op::LDoNButton).back().data == std::vector<std::byte>{std::byte{1}});
+    REQUIRE(rig.until([&] { return requests(rig, net::rof2::Op::LDoNButton).size() == 1; }));
+    CHECK(requests(rig, net::rof2::Op::LDoNButton).back().data == std::vector<std::byte>{std::byte{1}});
 
     // A refusal (OP_AdventureInfo) to a request whose window was closed shows it too.
     clock.advance(5s);
     rig.conn.adventure_request(2, 1);
-    REQUIRE(rig.until([&] { return requests(rig, net::Op::AdventureRequest).size() == 2; }));
+    REQUIRE(rig.until([&] { return requests(rig, net::rof2::Op::AdventureRequest).size() == 2; }));
     rig.conn.set_adventure_window_open(false);
-    rig.server.zone.send_reliable(adventure_text(net::Op::AdventureInfo, "Your group is too small."));
+    rig.server.zone.send_reliable(adventure_text(net::rof2::Op::AdventureInfo, "Your group is too small."));
     REQUIRE(rig.until([&] { return rig.conn.adventure().window_open; }));
     CHECK(rig.conn.adventure().npc_text == "Your group is too small.");
 
     // Closed again with a later offer up, the offer is declined and the recruiter forgotten.
     clock.advance(5s);
     rig.conn.adventure_request(1, 0);
-    REQUIRE(rig.until([&] { return requests(rig, net::Op::AdventureRequest).size() == 3; }));
+    REQUIRE(rig.until([&] { return requests(rig, net::rof2::Op::AdventureRequest).size() == 3; }));
     rig.conn.set_adventure_window_open(false);
-    rig.server.zone.send_reliable(adventure_text(net::Op::AdventureDetails, "Another offer."));
+    rig.server.zone.send_reliable(adventure_text(net::rof2::Op::AdventureDetails, "Another offer."));
     REQUIRE(rig.until([&] { return !rig.conn.adventure().offer.empty(); }));
     CHECK(rig.conn.adventure().window_open);
     rig.conn.set_adventure_window_open(false);
-    REQUIRE(rig.until([&] { return requests(rig, net::Op::LDoNButton).size() == 2; }));
-    CHECK(requests(rig, net::Op::LDoNButton).back().data == std::vector<std::byte>{std::byte{0}});
+    REQUIRE(rig.until([&] { return requests(rig, net::rof2::Op::LDoNButton).size() == 2; }));
+    CHECK(requests(rig, net::rof2::Op::LDoNButton).back().data == std::vector<std::byte>{std::byte{0}});
     CHECK(rig.conn.adventure().recruiter == 0);
     CHECK(rig.conn.adventure().offer.empty());
 }
@@ -256,7 +257,7 @@ TEST_CASE("adventure: stats and leaderboard use native cooldowns and retain the 
     test::ScratchDir files("adventure_refresh");
     test::ManualClock clock;
     auto options = test::quick_options();
-    options.session.clock = clock.source();
+    options.world_protocol.session_config.clock = clock.source(); options.zone_protocol.session_config.clock = clock.source();
     options.servers_dir = files.path() / "servers";
     test::Rig rig(test::MockConfig::standard(), options);
     REQUIRE(rig.to_zone());
@@ -265,8 +266,8 @@ TEST_CASE("adventure: stats and leaderboard use native cooldowns and retain the 
     rig.conn.set_adventure_stats_open(true);
     rig.conn.set_adventure_leaderboard_open(true);
     REQUIRE(rig.until([&] {
-        return requests(rig, net::Op::AdventureStatsRequest).size() == 1 &&
-               requests(rig, net::Op::AdventureLeaderboardRequest).size() == 1;
+        return requests(rig, net::rof2::Op::AdventureStatsRequest).size() == 1 &&
+               requests(rig, net::rof2::Op::AdventureLeaderboardRequest).size() == 1;
     }));
     CHECK_FALSE(rig.conn.adventure_stats_ready());
     CHECK_FALSE(rig.conn.adventure_leaderboard_ready());
@@ -280,8 +281,8 @@ TEST_CASE("adventure: stats and leaderboard use native cooldowns and retain the 
     clock.advance(1ms);
     CHECK(rig.conn.adventure_stats_ready());
     rig.conn.adventure_stats_request();
-    REQUIRE(rig.until([&] { return requests(rig, net::Op::AdventureStatsRequest).size() == 2; }));
-    CHECK(requests(rig, net::Op::AdventureLeaderboardRequest).size() == 1); // still awaiting the old reply
+    REQUIRE(rig.until([&] { return requests(rig, net::rof2::Op::AdventureStatsRequest).size() == 2; }));
+    CHECK(requests(rig, net::rof2::Op::AdventureLeaderboardRequest).size() == 1); // still awaiting the old reply
 
     net::AdventurePoints points;
     points.available = 123;
@@ -290,17 +291,17 @@ TEST_CASE("adventure: stats and leaderboard use native cooldowns and retain the 
     CHECK(rig.conn.adventure().stats_queued);
     clock.advance(9999ms);
     rig.step();
-    CHECK(requests(rig, net::Op::AdventureStatsRequest).size() == 2);
+    CHECK(requests(rig, net::rof2::Op::AdventureStatsRequest).size() == 2);
     clock.advance(1ms);
-    REQUIRE(rig.until([&] { return requests(rig, net::Op::AdventureStatsRequest).size() == 3; }));
+    REQUIRE(rig.until([&] { return requests(rig, net::rof2::Op::AdventureStatsRequest).size() == 3; }));
     CHECK_FALSE(rig.conn.adventure().stats_queued);
 
     net::AdventureLeaderboard old;
     old.rows = {{"Old category", 1, 1}};
     rig.server.zone.send_reliable(net::encode(old));
-    REQUIRE(rig.until([&] { return requests(rig, net::Op::AdventureLeaderboardRequest).size() == 2; }));
+    REQUIRE(rig.until([&] { return requests(rig, net::rof2::Op::AdventureLeaderboardRequest).size() == 2; }));
     CHECK_FALSE(rig.conn.adventure().leaderboard); // old category cannot appear under the new selection
-    const auto sent = requests(rig, net::Op::AdventureLeaderboardRequest);
+    const auto sent = requests(rig, net::rof2::Op::AdventureLeaderboardRequest);
     ByteReader query(sent.back().data);
     CHECK(query.le<std::uint32_t>() == 0);
     CHECK(query.le<std::uint32_t>() == 5);
@@ -313,7 +314,7 @@ TEST_CASE("adventure: stats and leaderboard use native cooldowns and retain the 
     rig.conn.set_adventure_leaderboard_open(false);
     clock.advance(10000ms);
     rig.conn.set_adventure_leaderboard_open(true);
-    REQUIRE(rig.until([&] { return requests(rig, net::Op::AdventureLeaderboardRequest).size() == 3; }));
+    REQUIRE(rig.until([&] { return requests(rig, net::rof2::Op::AdventureLeaderboardRequest).size() == 3; }));
     CHECK(rig.conn.adventure().leaderboard_inflight);
     CHECK(rig.conn.adventure().leaderboard->rows.front().name == "Selected category"); // cache stays until replaced
 
@@ -337,14 +338,16 @@ TEST_CASE("adventure: a missing or malformed leaderboard reply recovers after th
     using namespace std::chrono_literals;
     test::ManualClock clock;
     net::ConnectionOptions options;
-    options.session.clock = clock.source();
-    mq_test::World w("adventure_reply_timeout", options);
+    options.world_protocol.session_config.clock = clock.source(); options.zone_protocol.session_config.clock = clock.source();
+    mq_test::World w("adventure_reply_timeout", options, true);
     clock.hold();
     auto& c = *w.conn;
     c.set_adventure_leaderboard_open(true);
     REQUIRE(c.adventure().leaderboard_inflight);
-    c.receive_zone_packet_for_test(net::AppPacket(net::to_wire(net::Op::AdventureLeaderboardReply),
-                                               std::vector<std::byte>(7219)));
+    // A malformed wire reply is rejected at the RoF2 decoder boundary; no semantic event is delivered.
+    const net::AppPacket malformed(net::rof2::to_wire(net::rof2::Op::AdventureLeaderboardReply),
+                                   std::vector<std::byte>(7219));
+    CHECK_FALSE(net::decode_adventure_leaderboard(malformed));
     CHECK(c.adventure().leaderboard_inflight);
     clock.advance(29999ms);
     c.adventure_frame();
@@ -369,10 +372,10 @@ TEST_CASE("adventure: win and failure finish packets clear the mission without a
     auto& c = *w.conn;
     net::AdventurePoints points;
     points.available = 100;
-    c.receive_zone_packet_for_test(net::encode(points));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::AdventurePointsUpdate, points});
     net::AdventureStats stats;
     stats.success[0] = 10;
-    c.receive_zone_packet_for_test(net::encode(stats));
+    c.receive_zone_message_for_test({net::messages::GameOpcode::AdventureStatsReply, stats});
     for (bool won : {true, false}) {
         net::AdventureData active;
         active.assigned = true;
@@ -380,29 +383,24 @@ TEST_CASE("adventure: win and failure finish packets clear the mission without a
         active.time_left = 90;
         active.time_to_enter = 30;
         active.compass = true;
-        c.receive_zone_packet_for_test(net::encode(active));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::AdventureData, active});
         c.set_adventure_window_open(true);
-        ByteWriter count;
-        count.le<std::uint32_t>(5);
-        count.le<std::uint32_t>(5);
-        const auto update = net::make_packet(net::Op::AdventureUpdate, std::move(count));
-        c.receive_zone_packet_for_test(update);
+        const net::AdventureCount update{5, 5};
+        c.receive_zone_message_for_test({net::messages::GameOpcode::AdventureUpdate, update});
         CHECK(c.adventure().count.total == 5); // kept before entering (0x4204e0), shown only once inside
         active.time_to_enter = 0;
-        c.receive_zone_packet_for_test(net::encode(active));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::AdventureData, active});
         CHECK(c.adventure().count.total == 5);
         REQUIRE(c.adventure().data.assigned);
-        ByteWriter finish;
-        finish.le<std::uint32_t>(won ? 1 : 0);
-        finish.le<std::uint32_t>(won ? 50 : 0);
-        c.receive_zone_packet_for_test(net::make_packet(net::Op::AdventureFinish, std::move(finish)));
+        c.receive_zone_message_for_test({net::messages::GameOpcode::AdventureFinish,
+                                         net::AdventureFinish{won, won ? 50u : 0u}});
         CHECK_FALSE(c.adventure().data.assigned);
         CHECK_FALSE(c.adventure().data.compass);
         CHECK_FALSE(c.adventure().window_open);
         CHECK(c.adventure().count.total == 0);
-        c.receive_zone_packet_for_test(update); // a late progress packet cannot revive the completed mission
+        c.receive_zone_message_for_test({net::messages::GameOpcode::AdventureUpdate, update}); // a late progress update cannot revive the completed mission
         CHECK_FALSE(c.adventure().data.assigned);
-        c.receive_zone_packet_for_test(net::encode(active)); // the next adventure starts with no count of its own
+        c.receive_zone_message_for_test({net::messages::GameOpcode::AdventureData, active}); // the next adventure starts with no count of its own
         CHECK(c.adventure().count.total == 0);
         CHECK(c.adventure().recruiter == 0);
         CHECK(c.adventure().points.available == 100);

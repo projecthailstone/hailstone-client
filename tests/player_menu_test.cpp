@@ -85,23 +85,23 @@ TEST_CASE("player menu: the rows and what each sends") {
         // Not for the player's own spawn.
         CHECK(app::player_menu_rows(host, conn.world().player_id).empty());
 
-        auto count = [&](Op op) { return MockEqServer::count(rig.server.zone_log, op); };
+        auto count = [&](rof2::Op op) { return MockEqServer::count(rig.server.zone_log, op); };
         rows[2].act();
-        REQUIRE(rig.until([&] { return count(Op::GroupInvite) == 1; }));
+        REQUIRE(rig.until([&] { return count(rof2::Op::GroupInvite) == 1; }));
         CHECK(conn.world().target_id == bob);
         rows[3].act();
-        REQUIRE(rig.until([&] { return count(Op::RaidInvite) == 1; }));
+        REQUIRE(rig.until([&] { return count(rof2::Op::RaidInvite) == 1; }));
         rows[5].act();
-        REQUIRE(rig.until([&] { return count(Op::InspectRequest) == 1; }));
+        REQUIRE(rig.until([&] { return count(rof2::Op::InspectRequest) == 1; }));
         conn.destroy_cursor();
         rows[4].act();
-        REQUIRE(rig.until([&] { return count(Op::TradeRequest) == 1; }));
+        REQUIRE(rig.until([&] { return count(rof2::Op::TradeRequest) == 1; }));
 
         // A row does nothing once the player has gone.
         conn.world_for_test().spawns.erase(bob);
         rows[5].act();
         rig.run_for(std::chrono::milliseconds(100));
-        CHECK(count(Op::InspectRequest) == 1);
+        CHECK(count(rof2::Op::InspectRequest) == 1);
 
         // It opens as a game menu, and not with context menus switched off (UiHost::context_menus).
         add_player(conn, 4101, "Ann");

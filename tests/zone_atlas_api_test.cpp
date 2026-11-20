@@ -15,7 +15,7 @@
 #include "core/game_dir.h"
 #include "game/zone_names.h"
 #include "mq_test_world.h"
-#include "net/zone_link_packets.h"
+#include "net/protocol/extensions/hailstone/zone_link_packets.h"
 #include "scratch_dir.h"
 
 using namespace hailstone;
@@ -139,10 +139,10 @@ TEST_CASE("Zone atlas: the atlas, routes, exits and another zone's map through h
             CHECK(run(L, "local r = hs.ZoneRoute('qeynos2', 'qrg') return #r .. ' ' .. tostring(r.assumed)") == "3 true");
             // The server's list: asked only once the script answered the settings request.
             net::HailstoneSettings hs;
-            A::handle_zone(*world.conn, net::encode(hs));
+            world.conn->receive_zone_message_for_test({net::messages::GameOpcode::HailstoneSettings, hs});
             net::ZoneLinks links;
             links.links = {{static_cast<std::uint16_t>(surefall), static_cast<std::uint16_t>(qeynos2)}};
-            A::handle_zone(*world.conn, net::encode(links));
+            world.conn->receive_zone_message_for_test({net::messages::GameOpcode::HsZoneLinks, links});
             frame();
             CHECK(run(L, "local s, n = hs.ZoneLinks() return tostring(s) .. ' ' .. n") == "true 3");
             CHECK(run(L, "local r = hs.ZoneRoute('qeynos2', 'qrg') return #r .. ' ' .. tostring(r.assumed)") == "2 false");
@@ -163,13 +163,13 @@ TEST_CASE("Zone atlas: the atlas, routes, exits and another zone's map through h
             CHECK(run(L, "return tostring(hs.AtlasIndex().zones[1].allowed)") == "true"); // qeynos2, Classic
             // The server's list of zones wins: North Qeynos and the hills, not Surefall Glade.
             net::HailstoneSettings hs;
-            A::handle_zone(*world.conn, net::encode(hs));
+            world.conn->receive_zone_message_for_test({net::messages::GameOpcode::HailstoneSettings, hs});
             net::ZoneLinks links;
             links.links = {{static_cast<std::uint16_t>(qeynos2), static_cast<std::uint16_t>(hills)}};
             links.has_zones = true;
             links.expansion = 1;
             links.zones = {static_cast<std::uint16_t>(qeynos2), static_cast<std::uint16_t>(hills)};
-            A::handle_zone(*world.conn, net::encode(links));
+            world.conn->receive_zone_message_for_test({net::messages::GameOpcode::HsZoneLinks, links});
             frame();
             CHECK(run(L, "local s, n, limit, e = hs.ZoneLinks() return limit .. ' ' .. e") == "server 1");
             CHECK(run(L, "return #hs.ZoneRoute('qeytoqrg')") == "2");

@@ -1,4 +1,4 @@
-// The barter hall: the packets as the original's senders and readers build them (net/market_packets.h, checked
+// The barter hall: the packets as the original's senders and readers build them (net/protocol/rof2/packets/market_packets.h, checked
 // against EQEmu's RoF2 translator) and the barter manager's rules (game/barter.h).
 
 #include <doctest/doctest.h>
@@ -10,8 +10,8 @@
 
 #include "game/barter.h"
 #include "game/inventory.h"
-#include "net/market_packets.h"
-#include "net/opcodes.h"
+#include "net/protocol/rof2/packets/market_packets.h"
+#include "net/protocol/rof2/opcode_map.h"
 
 using namespace hailstone;
 using namespace hailstone::net;
@@ -24,10 +24,10 @@ std::vector<std::uint8_t> bytes_of(const AppPacket& p) {
     return out;
 }
 
-AppPacket packet(Op op, const std::vector<std::uint8_t>& b) {
+AppPacket packet(rof2::Op op, const std::vector<std::uint8_t>& b) {
     std::vector<std::byte> d;
     for (auto v : b) d.push_back(std::byte{v});
-    return AppPacket(to_wire(op), std::move(d));
+    return AppPacket(rof2::to_wire(op), std::move(d));
 }
 
 struct Buf {
@@ -82,11 +82,11 @@ TEST_CASE("barter: the inspect and its answer, buy lines from the server, the bu
     CHECK(bytes_of(encode_barter_inspect(kBuyerInspectBegin, 42)) == Buf().u32(11).u32(42).u32(0).b);
     CHECK(bytes_of(encode_barter_inspect(kBuyerInspectEnd, 42)) == Buf().u32(12).u32(42).u32(0).b);
     // EQEmu's ShowBuyLines echoes the request with the approval at +8 (Handle_OP_Barter 11 reads the packet's third dword).
-    auto r = decode_barter_inspect_reply(packet(Op::Barter, Buf().u32(11).u32(42).u32(7).b));
+    auto r = decode_barter_inspect_reply(packet(rof2::Op::Barter, Buf().u32(11).u32(42).u32(7).b));
     REQUIRE(r);
     CHECK(r->spawn_id == 42);
     CHECK(r->approval == 7);
-    CHECK(decode_barter_inspect_reply(packet(Op::Barter, Buf().u32(11).u32(42).u32(0).b))->approval == 0);
+    CHECK(decode_barter_inspect_reply(packet(rof2::Op::Barter, Buf().u32(11).u32(42).u32(0).b))->approval == 0);
 
     // OP_BuyerItems 14 as EQEmu writes it ({14, slot, slot, line}); 0x7d6ef0 reads the missing buyer fields as 0.
     BuyLine l = bone_chips();
@@ -101,22 +101,22 @@ TEST_CASE("barter: the inspect and its answer, buy lines from the server, the bu
     REQUIRE(back->trade_items.size() == 1);
     CHECK(back->trade_items[0].name == "Cloth Cap");
     // A removal ({7 / 14, 0, slot, 0}) reads as a line that is not enabled; it keeps the defaults (icon 500).
-    auto gone = decode_buy_line(packet(Op::BuyerItems, Buf().u32(14).u32(0).u32(4).u32(0).b));
+    auto gone = decode_buy_line(packet(rof2::Op::BuyerItems, Buf().u32(14).u32(0).u32(4).u32(0).b));
     REQUIRE(gone);
     CHECK(gone->slot == 4);
     CHECK(!gone->enabled);
     CHECK(!gone->toggle);
     CHECK(gone->icon == 500);
-    CHECK(!decode_buy_line(packet(Op::BuyerItems, Buf().u32(9).u32(0).b)));
+    CHECK(!decode_buy_line(packet(rof2::Op::BuyerItems, Buf().u32(9).u32(0).b)));
 
     // Buyer_SetAppearance_Struct (76 bytes): Handle_OP_Barter reads the byte at +72.
-    auto a = decode_buyer_appearance(packet(Op::Barter, Buf().u32(13).u32(42).zeros(64).u32(1).b));
+    auto a = decode_buyer_appearance(packet(rof2::Op::Barter, Buf().u32(13).u32(42).zeros(64).u32(1).b));
     REQUIRE(a);
     CHECK(a->spawn_id == 42);
     CHECK(a->enabled);
-    CHECK(!decode_buyer_appearance(packet(Op::Barter, Buf().u32(13).u32(42).zeros(64).u32(0).b))->enabled);
+    CHECK(!decode_buyer_appearance(packet(rof2::Op::Barter, Buf().u32(13).u32(42).zeros(64).u32(0).b))->enabled);
     CHECK(bytes_of(encode_buyer_appearance({42, true})) == Buf().u32(13).u32(42).zeros(64).u32(1).b);
-    CHECK(!decode_buyer_appearance(packet(Op::Barter, Buf().u32(13).u32(42).u8(1).b))); // too short
+    CHECK(!decode_buyer_appearance(packet(rof2::Op::Barter, Buf().u32(13).u32(42).u8(1).b))); // too short
 }
 
 TEST_CASE("barter: selling at the buyer and from the search window as the original serializes the sale") {
@@ -211,7 +211,7 @@ TEST_CASE("barter: the search request, its results and the buyers of the combo")
     // ENCODE(OP_BuyerItems) Barter_BuyerSearch: the zone as u16 zone, u16 instance (read as the u32 at +0x74).
     Buf found = Buf().u32(1).str("bone").u32(9).u32(0).u32(0).u8(1).u32(1);
     line_bytes(found).u32(42).u32(7001).u16(346).u16(0).str("Buyerbob");
-    auto m = decode_barter_search_results(packet(Op::BuyerItems, found.b));
+    auto m = decode_barter_search_results(packet(rof2::Op::BuyerItems, found.b));
     REQUIRE(m);
     CHECK(m->text == "bone");
     CHECK(m->transaction_id == 9);
@@ -224,14 +224,14 @@ TEST_CASE("barter: the search request, its results and the buyers of the combo")
     CHECK(bytes_of(encode_barter_search_results(*m)) == found.b);
 
     // OP_Barter 0x1a / 0x1b (EQEmu BuyerAddBuyertoBarterWindow_Struct), OP_BuyerItems 0x19.
-    auto add = decode_barter_add_buyer(packet(Op::Barter, Buf().u32(0x1a).u32(346).u32(7001).u32(42).fixed("Buyerbob", 64).b));
+    auto add = decode_barter_add_buyer(packet(rof2::Op::Barter, Buf().u32(0x1a).u32(346).u32(7001).u32(42).fixed("Buyerbob", 64).b));
     REQUIRE(add);
     CHECK(add->zone == 346);
     CHECK(add->buyer_id == 7001);
     CHECK(add->spawn_id == 42);
     CHECK(add->name == "Buyerbob");
-    CHECK(decode_barter_remove_buyer(packet(Op::Barter, Buf().u32(0x1b).u32(7001).b)) == 7001u);
-    auto list = decode_barter_buyer_list(packet(Op::BuyerItems, Buf().u32(0x19).u32(1).u32(346).u32(7001).u32(42).str("Buyerbob").b));
+    CHECK(decode_barter_remove_buyer(packet(rof2::Op::Barter, Buf().u32(0x1b).u32(7001).b)) == 7001u);
+    auto list = decode_barter_buyer_list(packet(rof2::Op::BuyerItems, Buf().u32(0x19).u32(1).u32(346).u32(7001).u32(42).str("Buyerbob").b));
     REQUIRE(list);
     REQUIRE(list->size() == 1);
     CHECK((*list)[0].name == "Buyerbob");
@@ -240,21 +240,21 @@ TEST_CASE("barter: the search request, its results and the buyers of the combo")
 TEST_CASE("barter: our buy lines, buyer mode, the item search, removal, welcome and the small requests") {
     CHECK(bytes_of(encode_buyer_mode(true)) == Buf().u32(2).b);
     CHECK(bytes_of(encode_buyer_mode(false)) == Buf().u32(3).b);
-    CHECK(decode_buyer_mode(packet(Op::Barter, Buf().u32(2).b)) == true);
-    CHECK(decode_buyer_mode(packet(Op::Barter, Buf().u32(3).b)) == false);
-    CHECK(!decode_buyer_mode(packet(Op::Barter, Buf().u32(13).b)));
+    CHECK(decode_buyer_mode(packet(rof2::Op::Barter, Buf().u32(2).b)) == true);
+    CHECK(decode_buyer_mode(packet(rof2::Op::Barter, Buf().u32(3).b)) == false);
+    CHECK(!decode_buyer_mode(packet(rof2::Op::Barter, Buf().u32(13).b)));
 
     auto q = bytes_of(encode_buyer_item_search("bone"));
     REQUIRE(q.size() == 68);
     CHECK(u32_at(q, 0) == 0);
     CHECK(std::string(reinterpret_cast<const char*>(q.data() + 4)) == "bone");
     Buf res = Buf().u32(0).u32(1).fixed("Bone Chips", 64).u32(13073).u32(600).u32(0);
-    auto items = decode_buyer_item_results(packet(Op::Barter, res.b));
+    auto items = decode_buyer_item_results(packet(rof2::Op::Barter, res.b));
     REQUIRE(items);
     REQUIRE(items->size() == 1);
     CHECK((*items)[0].item_id == 13073);
     CHECK(bytes_of(encode_buyer_item_results(*items)) == res.b);
-    CHECK(!decode_buyer_item_results(packet(Op::Barter, Buf().u32(0).u32(3).b))); // count past the end
+    CHECK(!decode_buyer_item_results(packet(rof2::Op::Barter, Buf().u32(0).u32(3).b))); // count past the end
 
     // OP_BuyerItems 6 / 7: BarterBuyLine_WriteToBuffer with the buyer fields (13 zero bytes for our lines), which
     // EQEmu's DECODE skips.
@@ -274,7 +274,7 @@ TEST_CASE("barter: our buy lines, buyer mode, the item search, removal, welcome 
 
     // Send_OP_Barter_00421470: {8, slot}; EQEmu reads +4.
     CHECK(bytes_of(encode_remove_buy_line(4)) == Buf().u32(8).u32(4).b);
-    CHECK(decode_remove_buy_line(packet(Op::Barter, Buf().u32(8).u32(4).b)) == 4u);
+    CHECK(decode_remove_buy_line(packet(rof2::Op::Barter, Buf().u32(8).u32(4).b)) == 4u);
 
     auto w = bytes_of(encode_buyer_welcome("Buying bone chips!"));
     REQUIRE(w.size() == 328);
@@ -294,8 +294,8 @@ TEST_CASE("barter: our buy lines, buyer mode, the item search, removal, welcome 
     CHECK(bytes_of(encode(in)) == Buf().u32(0xf).u32(0).u32(42).u32(346).u32(2).u32(0xffffffff).u32(13073).u32(2).b);
     CHECK(bytes_of(encode_barter_search_item_inspect(13073, false)) == Buf().u32(0x15).u32(13073).u32(0).b);
 
-    CHECK(decode_buyer_browsing(packet(Op::Barter, Buf().u32(0x10).fixed("Seller", 64).b)) == std::string("Seller"));
-    auto g = decode_buyer_greeting(packet(Op::Barter, Buf().u32(0x14).u32(0).fixed("Buyerbob", 64).fixed("Hi!", 256).b));
+    CHECK(decode_buyer_browsing(packet(rof2::Op::Barter, Buf().u32(0x10).fixed("Seller", 64).b)) == std::string("Seller"));
+    auto g = decode_buyer_greeting(packet(rof2::Op::Barter, Buf().u32(0x14).u32(0).fixed("Buyerbob", 64).fixed("Hi!", 256).b));
     REQUIRE(g);
     CHECK(g->name == "Buyerbob");
     CHECK(g->text == "Hi!");
@@ -509,20 +509,20 @@ TEST_CASE("barter windows: the inventory lists and what the player has") {
 
 TEST_CASE("barter: a count with no data behind it makes no empty lines or buyers") {
     // A search result that claims 10000 lines and carries none: nothing past the data (it used to give 10000 defaults).
-    auto m = decode_barter_search_results(packet(Op::BuyerItems, Buf().u32(1).str("").u32(9).u32(0).u32(0).u8(1).u32(10000).b));
+    auto m = decode_barter_search_results(packet(rof2::Op::BuyerItems, Buf().u32(1).str("").u32(9).u32(0).u32(0).u8(1).u32(10000).b));
     REQUIRE(m);
     CHECK(m->lines.empty());
-    auto list = decode_barter_buyer_list(packet(Op::BuyerItems, Buf().u32(0x19).u32(10000).b));
+    auto list = decode_barter_buyer_list(packet(rof2::Op::BuyerItems, Buf().u32(0x19).u32(10000).b));
     REQUIRE(list);
     CHECK(list->empty());
     // One real buyer, then the claimed rest is missing: the one is kept.
-    auto one = decode_barter_buyer_list(packet(Op::BuyerItems, Buf().u32(0x19).u32(500).u32(346).u32(7001).u32(42).str("Buyerbob").b));
+    auto one = decode_barter_buyer_list(packet(rof2::Op::BuyerItems, Buf().u32(0x19).u32(500).u32(346).u32(7001).u32(42).str("Buyerbob").b));
     REQUIRE(one);
     CHECK(one->size() == 1);
 }
 
 TEST_CASE("barter: a buy-lines text length near 2^32 is refused") {
     // The length check is written as n <= size - pos so that it cannot wrap where size_t is 32 bits.
-    CHECK(!decode_buy_lines_text(packet(Op::Barter, Buf().u32(kBuyerLinesText).u32(0xFFFFFFFCu).u8('a').b)));
-    CHECK(!decode_buy_lines_text(packet(Op::Barter, Buf().u32(kBuyerLinesText).u32(0xFFFFFFFFu).b)));
+    CHECK(!decode_buy_lines_text(packet(rof2::Op::Barter, Buf().u32(kBuyerLinesText).u32(0xFFFFFFFCu).u8('a').b)));
+    CHECK(!decode_buy_lines_text(packet(rof2::Op::Barter, Buf().u32(kBuyerLinesText).u32(0xFFFFFFFFu).b)));
 }

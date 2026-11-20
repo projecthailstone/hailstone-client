@@ -13,7 +13,7 @@
 #include "core/game_dir.h"
 #include "game/npc_collision.h"
 #include "game/world_state.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "plugin/policy.h"
 #include "scratch_dir.h"
 

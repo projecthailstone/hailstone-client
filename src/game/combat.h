@@ -2,7 +2,7 @@
 
 // Combat rules the client decides itself: consider colours and messages,
 // melee and death messages, targeting helpers and the animation clip for an
-// OP_Animation action. The packets are in net/zone_packets.h; the state lives
+// OP_Animation action. The packets are in net/protocol/rof2/packets/zone_packets.h; the state lives
 // in net::GameConnection.
 //
 // Sources: the original's BuildConsiderMessage @0x522e20,

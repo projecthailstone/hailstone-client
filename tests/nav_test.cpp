@@ -24,8 +24,8 @@
 #include "mq/tlo.h"
 #include "mock_server/harness.h"
 #include "mq_test_world.h"
-#include "net/movement_packets.h"
-#include "net/world_packets.h"
+#include "net/protocol/rof2/packets/movement_packets.h"
+#include "net/protocol/rof2/packets/world_packets.h"
 #include "nav/nav_mesh.h"
 #include "nav/path_follower.h"
 #include "nav/zone_nav.h"
@@ -1284,7 +1284,7 @@ TEST_CASE("nav: the server's path is asked quietly: nothing drawn, and the reply
     auto requests = [&] {
         std::size_t n = 0;
         for (const auto& p : rig.server.zone_log)
-            if (p.opcode == net::to_wire(net::Op::FindPersonRequest)) ++n;
+            if (p.opcode == net::rof2::to_wire(net::rof2::Op::FindPersonRequest)) ++n;
         return n;
     };
     auto lease = rig.conn.request_quiet_path(101);
@@ -2410,10 +2410,12 @@ TEST_CASE("nav: a quiet path asked and not answered before a zone change does no
     REQUIRE(rig.to_zone());
     const auto lease = rig.conn.request_quiet_path(101); REQUIRE(lease);
     // The zone change comes before the reply (the old zone's link dropped with it unanswered).
-    rig.conn.receive_world_packet_for_test(net::encode(net::ZoneServerInfo{"127.0.0.1", 7001}));
+    net::ZoneChange accepted_zone;
+    accepted_zone.success = 1;
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::ZoneChange, accepted_zone});
     const auto finds = rig.conn.find_replies();
-    std::vector<glm::vec3> path{{0, 0, 0}, {10, 5, 0}};
-    rig.conn.receive_zone_packet_for_test(net::encode_find_person_reply(path));
+    std::vector<glm::vec3> path{{10, 5, 0}, {0, 0, 0}, {10, 5, 0}};
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::FindPersonReply, path});
     CHECK_FALSE(rig.conn.take_quiet_path(lease));
     CHECK(rig.conn.find_replies() == finds); // there is no current-zone request to own this orphan
     CHECK_FALSE(rig.conn.player_path().active());
@@ -2428,12 +2430,12 @@ TEST_CASE("nav: a shown find and a quiet path in flight together each get their 
     auto lease = rig.conn.request_quiet_path(101);
     REQUIRE(lease);
     const auto finds = rig.conn.find_replies();
-    std::vector<glm::vec3> shown{{0, 0, 0}, {30, 40, 0}};
-    std::vector<glm::vec3> quiet{{0, 0, 0}, {10, 5, 0}, {20, 5, 1}};
-    rig.conn.receive_zone_packet_for_test(net::encode_find_person_reply(shown));
+    std::vector<glm::vec3> shown{{30, 40, 0}, {0, 0, 0}, {30, 40, 0}};
+    std::vector<glm::vec3> quiet{{20, 5, 1}, {0, 0, 0}, {10, 5, 0}, {20, 5, 1}};
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::FindPersonReply, shown});
     CHECK(rig.conn.find_replies() == finds + 1);
     CHECK_FALSE(rig.conn.take_quiet_path(lease));
-    rig.conn.receive_zone_packet_for_test(net::encode_find_person_reply(quiet));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::FindPersonReply, quiet});
     auto got = rig.conn.take_quiet_path(lease);
     REQUIRE(got);
     CHECK(got->size() == 4);
@@ -2442,9 +2444,9 @@ TEST_CASE("nav: a shown find and a quiet path in flight together each get their 
     lease = rig.conn.request_quiet_path(101);
     REQUIRE(lease);
     rig.conn.find_map_location({30.0f, 40.0f, 0.0f});
-    rig.conn.receive_zone_packet_for_test(net::encode_find_person_reply(quiet));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::FindPersonReply, quiet});
     CHECK(rig.conn.take_quiet_path(lease));
-    rig.conn.receive_zone_packet_for_test(net::encode_find_person_reply(shown));
+    rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::FindPersonReply, shown});
     CHECK(rig.conn.find_replies() == finds + 2);
     CHECK_FALSE(rig.conn.take_quiet_path(lease));
 }

@@ -15,7 +15,7 @@
 #include "game/hotbuttons.h"
 #include "game/inventory.h"
 #include "mock_server/harness.h"
-#include "net/item_packets.h"
+#include "net/protocol/rof2/packets/item_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::test;

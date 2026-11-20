@@ -3,6 +3,8 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <any>
+#include "net/session/soe/options.h"
 #include <chrono>
 #include <string>
 #include <vector>
@@ -10,7 +12,8 @@
 #include "core/byte_io.h"
 #include "manual_clock.h"
 #include "mock_server/harness.h"
-#include "net/chat_server.h"
+#include "net/connection/chat_client.h"
+#include "net/protocol/ucs/codec.h"
 
 using namespace hailstone;
 using namespace hailstone::net;
@@ -56,7 +59,7 @@ ChatServerInfo identity(std::uint16_t port) {
 ChatServer::Options options(const ManualClock& clock) {
     ChatServer::Options out;
     out.session.clock = clock.source();
-    out.session.service_interval = 0ms;
+    if (auto* soe = std::any_cast<net::soe::Options>(&out.session.parameters)) soe->service_interval = 0ms;
     return out;
 }
 
@@ -91,7 +94,8 @@ struct UcsRig {
 } // namespace
 
 TEST_CASE("UCS transport uses the separately observed chat profile") {
-    const auto profile = ucs_session_options();
+    const auto config = ucs_session_configuration();
+    const auto& profile = std::any_cast<const net::soe::Options&>(config.parameters);
     CHECK(profile.opcode_bytes == 1);
     CHECK(profile.window_slots == 24);
     CHECK(profile.window_bytes == 10000);
@@ -102,7 +106,7 @@ TEST_CASE("UCS transport uses the separately observed chat profile") {
     CHECK(profile.hold_time == 0ms);
     CHECK(profile.stat_interval == 0ms);
     CHECK(profile.keepalive_interval == 44s);
-    CHECK(ucs_session_options(true).keepalive_interval == 14800ms);
+    CHECK(std::any_cast<const net::soe::Options&>(ucs_session_configuration(true).parameters).keepalive_interval == 14800ms);
 }
 
 TEST_CASE("UCS login replies require complete counted mailbox lists and expose refusal") {

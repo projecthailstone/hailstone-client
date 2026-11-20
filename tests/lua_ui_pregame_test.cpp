@@ -127,6 +127,8 @@ TEST_CASE("hs.LoginScreen: nil off the login screen; the view's servers, fields,
     CHECK(ui("local v = hs.LoginScreen() return tostring(v.canSavePasswords) .. ' ' .. v.boxCount .. ' ' .. "
              "tostring(v.ready)") == "false 0 false");
     CHECK(ui("return #hs.LoginScreen().uiPacks") == "3");
+    CHECK(ui("local v = hs.LoginScreen() return v.gameCodec .. '/' .. v.sessionProtocol .. ' ' .. "
+             "#v.protocols .. ' ' .. v.protocols[1].name .. ' ' .. v.protocols[1].id") == "rof2/soe 1 RoF2 rof2");
     CHECK(ui("local p=hs.UI.pregame.LoginScreen().uiPacks "
              "return p[1].available and not p[3].available and p[3].reason=='No game asset folder is selected'") == "true");
 
@@ -178,6 +180,17 @@ TEST_CASE("hs.LoginSet and hs.LoginDo: the fields change, and the buttons ask th
     CHECK(v.name == "Gamma");
     ui("hs.LoginSet('ui', 'modern') hs.LoginSet('ui', 'nonesuch')");
     CHECK(v.ui == "modern"); // only a pack the client has
+    // A server can be returned from an unknown profile without silently
+    // switching codecs; selecting RoF2 restores its matching SOE transport.
+    v.game_codec = "future";
+    v.session_protocol = "custom";
+    ui("hs.LoginSet('protocol', 'unregistered')");
+    CHECK(v.game_codec == "future");
+    CHECK(v.session_protocol == "custom");
+    ui("hs.LoginSet('protocol', 'rof2')");
+    CHECK(v.game_codec == "rof2");
+    CHECK(v.session_protocol == "soe");
+    CHECK(ui("return hs.LoginScreen().gameCodec .. '/' .. hs.LoginScreen().sessionProtocol") == "rof2/soe");
     ui("hs.LoginSet('music', false)");
     CHECK_FALSE(v.pregame_music);
     CHECK(ui.host.login_action == static_cast<int>(A::MusicChanged));

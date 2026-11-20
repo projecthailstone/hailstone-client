@@ -12,8 +12,8 @@
 #include "game/appearance_data.h"
 #include "game/race_models.h"
 #include "game_files.h"
-#include "net/opcodes.h"
-#include "net/zone_packets.h"
+#include "net/protocol/rof2/opcode_map.h"
+#include "net/protocol/rof2/packets/zone_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::assets;

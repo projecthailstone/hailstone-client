@@ -17,11 +17,10 @@
 #include "game_files.h"
 #include "mock_server/harness.h"
 #include "mq_test_world.h"
-#include "net/aggro_packets.h"
-#include "net/game_connection.h"
-#include "net/group_packets.h"
-#include "net/opcodes.h"
-#include "net/spell_packets.h"
+#include "net/connection/game_connection.h"
+#include "net/messages/group.h"
+#include "net/messages/spell.h"
+#include "net/messages/zone.h"
 #include "scratch_dir.h"
 
 using namespace hailstone;
@@ -37,14 +36,6 @@ struct Host {
         host.conn = &conn;
     }
 };
-
-// OP_RestState: u8 in combat, then out of combat the downtime in seconds.
-net::AppPacket rest_state(bool combat, std::uint32_t seconds) {
-    std::vector<std::byte> b{std::byte{combat ? std::uint8_t{1} : std::uint8_t{0}}};
-    if (!combat)
-        for (int i = 0; i < 4; ++i) b.push_back(static_cast<std::byte>((seconds >> (8 * i)) & 0xff));
-    return net::AppPacket(net::to_wire(net::Op::RestState), std::move(b));
-}
 
 } // namespace
 
@@ -84,14 +75,14 @@ TEST_CASE("Combat timer: label 137 and gauge 29 from OP_RestState") {
     Host t(*game);
     CHECK(app::ui_label(t.host, 137).text.empty());
     CHECK(app::ui_gauge(t.host, 29).value == -1);
-    t.conn.receive_zone_packet_for_test(rest_state(false, 75));
+    t.conn.receive_zone_message_for_test({net::messages::GameOpcode::RestState, net::messages::RestCombatStatus{false, 75}});
     auto text = app::ui_label(t.host, 137).text;
     CHECK((text == "01:15" || text == "01:14")); // "%02d:%02d" of the seconds left
     CHECK(app::ui_gauge(t.host, 29).value == 1000); // min(left, 30) * 1000 / 30
-    t.conn.receive_zone_packet_for_test(rest_state(false, 15));
+    t.conn.receive_zone_message_for_test({net::messages::GameOpcode::RestState, net::messages::RestCombatStatus{false, 15}});
     int v = app::ui_gauge(t.host, 29).value;
     CHECK((v == 500 || v == 466));
-    t.conn.receive_zone_packet_for_test(rest_state(true, 0)); // in combat: no downtime
+    t.conn.receive_zone_message_for_test({net::messages::GameOpcode::RestState, net::messages::RestCombatStatus{true, 0}}); // in combat: no downtime
     CHECK(app::ui_label(t.host, 137).text.empty());
     CHECK(app::ui_gauge(t.host, 29).value == -1);
 }
@@ -183,10 +174,10 @@ TEST_CASE("Discipline timer: gauge 26 counts down between ticks with whole secon
     CHECK(app::ui_discipline_gauge(t.host, 100000).value == 0);
     CHECK(app::ui_discipline_gauge(t.host, 100000).text == "0s");
 
-    net::BuffPacket fade;
+    net::messages::BuffChange fade;
     fade.slot = game::kBuffSlots - 1;
     fade.fade = 1;
-    t.conn.receive_zone_packet_for_test(net::encode(fade));
+    t.conn.receive_zone_message_for_test({net::messages::GameOpcode::Buff, fade});
     CHECK_FALSE(t.conn.discipline_active());
     CHECK(app::ui_discipline_gauge(t.host, 100000).value == 0);
     CHECK(app::ui_discipline_gauge(t.host, 100000).text.empty());
@@ -197,10 +188,10 @@ TEST_CASE("Aggro meter labels: percents, their colours and the lock") {
     if (!game) return;
     Host t(*game);
     net::AggroTargetInfo info{0, 77};
-    t.conn.receive_zone_packet_for_test(net::encode(info));
+    t.conn.receive_zone_message_for_test({net::messages::GameOpcode::AggroMeterTargetInfo, info});
     net::AggroUpdate u;
     u.entries = {{0, 80}, {1, 100}, {2, 0}, {8, 40}};
-    t.conn.receive_zone_packet_for_test(net::encode(u));
+    t.conn.receive_zone_message_for_test({net::messages::GameOpcode::AggroMeterUpdate, u});
     auto mine = app::ui_label(t.host, 305);
     CHECK(mine.text == "80");
     REQUIRE(mine.argb);
@@ -212,7 +203,7 @@ TEST_CASE("Aggro meter labels: percents, their colours and the lock") {
     CHECK(app::ui_gauge(t.host, 149).value == 800);
     // locked on another spawn: the player window's copies (304, 306, 308) go blank
     info.lock_id = 55;
-    t.conn.receive_zone_packet_for_test(net::encode(info));
+    t.conn.receive_zone_message_for_test({net::messages::GameOpcode::AggroMeterTargetInfo, info});
     CHECK(app::ui_label(t.host, 306).text.empty());
     CHECK(app::ui_label(t.host, 308).text.empty());
     CHECK(app::ui_label(t.host, 305).text == "80");
@@ -237,7 +228,7 @@ TEST_CASE("Group labels: members are found by name or display name, ignoring cas
         m.slot = i;
         group.members.push_back(m);
     }
-    t.conn.receive_zone_packet_for_test(net::encode(group));
+    t.conn.receive_zone_message_for_test({net::messages::GameOpcode::GroupUpdateB, group});
     auto add = [&](std::uint32_t id, const char* name, std::uint8_t hp) {
         game::Spawn s;
         s.id = id;

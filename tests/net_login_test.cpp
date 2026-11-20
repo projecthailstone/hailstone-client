@@ -11,9 +11,12 @@
 
 #include "core/byte_io.h"
 #include "core/env.h"
-#include "net/des.h"
-#include "net/login.h"
-#include "net/session_codec.h"
+#include "net/crypto/des.h"
+#include "net/connection/login_client.h"
+#include "net/messages/login.h"
+#include "net/protocol/login/codec.h"
+#include "net/protocol/login/opcodes.h"
+#include "net/session/soe/framing.h"
 #include "platform/udp_socket.h"
 
 using namespace hailstone;
@@ -96,19 +99,19 @@ TEST_CASE("login requests, byte for byte (eqmain.dll's CSHandshake, CSPlayerLogi
 }
 
 TEST_CASE("token login rejects invalid tickets and preserves the whole bounded opaque ticket") {
-    CHECK_FALSE(login_codec::valid_login_token(""));
-    CHECK_FALSE(login_codec::valid_login_token(std::string("one\0two", 7)));
-    CHECK_FALSE(login_codec::valid_login_token(std::string(login_codec::kMaxLoginTokenBytes + 1, 'x')));
+    CHECK_FALSE(messages::valid_login_token(""));
+    CHECK_FALSE(messages::valid_login_token(std::string("one\0two", 7)));
+    CHECK_FALSE(messages::valid_login_token(std::string(messages::kMaxLoginTokenBytes + 1, 'x')));
     CHECK_THROWS_AS(login_codec::token_login_request(3, ""), std::runtime_error);
     CHECK_THROWS_AS(login_codec::token_login_request(3, std::string("one\0two", 7)), std::runtime_error);
-    CHECK_THROWS_AS(login_codec::token_login_request(3, std::string(login_codec::kMaxLoginTokenBytes + 1, 'x')),
+    CHECK_THROWS_AS(login_codec::token_login_request(3, std::string(messages::kMaxLoginTokenBytes + 1, 'x')),
                     std::runtime_error);
 
     // The ticket is opaque: the client does not impose one issuer's alphabet or prefix.
-    std::string token(login_codec::kMaxLoginTokenBytes, 'x');
+    std::string token(messages::kMaxLoginTokenBytes, 'x');
     token.front() = '+';
     token.back() = '=';
-    REQUIRE(login_codec::valid_login_token(token));
+    REQUIRE(messages::valid_login_token(token));
     const auto packet = login_codec::token_login_request(3, token);
     const auto plaintext = des::zero_cbc_decrypt(std::span(packet.data).subspan(10));
     REQUIRE(plaintext);

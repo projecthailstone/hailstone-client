@@ -1,7 +1,7 @@
 #include "game/mechanics/item_sums.h"
 
 #include "game/mechanics/item_stats.h"
-#include "net/item_packets.h"
+#include "net/messages/item.h"
 
 namespace hailstone::game::mechanics {
 

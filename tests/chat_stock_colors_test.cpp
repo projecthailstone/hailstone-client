@@ -10,8 +10,8 @@
 #include <vector>
 
 #include "mock_server/harness.h"
-#include "net/social_packets.h"
-#include "net/spell_packets.h"
+#include "net/protocol/rof2/packets/social_packets.h"
+#include "net/protocol/rof2/packets/spell_packets.h"
 
 using namespace hailstone;
 

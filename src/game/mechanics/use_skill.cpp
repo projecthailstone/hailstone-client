@@ -24,14 +24,6 @@ constexpr std::uint32_t kNeedShield = 0x306a;     // 12394
 
 float as_float(std::uint32_t bits) { return std::bit_cast<float>(bits); }
 
-void put32(std::vector<std::uint8_t>& p, std::uint32_t v) {
-    for (int i = 0; i < 4; ++i) p.push_back(static_cast<std::uint8_t>(v >> (8 * i)));
-}
-void put16(std::vector<std::uint8_t>& p, std::uint16_t v) {
-    p.push_back(static_cast<std::uint8_t>(v));
-    p.push_back(static_cast<std::uint8_t>(v >> 8));
-}
-
 class Run {
 public:
     Run(State& s, std::uint32_t skill, Queries& q)
@@ -49,13 +41,14 @@ private:
     }
     // A packet through the shared send buffer (0x45d372..): Send, then the send count; a failed send closes the
     // connection. Not connected: DebugLog unless 0xddf654.
-    void send(std::uint16_t opcode, const std::vector<std::uint8_t>& payload = {}) {
+    void send(SkillSend::Kind kind, std::uint32_t target = 0, std::uint32_t source = 0,
+              std::uint32_t value = 0) {
         if (s_.connected) {
-            bool ok = q_.send(4, opcode, payload);
+            bool ok = q_.send(4, SkillSend{kind, target, 0, value, source});
             --s_.send_count;
             if (!ok) q_.close_connection();
         } else if (!s_.quiet_log) {
-            q_.debug_log_void_connection(opcode);
+            q_.debug_log_void_connection(static_cast<std::uint32_t>(kind));
         }
     }
     Obj pc() { return q_.get_pc_client() ? Obj::Pc : Obj::Null; }
@@ -234,15 +227,13 @@ void Run::main_switch() {
     switch (skill_) {
     case 35:   // pick lock (0x45b531)
     case 17: { // disarm traps (0x45b5a2)
-        if (t && q_.is_interactive_object(*t)) send(skill_ == 35 ? 0x9be3 : 0x78bf);
+        if (t && q_.is_interactive_object(*t)) send(skill_ == 35 ? SkillSend::Kind::PickLock : SkillSend::Kind::DisarmTraps);
         else say(skill_ == 35 ? 0x11e6 : 0x11e7);
         return;
     }
     case 75: { // remove traps (0x45b613)
         if (t && q_.is_interactive_object(*t)) {
-            std::vector<std::uint8_t> p;
-            put32(p, t->spawn_id);
-            send(0x71da, p);
+            send(SkillSend::Kind::RemoveTrap, t->spawn_id);
         } else {
             say(0xe58, kColorRed);
         }
@@ -257,9 +248,7 @@ void Run::main_switch() {
         if (q_.is_vehicle_race(*t)) return fail(0x306c);
         std::string name = q_.trim_name(t->name);
         q_.chat(q_.build_token_string(0x306d, name, 0), kColorSkill, 1, 1);
-        std::vector<std::uint8_t> p;
-        put32(p, s_.target->spawn_id);
-        send(0x2703, p);
+        send(SkillSend::Kind::Taunt, s_.target->spawn_id);
         return;
     }
     case 25: { // feign death (0x45b863)
@@ -268,11 +257,8 @@ void Run::main_switch() {
             q_.set_auto_attack(0);
             q_.set_auto_range_attack(0);
         }
-        std::vector<std::uint8_t> p;
-        put32(p, s_.me->spawn_id);
-        put32(p, static_cast<std::uint32_t>(s_.feign_value));
-        put32(p, 0); // a byte flag 0, sent as a dword (its upper three bytes are never written)
-        send(0x52fa, p);
+        send(SkillSend::Kind::FeignDeath, s_.me->spawn_id, 0,
+             static_cast<std::uint32_t>(s_.feign_value));
         return;
     }
     case 71: { // intimidation (0x45b905)
@@ -288,7 +274,7 @@ void Run::main_switch() {
             return;
         }
         me.intimidate_count = 6;
-        send(0x640e);
+        send(SkillSend::Kind::InstillDoubt);
         return;
     }
     case 67: { // begging (0x45ba1f)
@@ -301,13 +287,7 @@ void Run::main_switch() {
         std::int32_t value = s_.skill_begging;
         ++s_.item_pending;
         q_.push_pending_reason(8);
-        std::vector<std::uint8_t> p;
-        put32(p, target_id);
-        put32(p, my_id);
-        put32(p, static_cast<std::uint32_t>(value));
-        put32(p, 0xff);
-        put16(p, 0);
-        send(0x6703, p);
+        send(SkillSend::Kind::Begging, target_id, my_id, static_cast<std::uint32_t>(value));
         return;
     }
     case 48: { // pick pockets (0x45bbb6)
@@ -338,18 +318,12 @@ void Run::main_switch() {
         std::int32_t value = s_.skill_pick_pockets;
         ++s_.item_pending;
         q_.push_pending_reason(9);
-        std::vector<std::uint8_t> p;
-        put32(p, target_id);
-        put32(p, my_id);
-        put32(p, static_cast<std::uint32_t>(value));
-        put32(p, 0xff);
-        put16(p, 0);
-        send(0x39e8, p);
+        send(SkillSend::Kind::PickPocket, target_id, my_id, static_cast<std::uint32_t>(value));
         q_.make_me_visible(q_.get_pc_client() ? Obj::PcCharacter : Obj::NullPcCharacter, 0, 1);
         return;
     }
-    case 32: send(0xecf); return;  // mend
-    case 62: send(0x2af); return;  // sense traps
+    case 32: send(SkillSend::Kind::Mend); return;  // mend
+    case 62: send(SkillSend::Kind::SenseTraps); return;  // sense traps
     case 16: { // disarm (0x45bed0)
         if (!t) return fail(0x3080);
         if (t == s_.me) return fail(0x3081);
@@ -366,27 +340,19 @@ void Run::main_switch() {
                 q_.remove_pc_affect(Obj::PcCharacter, affect, 0);
                 if (slot != -1) q_.notify_pc_affect_change(Obj::PcCharacter, slot, 1);
             }
-            std::vector<std::uint8_t> p;
-            put16(p, id);
-            put16(p, 3);
-            put32(p, static_cast<std::uint32_t>(mode));
-            send(0x971, p);
+            send(SkillSend::Kind::Unhide, id);
             q_.player_per_frame_update(s_.local_player);
         }
         std::uint32_t my_id = me.spawn_id, target_id = s_.target->spawn_id;
         q_.get_current_profile();
-        std::vector<std::uint8_t> p;
-        put32(p, my_id);
-        put32(p, target_id);
-        put32(p, static_cast<std::uint32_t>(s_.skill_disarm));
-        put32(p, 0xff); // a byte flag 0xff, sent as a dword (its upper three bytes are never written)
-        send(0x5ec8, p);
+        send(SkillSend::Kind::Disarm, target_id, my_id,
+             static_cast<std::uint32_t>(s_.skill_disarm));
         return;
     }
     case 53: // tracking (0x45c345)
         if (!s_.tracking_window_visible) q_.tracking_window_show(1, 1, 1);
         else q_.send_track();
-        send(0x4577);
+        send(SkillSend::Kind::TrackUnknown);
         return;
     case 42: { // sneak (0x45c3a4)
         if (me.sneak) {
@@ -395,16 +361,12 @@ void Run::main_switch() {
                 q_.pc_set_sneak(pc(), 0);
                 if (q_.pc_get_hide(pc())) save_position();
             }
-            std::vector<std::uint8_t> p;
-            put16(p, static_cast<std::uint16_t>(me.spawn_id));
-            put16(p, 0xf);
-            put32(p, 0);
-            send(0x971, p);
+            send(SkillSend::Kind::StopSneak, me.spawn_id);
             say(0x3032);
             return;
         }
         if (s_.attack) return fail(0x3084);
-        send(0x5d55);
+        send(SkillSend::Kind::Sneak);
         say(0x3086);
         return;
     }
@@ -437,7 +399,7 @@ void Run::main_switch() {
         q_.set_activity(0x1d, 0);
         save_position();
         if (me.type == 0) q_.pc_set_hide(pc(), 1);
-        send(0x67fe);
+        send(SkillSend::Kind::Hide);
         say(0x3089);
         q_.update_my_visible_status(Obj::Character, 1);
         return;
@@ -461,7 +423,7 @@ void Run::main_switch() {
         else if (heading >= 0) id = 0x308b;
         if (id) direction = q_.get_string(id, 0);
         q_.chat(q_.build_token_string(0x3093, direction, 0), kColorSkill, 1, 1);
-        send(0x260a);
+        send(SkillSend::Kind::SenseHeading);
         return;
     }
     case 27: // forage (0x45ce74)
@@ -475,7 +437,7 @@ void Run::main_switch() {
             q_.set_skill_can_use(skill_, 1);
             return;
         }
-        send(0x5306);
+        send(SkillSend::Kind::Forage);
         return;
     case 9: { // bind wound (0x45cb47)
         if (s_.activity == 9) return;
@@ -501,10 +463,7 @@ void Run::main_switch() {
         ++s_.item_pending;
         q_.push_interact_reason(1);
         q_.push_pending_reason(10);
-        std::vector<std::uint8_t> p;
-        put32(p, t->spawn_id);
-        put32(p, 0);
-        send(0x386, p);
+        send(SkillSend::Kind::BindWound, t->spawn_id);
         if (me.stand_state == 0x64) q_.change_position(me, 0x69);
         std::string text = t == s_.local_player ? q_.get_string(0x3094, 0)
                                                 : q_.build_token_string(0x3095, t->displayed_name, 0);
@@ -540,14 +499,11 @@ void Run::main_switch() {
         if (s_.stand_state == 0x64) {
             Handle animation = q_.get_animation(me);
             q_.animation_vf0c(animation, 5, 1, 0, std::bit_cast<std::uint32_t>(0.5f), 1, 0xff, 0);
-            std::vector<std::uint8_t> p;
-            put16(p, static_cast<std::uint16_t>(me.spawn_id));
-            put16(p, 0x505);
-            send(0x7177, p);
+            send(SkillSend::Kind::FishAnimation, me.spawn_id);
         }
         me.fishing_eta = static_cast<std::int32_t>(static_cast<std::uint32_t>(q_.get_time()) + 2000u);
         me.fishing_event = 1;
-        send(0x1e2a);
+        send(SkillSend::Kind::Fishing);
         return;
     }
     default: return; // apply poison and skills without a case: the timer only

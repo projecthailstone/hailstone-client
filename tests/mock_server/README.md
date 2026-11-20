@@ -4,7 +4,7 @@ An in-process EQEmu stand-in for tests that drive a real `LoginClient`, `GameCon
 
 | File | What it is |
 |---|---|
-| `soe_endpoint.{h,cpp}` | The server end of one UDP session, built on the client's own codec (`net/session_codec.h`). See below. |
+| `soe_endpoint.{h,cpp}` | The server end of one UDP session, built on the client's own codec (`net/session/soe/framing.h`). See below. |
 | `mock_eqemu.{h,cpp}` | The scripts for login, world and zone, plus triggers for gameplay traffic. See below. |
 | `profile_builder.{h,cpp}` | OP_PlayerProfile bytes (the client has no encoder for it). Shared with `net_packets_test.cpp`. |
 | `harness.h` | `Rig`: a `GameConnection` and a `MockEqServer` driven from one loop, and `pump()`. |

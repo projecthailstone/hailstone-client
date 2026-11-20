@@ -126,8 +126,18 @@ public:
         le(bits);
     }
 
-    void bytes(std::span<const std::byte> s) { buf_.insert(buf_.end(), s.begin(), s.end()); }
-    void zeros(std::size_t n) { buf_.insert(buf_.end(), n, std::byte{0}); }
+    void bytes(std::span<const std::byte> s) {
+        if (s.empty()) return;
+        // Append through vector's single-element insertion path. GCC 16 can
+        // misdiagnose the bulk resize/fill path for small inline buffers.
+        // Reserve before writing so no partially extended result remains.
+        buf_.reserve(buf_.size() + s.size());
+        for (std::byte value : s) buf_.push_back(value);
+    }
+    void zeros(std::size_t n) {
+        buf_.reserve(buf_.size() + n);
+        for (std::size_t i = 0; i < n; ++i) buf_.push_back(std::byte{0});
+    }
 
     // Writes s into a fixed-size NUL-padded field, truncating if needed.
     void fixed_string(std::string_view s, std::size_t n) {

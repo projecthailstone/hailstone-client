@@ -2,13 +2,13 @@
 
 // OP_PlayerProfile as the server writes it (rof2.cpp ENCODE(OP_PlayerProfile)). The client has no encoder for it
 // (a ~25 KB packet of count-prefixed arrays), so tests build the bytes here, field by field.
-// Used by the mock server and by tests/net_packets_test.cpp.
+// Used by the mock server and by tests/rof2/net_packets_test.cpp.
 
 #include <array>
 #include <cstdint>
 #include <string>
 
-#include "net/packet.h"
+#include "net/wire/app_packet.h"
 
 namespace hailstone::test {
 

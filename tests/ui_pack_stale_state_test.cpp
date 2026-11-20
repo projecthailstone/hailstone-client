@@ -20,7 +20,7 @@
 #include "app/addon_requirements.h"
 #include "core/config.h"
 #include "core/game_dir.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "ui/dev_screens.h"
 #include "ui/lua/lua_host.h"
 #include "ui/ui_packs.h"
@@ -171,7 +171,13 @@ struct PackRig {
         ImGui::GetIO().AddMouseButtonEvent(b, down);
         s->frames(frames);
     }
-    bool no_errors() { return ImGui::FindWindowByName("UI errors") == nullptr; }
+    // ImGui retains windows in its registry even after the error panel stops being
+    // rendered. A current Lua error is what invalidates the UI state contract.
+    bool no_errors() {
+        const auto status = s->lua.load_status();
+        for (const auto& error : status.errors) INFO(error);
+        return status.error_count == 0;
+    }
 };
 
 // The spell bar (modern spellgems.lua) with every gem shown, empty, and the clicks on them listed.
@@ -291,7 +297,9 @@ TEST_CASE("UI packs: blocked bases cannot start or retain a Lua presentation and
     CHECK(rig.lua->run_for_test("", "return POLICY_UI") == "builtin");
     CHECK(rig.leaf_frames == leaf_frames); CHECK(rig.inherited_frames == inherited_frames);
     CHECK(rig.builtin_frames > builtin_frames);
-    CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+    const auto status = rig.lua->load_status();
+    for (const auto& error : status.errors) INFO(error);
+    CHECK(status.error_count == 0);
     CHECK(saved.get_string("ui.name") == "addon.decor.leaf");
     Config reread;
     REQUIRE(reread.load(config_file));

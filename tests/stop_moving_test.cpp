@@ -13,15 +13,16 @@
 #include <string>
 
 #include "app/player_movement.h"
-#include "core/byte_io.h"
 #include "core/game_dir.h"
 #include "game/collision.h"
 #include "game/mechanics/collision_movement.h"
 #include "game/spells.h"
 #include "mock_server/harness.h"
-#include "net/game_connection.h"
-#include "net/spell_packets.h"
-#include "net/zone_packets.h"
+#include "net/connection/game_connection.h"
+#include "net/messages/message.h"
+#include "net/messages/notice.h"
+#include "net/messages/spell.h"
+#include "net/messages/zone.h"
 #include "scratch_dir.h"
 
 using namespace hailstone;
@@ -29,23 +30,13 @@ using namespace hailstone::net;
 
 namespace {
 
-AppPacket appearance(std::uint32_t id, std::uint32_t state) {
-    SpawnAppearance a;
-    a.spawn_id = static_cast<std::uint16_t>(id);
-    a.type = kAppearanceAnimation;
-    a.parameter = state;
-    return encode(a);
+messages::GameMessage appearance(std::uint32_t id, std::uint32_t state) {
+    return {messages::GameOpcode::SpawnAppearance,
+            SpawnAppearance{static_cast<std::uint16_t>(id), kAppearanceAnimation, state}};
 }
 
-// RoF2's Stun_Struct: the duration, the lean byte, EQEmu's 163 and 67.
-AppPacket stun(std::uint32_t ms, bool lean = false) {
-    ByteWriter w;
-    w.le(ms);
-    w.le<std::uint8_t>(lean ? 1 : 0);
-    w.le<std::uint8_t>(163);
-    w.le<std::uint8_t>(67);
-    w.le<std::uint8_t>(0);
-    return AppPacket(to_wire(Op::Stun), w.take());
+messages::GameMessage stun(std::uint32_t ms, bool lean = false) {
+    return {messages::GameOpcode::Stun, StunNotice{ms, lean}};
 }
 
 // A spells_us.txt line: one effect in slot 1 (the rest 254), a long duration.
@@ -67,7 +58,7 @@ std::string spell_line(int id, int spa) {
 }
 
 void give_buff(GameConnection& conn, std::uint32_t slot, std::uint32_t spell) {
-    BuffPacket bp;
+    messages::BuffChange bp;
     bp.entity_id = conn.world().player_id;
     bp.slot = slot;
     bp.buff.effect_type = 2;
@@ -75,7 +66,7 @@ void give_buff(GameConnection& conn, std::uint32_t slot, std::uint32_t spell) {
     bp.buff.spell_id = spell;
     bp.buff.duration = 100;
     bp.buff.caster_id = conn.world().player_id;
-    conn.receive_zone_packet_for_test(encode(bp));
+    conn.receive_zone_message_for_test({messages::GameOpcode::Buff, bp});
 }
 
 game::CollisionMesh flat_scene() {
@@ -157,7 +148,7 @@ TEST_CASE("Stop moving: another spawn that lies down, sits or loots loses its sp
         s.speed_heading = 2.0f;
         s.update_time = 10.0;
         w.spawns[s.id] = s;
-        conn.receive_zone_packet_for_test(appearance(s.id, state));
+        conn.receive_zone_message_for_test(appearance(s.id, state));
         const game::Spawn& r = w.spawns.at(s.id);
         CHECK(r.stand_state == state);
         const bool stops = state == kStandLying || state == kStandSitting || state == kStandLooting;
@@ -179,11 +170,11 @@ TEST_CASE("Stop moving: the local player's stops count a stun that starts and si
     auto& conn = rig.conn;
     REQUIRE(rig.to_zone());
     const std::uint32_t speed = conn.speed_stops(), turn = conn.turn_stops();
-    conn.receive_zone_packet_for_test(stun(3000));
+    conn.receive_zone_message_for_test(stun(3000));
     CHECK(conn.speed_stops() == speed + 1);
     CHECK(conn.turn_stops() == turn); // StunMe leaves the turn rate
     // One that comes while a stun runs does not stop the player again (StunMe returns first).
-    conn.receive_zone_packet_for_test(stun(3000));
+    conn.receive_zone_message_for_test(stun(3000));
     CHECK(conn.speed_stops() == speed + 1);
 
     REQUIRE(conn.set_stand_state(kStandSitting));
@@ -192,10 +183,10 @@ TEST_CASE("Stop moving: the local player's stops count a stun that starts and si
     REQUIRE(conn.set_stand_state(kStandStanding));
     CHECK(conn.speed_stops() == speed + 2);
     // The server lying the player down (its own SpawnAppearance), then again in the same state: once.
-    conn.receive_zone_packet_for_test(appearance(conn.world().player_id, kStandLying));
+    conn.receive_zone_message_for_test(appearance(conn.world().player_id, kStandLying));
     CHECK(conn.speed_stops() == speed + 3);
     CHECK(conn.turn_stops() == turn + 2);
-    conn.receive_zone_packet_for_test(appearance(conn.world().player_id, kStandLying));
+    conn.receive_zone_message_for_test(appearance(conn.world().player_id, kStandLying));
     CHECK(conn.speed_stops() == speed + 3);
 }
 
@@ -209,10 +200,10 @@ TEST_CASE("Stun: StunMe's rules for the local player") {
 
     // A stun runs its own time: one that comes meanwhile, or EQEmu's UnStun (a duration of 0), changes nothing.
     std::int64_t t = GameConnection::now_ms();
-    conn.receive_zone_packet_for_test(stun(3000));
+    conn.receive_zone_message_for_test(stun(3000));
     REQUIRE(conn.stunned());
-    conn.receive_zone_packet_for_test(stun(0));
-    conn.receive_zone_packet_for_test(stun(10000));
+    conn.receive_zone_message_for_test(stun(0));
+    conn.receive_zone_message_for_test(stun(10000));
     conn.passage_of_time_for_test(t + 2000);
     CHECK(conn.stunned());
     conn.passage_of_time_for_test(GameConnection::now_ms() + 3000);
@@ -220,7 +211,7 @@ TEST_CASE("Stun: StunMe's rules for the local player") {
 
     // A duration below 1000 ms, 0 too, is a 1000 ms stun for a player.
     t = GameConnection::now_ms();
-    conn.receive_zone_packet_for_test(stun(0));
+    conn.receive_zone_message_for_test(stun(0));
     REQUIRE(conn.stunned());
     conn.passage_of_time_for_test(t + 500);
     CHECK(conn.stunned());
@@ -229,14 +220,14 @@ TEST_CASE("Stun: StunMe's rules for the local player") {
 
     // The lean byte: the turn rate 32 (the movement code's), counted once a stun starts.
     const std::uint32_t leans = conn.stun_leans();
-    conn.receive_zone_packet_for_test(stun(2000, true));
+    conn.receive_zone_message_for_test(stun(2000, true));
     CHECK(conn.stun_leans() == leans + 1);
     conn.passage_of_time_for_test(GameConnection::now_ms() + 2000);
     REQUIRE_FALSE(conn.stunned());
 
     // Mesmerized when the timer passes: the stun goes on until the mez ends it.
     give_buff(conn, 0, 501);
-    conn.receive_zone_packet_for_test(stun(1000));
+    conn.receive_zone_message_for_test(stun(1000));
     conn.passage_of_time_for_test(GameConnection::now_ms() + 1000);
     CHECK(conn.stunned()); // the timer is gone: EndStun comes with the mez's removal (ProcessAffects)
 }
@@ -251,7 +242,7 @@ TEST_CASE("Stun: stun immunity (SPA 40) keeps the player from being stunned") {
     give_buff(conn, 0, 500);
     REQUIRE(conn.spell_state().buffs[0].spell == 500);
     const std::uint32_t stops = conn.speed_stops();
-    conn.receive_zone_packet_for_test(stun(3000));
+    conn.receive_zone_message_for_test(stun(3000));
     CHECK_FALSE(conn.stunned());
     CHECK(conn.speed_stops() == stops);
 }
@@ -277,8 +268,8 @@ TEST_CASE("Stop moving: the local player stops when stunned or lying down with f
         std::uint32_t now = 10000;
         // Up to speed first.
         CHECK(run_forward(m, conn, world, now, 1000) > 10.0f);
-        if (feign) conn.receive_zone_packet_for_test(appearance(me.id, kStandLying));
-        else conn.receive_zone_packet_for_test(stun(5000));
+        if (feign) conn.receive_zone_message_for_test(appearance(me.id, kStandLying));
+        else conn.receive_zone_message_for_test(stun(5000));
         // Friction takes the velocity it had in a moment; the speed it ran at no longer pushes it.
         run_forward(m, conn, world, now, 500);
         CHECK(run_forward(m, conn, world, now, 1500) < 0.5f);
@@ -310,7 +301,7 @@ TEST_CASE("Stun: a stun with the lean byte turns the player until it ends") {
     };
     frames(200);
     CHECK(yaw == doctest::Approx(0.0f));
-    conn.receive_zone_packet_for_test(stun(5000, true));
+    conn.receive_zone_message_for_test(stun(5000, true));
     REQUIRE(conn.stunned());
     frames(500);
     // 32 heading units a tick (50 ms): ten ticks turn it 320 of 512.

@@ -18,7 +18,7 @@
 #include "app/chat_tabs.h"
 #include "app/lua_ui.h"
 #include "core/game_dir.h"
-#include "net/game_connection.h"
+#include "net/connection/game_connection.h"
 #include "ui/dev_screens.h"
 #include "ui/lua/lua_host.h"
 #include "ui/ui_ini.h"

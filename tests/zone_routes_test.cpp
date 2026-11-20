@@ -1,11 +1,11 @@
-// game/zone_routes.h (the map's zone links and routes) and net/zone_link_packets.h (the server's list).
+// game/zone_routes.h (the map's zone links and routes) and net/protocol/extensions/hailstone/zone_link_packets.h (the server's list).
 #include <doctest/doctest.h>
 
 #include <set>
 #include <vector>
 
 #include "game/zone_routes.h"
-#include "net/zone_link_packets.h"
+#include "net/protocol/extensions/hailstone/zone_link_packets.h"
 
 using namespace hailstone;
 using game::ZoneRoutes;

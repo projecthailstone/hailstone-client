@@ -2,7 +2,7 @@
 
 #include <limits>
 
-#include "achievement_test_packets.h"
+#include "rof2/achievement_test_packets.h"
 #include "game/achievements.h"
 
 using namespace hailstone;

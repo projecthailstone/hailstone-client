@@ -7,9 +7,9 @@
 #include <vector>
 
 #include "mock_server/harness.h"
-#include "net/group_packets.h"
-#include "net/social_packets.h"
-#include "net/spell_packets.h"
+#include "net/protocol/rof2/packets/group_packets.h"
+#include "net/protocol/rof2/packets/social_packets.h"
+#include "net/protocol/rof2/packets/spell_packets.h"
 
 using namespace hailstone;
 
@@ -46,7 +46,7 @@ TEST_CASE("Spell Awareness: active group or raid ranks identify nearby casts thr
     conn.set_spell_table_for_test(spells);
     auto cast = [&](std::uint16_t caster, const std::string& expected) {
         rig.chat();
-        conn.receive_zone_packet_for_test(net::encode(net::BeginCast{10, caster, 1500}));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::BeginCast, net::messages::CastStarted{10, caster, 1500}});
         std::vector<std::string> messages;
         for (const auto& line : rig.chat())
             if (line.kind == net::ChatEvent::Kind::Spell) messages.push_back(line.text);
@@ -62,11 +62,11 @@ TEST_CASE("Spell Awareness: active group or raid ranks identify nearby casts thr
         member.name = name;
         group.members.push_back(member);
     }
-    conn.receive_zone_packet_for_test(net::encode(group));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::GroupUpdateB, group});
     cast(201, "CAST Watcher");
     net::GroupLeadershipUpdate group_ranks;
     group_ranks.ranks[8] = 1;
-    conn.receive_zone_packet_for_test(net::encode(group_ranks));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::GroupLeadershipAAUpdate, group_ranks});
     REQUIRE(conn.leadership_ability_active(8, 1));
     cast(201, "CAST Watcher <Awareness fixture>");
     cast(202, "CAST Stronger"); // six levels above the player
@@ -74,7 +74,7 @@ TEST_CASE("Spell Awareness: active group or raid ranks identify nearby casts thr
     cast(204, "SONG Singer sings. <Awareness fixture>"); // the suffix preserves a bard's original message
     cast(static_cast<std::uint16_t>(config.own_spawn_id), "SELF Awareness fixture");
     group_ranks.ranks[8] = 0;
-    conn.receive_zone_packet_for_test(net::encode(group_ranks));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::GroupLeadershipAAUpdate, group_ranks});
     cast(201, "CAST Watcher");
 
     net::RaidUpdate raid;
@@ -82,20 +82,20 @@ TEST_CASE("Spell Awareness: active group or raid ranks identify nearby casts thr
     raid.general.leader_name = conn.character_name();
     for (int i = 0; i < 18; ++i) {
         raid.general.player_name = i ? "Member" + std::to_string(i) : conn.character_name();
-        conn.receive_zone_packet_for_test(net::encode_raid_update(raid));
+        conn.receive_zone_message_for_test({net::messages::GameOpcode::RaidUpdate, raid});
     }
     raid.general.action = net::kRaidSetLeaderAbilities;
     raid.leadership[0x17] = 1;
-    conn.receive_zone_packet_for_test(net::encode_raid_update(raid));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::RaidUpdate, raid});
     REQUIRE(conn.leadership_ability_active(0x17, 1));
     cast(201, "CAST Watcher <Awareness fixture>");
     raid.general.action = net::kRaidRemoveMember;
     raid.general.player_name = "Member17";
-    conn.receive_zone_packet_for_test(net::encode_raid_update(raid));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::RaidUpdate, raid});
     REQUIRE_FALSE(conn.leadership_ability_active(0x17, 1));
     cast(201, "CAST Watcher"); // retaining the rank does not retain the benefit below eighteen members
 
-    conn.receive_zone_packet_for_test(net::encode(net::SpawnAppearance{
-        static_cast<std::uint16_t>(config.own_spawn_id), 20, 1}));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::SpawnAppearance, net::SpawnAppearance{
+        static_cast<std::uint16_t>(config.own_spawn_id), 20, 1}});
     cast(202, "CAST Stronger (Awareness fixture)"); // the native GM spelling is independent of ranks and level
 }

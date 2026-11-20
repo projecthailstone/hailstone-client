@@ -7,7 +7,7 @@
 
 #include "core/game_dir.h"
 #include "game/map_files.h"
-#include "net/server_files.h"
+#include "game/server_file_sync.h"
 #include "scratch_dir.h"
 
 using namespace hailstone;

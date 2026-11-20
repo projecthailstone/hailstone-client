@@ -2,7 +2,11 @@
 
 #include "game/mechanics/character.h"
 #include "mq_test_world.h"
-#include "net/tribute_packets.h"
+#include "net/messages/tribute.h"
+#include "net/messages/message.h"
+#include "net/messages/social.h"
+#include "net/protocol/rof2/packets/tribute_packets.h"
+#include "net/protocol/rof2/packets/item_packets.h" // Corrupt inventory wire check.
 
 using namespace hailstone;
 
@@ -20,7 +24,7 @@ void receive_benefit(net::GameConnection& connection, bool guild, std::int16_t s
     packet.item.slot = tribute_slot(guild, slot);
     packet.item.astr = strength;
     packet.item.races = packet.item.classes = 0xffff;
-    connection.receive_zone_packet_for_test(net::encode_item_packet(false, packet));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::ItemPacket, packet});
 }
 
 std::int32_t strength(const net::GameConnection& connection) {
@@ -48,7 +52,7 @@ net::GuildTributeActive guild_settings() {
 }
 
 void join_guild(net::GameConnection& connection, std::uint32_t guild_id) {
-    connection.receive_zone_packet_for_test(net::encode(net::SpawnAppearance{1, 22, guild_id}));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::SpawnAppearance, net::SpawnAppearance{1, 22, guild_id}});
 }
 
 } // namespace
@@ -62,9 +66,9 @@ TEST_CASE("tribute bonuses: personal state retires only changed items and disabl
     // A first settings snapshot may follow the corresponding received items.
     receive_benefit(connection, false, 0, 3);
     receive_benefit(connection, false, 1, 5);
-    connection.receive_zone_packet_for_test(net::encode(settings));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::TributeUpdate, settings});
     CHECK(strength(connection) == baseline + 8);
-    connection.receive_zone_packet_for_test(net::encode(settings)); // repeated state is not a removal
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::TributeUpdate, settings}); // repeated state is not a removal
     CHECK(strength(connection) == baseline + 8);
     connection.tribute_toggle(false); // a request alone cannot deactivate the server's benefits
     CHECK(strength(connection) == baseline + 8);
@@ -73,12 +77,12 @@ TEST_CASE("tribute bonuses: personal state retires only changed items and disabl
     disabled.active = false;
     auto malformed = net::encode(disabled);
     malformed.data.pop_back();
-    connection.receive_zone_packet_for_test(malformed);
+    CHECK_FALSE(net::decode_tribute_settings(malformed));
     CHECK(connection.tribute().settings.active);
     CHECK(strength(connection) == baseline + 8);
 
     settings.tiers[0] = 1;
-    connection.receive_zone_packet_for_test(net::encode(settings));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::TributeUpdate, settings});
     CHECK_FALSE(connection.inventory().at(tribute_slot(false, 0)));
     REQUIRE(connection.inventory().at(tribute_slot(false, 1)));
     CHECK(strength(connection) == baseline + 5);
@@ -86,16 +90,16 @@ TEST_CASE("tribute bonuses: personal state retires only changed items and disabl
     CHECK(strength(connection) == baseline + 12);
 
     settings.tributes[1] = 13;
-    connection.receive_zone_packet_for_test(net::encode(settings));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::TributeUpdate, settings});
     REQUIRE(connection.inventory().at(tribute_slot(false, 0)));
     CHECK_FALSE(connection.inventory().at(tribute_slot(false, 1)));
     receive_benefit(connection, false, 1, 9);
     settings.tributes[1] = net::kTributeNone;
-    connection.receive_zone_packet_for_test(net::encode(settings));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::TributeUpdate, settings});
     CHECK(strength(connection) == baseline + 7);
 
     settings.active = false;
-    connection.receive_zone_packet_for_test(net::encode(settings));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::TributeUpdate, settings});
     CHECK(strength(connection) == baseline);
     connection.tribute_toggle(true); // activating locally grants no item or bonus
     CHECK(strength(connection) == baseline);
@@ -112,33 +116,33 @@ TEST_CASE("tribute bonuses: guild opt-out and changed benefits retire the correc
     receive_benefit(connection, false, 0, 2);
     receive_benefit(connection, true, 0, 3);
     receive_benefit(connection, true, 1, 5);
-    connection.receive_zone_packet_for_test(net::encode(settings));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildSendActiveTributes, settings});
     CHECK(strength(connection) == baseline + 10);
-    connection.receive_zone_packet_for_test(net::encode(net::GuildTributeOpt{"Tester", true}));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildOptInOut, net::GuildTributeOpt{"Tester", true}});
     // Donation status refreshes repeat the enabled selections without resending their items.
-    connection.receive_zone_packet_for_test(net::encode(settings, net::Op::GuildTributeToggleReply));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildTributeToggleReply, settings});
     CHECK(strength(connection) == baseline + 10);
     connection.guild_tribute_opt(false);
     connection.guild_tribute_toggle(false);
     CHECK(strength(connection) == baseline + 10);
 
-    connection.receive_zone_packet_for_test(net::encode(net::GuildTributeOpt{"SomebodyElse", false}));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildOptInOut, net::GuildTributeOpt{"SomebodyElse", false}});
     CHECK(strength(connection) == baseline + 10);
     auto malformed_opt = net::encode(net::GuildTributeOpt{"Tester", false});
     malformed_opt.data.pop_back();
-    connection.receive_zone_packet_for_test(malformed_opt);
+    CHECK_FALSE(net::decode_guild_tribute_opt(malformed_opt));
     CHECK(strength(connection) == baseline + 10);
-    connection.receive_zone_packet_for_test(net::encode(net::GuildTributeOpt{"tEsTeR", false}));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildOptInOut, net::GuildTributeOpt{"tEsTeR", false}});
     CHECK(connection.guild_tribute().opted_in == false);
     CHECK(strength(connection) == baseline + 2); // personal benefit is independent
     connection.guild_tribute_opt(true);
     CHECK(strength(connection) == baseline + 2);
 
-    connection.receive_zone_packet_for_test(net::encode(net::GuildTributeOpt{"Tester", true}));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildOptInOut, net::GuildTributeOpt{"Tester", true}});
     receive_benefit(connection, true, 0, 3);
     receive_benefit(connection, true, 1, 5);
     settings.tiers[1] = 1;
-    connection.receive_zone_packet_for_test(net::encode(settings));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildSendActiveTributes, settings});
     REQUIRE(connection.inventory().at(tribute_slot(true, 0)));
     CHECK_FALSE(connection.inventory().at(tribute_slot(true, 1)));
     CHECK(strength(connection) == baseline + 5);
@@ -148,16 +152,16 @@ TEST_CASE("tribute bonuses: guild opt-out and changed benefits retire the correc
     disabled.enabled = false;
     auto malformed_state = net::encode(disabled);
     malformed_state.data.pop_back();
-    connection.receive_zone_packet_for_test(malformed_state);
+    CHECK_FALSE(net::decode_guild_tribute_active(malformed_state));
     CHECK(connection.guild_tribute().active.enabled);
     CHECK(strength(connection) == baseline + 12);
     settings.tributes[0] = net::kTributeNone;
-    connection.receive_zone_packet_for_test(net::encode(settings));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildSendActiveTributes, settings});
     CHECK_FALSE(connection.inventory().at(tribute_slot(true, 0)));
     REQUIRE(connection.inventory().at(tribute_slot(true, 1)));
     CHECK(strength(connection) == baseline + 9);
     settings.enabled = false;
-    connection.receive_zone_packet_for_test(net::encode(settings));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildSendActiveTributes, settings});
     CHECK(strength(connection) == baseline + 2);
 }
 
@@ -172,17 +176,17 @@ TEST_CASE("tribute bonuses: membership and zone or session changes retire old be
         net::TributeAbility ability;
         ability.id = 11;
         ability.name = "Catalog ability";
-        connection.receive_zone_packet_for_test(net::encode(ability));
+        connection.receive_zone_message_for_test({net::messages::GameOpcode::TributeInfo, ability});
         ability.id = 21;
-        connection.receive_zone_packet_for_test(net::encode_guild_tribute_info(ability));
-        connection.receive_zone_packet_for_test(net::encode(personal));
-        connection.receive_zone_packet_for_test(net::encode(guild));
-        connection.receive_zone_packet_for_test(net::encode(net::GuildTributeOpt{"Tester", true}));
+        connection.receive_zone_message_for_test({net::messages::GameOpcode::SendGuildTributes, ability});
+        connection.receive_zone_message_for_test({net::messages::GameOpcode::TributeUpdate, personal});
+        connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildSendActiveTributes, guild});
+        connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildOptInOut, net::GuildTributeOpt{"Tester", true}});
         receive_benefit(connection, false, 0, 3);
         receive_benefit(connection, true, 0, 5);
 
         // Another player's guild change is unrelated. Our own membership loss clears only guild benefits.
-        connection.receive_zone_packet_for_test(net::encode(net::SpawnAppearance{12, 22, 9}));
+        connection.receive_zone_message_for_test({net::messages::GameOpcode::SpawnAppearance, net::SpawnAppearance{12, 22, 9}});
         REQUIRE(connection.inventory().at(tribute_slot(true, 0)));
         join_guild(connection, 0xffffffff);
         CHECK_FALSE(connection.inventory().at(tribute_slot(true, 0)));
@@ -192,12 +196,12 @@ TEST_CASE("tribute bonuses: membership and zone or session changes retire old be
         CHECK_FALSE(connection.guild_tribute().opted_in.has_value());
         CHECK(connection.guild_tribute().abilities.contains(21));
         join_guild(connection, 8);
-        connection.receive_zone_packet_for_test(net::encode(guild));
+        connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildSendActiveTributes, guild});
         receive_benefit(connection, true, 0, 5);
 
         const auto profile = *connection.profile();
         if (disconnect) connection.disconnect();
-        else connection.receive_world_packet_for_test(net::encode(net::ZoneServerInfo{"127.0.0.1", 9000}));
+        else net::GameConnectionTestAccess::retire_zone_observations(connection);
         CHECK_FALSE(connection.inventory().at(tribute_slot(false, 0)));
         CHECK_FALSE(connection.inventory().at(tribute_slot(true, 0)));
         CHECK_FALSE(connection.tribute().settings_known);
@@ -212,8 +216,8 @@ TEST_CASE("tribute bonuses: membership and zone or session changes retire old be
         receive_benefit(connection, true, 0, 9);
         personal.tributes[0] = 14;
         guild.tributes[0] = 24;
-        connection.receive_zone_packet_for_test(net::encode(personal));
-        connection.receive_zone_packet_for_test(net::encode(guild));
+        connection.receive_zone_message_for_test({net::messages::GameOpcode::TributeUpdate, personal});
+        connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildSendActiveTributes, guild});
         REQUIRE(connection.inventory().at(tribute_slot(false, 0)));
         REQUIRE(connection.inventory().at(tribute_slot(true, 0)));
     }
@@ -225,11 +229,11 @@ TEST_CASE("tribute bonuses: guild metadata received before our join appearance s
         mq_test::World world("hailstone_tribute_guild_join_order");
         auto& connection = *world.conn;
         join_guild(connection, 7);
-        connection.receive_zone_packet_for_test(net::encode(net::SpawnAppearance{1, 23, 1}));
+        connection.receive_zone_message_for_test({net::messages::GameOpcode::SpawnAppearance, net::SpawnAppearance{1, 23, 1}});
         auto previous = guild_settings();
         previous.guild_id = 7;
-        connection.receive_zone_packet_for_test(net::encode(previous));
-        connection.receive_zone_packet_for_test(net::encode(net::GuildTributeOpt{"Tester", true}));
+        connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildSendActiveTributes, previous});
+        connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildOptInOut, net::GuildTributeOpt{"Tester", true}});
         receive_benefit(connection, true, 0, 3);
         receive_benefit(connection, true, 1, 5);
         REQUIRE(connection.inventory().at(tribute_slot(true, 0)));
@@ -240,7 +244,7 @@ TEST_CASE("tribute bonuses: guild metadata received before our join appearance s
         // authorize changes to our current guild while this sequence is still in flight.
         if (metadata_guild == 0) {
             CHECK_FALSE(connection.can_change_guild_tribute());
-            connection.receive_zone_packet_for_test(net::encode_guild_rank_permission(1, 23, true, 8));
+            connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildUpdate, net::GuildUpdate{5, 8, 1, 23, true, {}}});
             CHECK_FALSE(connection.can_change_guild_tribute());
         }
         // Even if the two guilds choose identical benefit ids/tiers, the old guild's received items must retire.
@@ -248,10 +252,10 @@ TEST_CASE("tribute bonuses: guild metadata received before our join appearance s
         incoming.guild_id = metadata_guild;
         incoming.favor = 9876;
         incoming.timer_ms = 123456;
-        connection.receive_zone_packet_for_test(net::encode(incoming));
+        connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildSendActiveTributes, incoming});
         if (metadata_guild == 0) CHECK_FALSE(connection.can_change_guild_tribute());
         join_guild(connection, 8);
-        connection.receive_zone_packet_for_test(net::encode(net::SpawnAppearance{1, 23, 1}));
+        connection.receive_zone_message_for_test({net::messages::GameOpcode::SpawnAppearance, net::SpawnAppearance{1, 23, 1}});
         CHECK(connection.guild().guild_id == 8);
         CHECK_FALSE(connection.inventory().at(tribute_slot(true, 0)));
         CHECK_FALSE(connection.inventory().at(tribute_slot(true, 1)));
@@ -285,9 +289,9 @@ TEST_CASE("tribute bonuses: the later bulk inventory snapshot preserves received
     auto personal = personal_settings();
     personal.tributes = {11, 12, 13, 14, 15};
     auto guild = guild_settings();
-    connection.receive_zone_packet_for_test(net::encode(personal));
-    connection.receive_zone_packet_for_test(net::encode(guild));
-    connection.receive_zone_packet_for_test(net::encode(net::GuildTributeOpt{"Tester", true}));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::TributeUpdate, personal});
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildSendActiveTributes, guild});
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildOptInOut, net::GuildTributeOpt{"Tester", true}});
     for (std::int16_t slot = 0; slot < 5; ++slot)
         receive_benefit(connection, false, slot, static_cast<std::int8_t>(slot + 1));
     receive_benefit(connection, true, 0, 5);
@@ -302,7 +306,7 @@ TEST_CASE("tribute bonuses: the later bulk inventory snapshot preserves received
     carried.id = 2001;
     carried.name = "New carried inventory";
     carried.slot = net::ItemSlot::possessions(25);
-    connection.receive_zone_packet_for_test(net::encode_char_inventory({carried}));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::CharInventory, std::vector<net::Item>{carried}});
     CHECK_FALSE(connection.inventory().at(net::ItemSlot::possessions(23)));
     CHECK_FALSE(connection.inventory().at(net::ItemSlot::possessions(24)));
     REQUIRE(connection.inventory().at(carried.slot));
@@ -321,7 +325,7 @@ TEST_CASE("tribute bonuses: the later bulk inventory snapshot preserves received
     net::Item guild_replacement = *connection.inventory().at(tribute_slot(true, 1));
     guild_replacement.id = 3002;
     guild_replacement.astr = 13;
-    connection.receive_zone_packet_for_test(net::encode_char_inventory({carried, personal_replacement, guild_replacement}));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::CharInventory, std::vector<net::Item>{carried, personal_replacement, guild_replacement}});
     REQUIRE(connection.inventory().at(personal_replacement.slot));
     REQUIRE(connection.inventory().at(guild_replacement.slot));
     CHECK(connection.inventory().at(personal_replacement.slot)->id == 3001);
@@ -330,29 +334,29 @@ TEST_CASE("tribute bonuses: the later bulk inventory snapshot preserves received
 
     auto malformed = net::encode_char_inventory({carried});
     malformed.data.pop_back();
-    connection.receive_zone_packet_for_test(malformed);
+    CHECK_FALSE(net::decode_char_inventory(malformed));
     CHECK(strength(connection) == baseline + 43);
-    connection.receive_zone_packet_for_test(net::encode_char_inventory({}));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::CharInventory, std::vector<net::Item>{}});
     CHECK(strength(connection) == baseline + 43);
     net::Item banked;
     banked.id = 2002;
     banked.name = "Received bank item";
     banked.slot = {net::kInvBank, 2, -1, -1};
-    connection.receive_zone_packet_for_test(net::encode_char_inventory({banked}));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::CharInventory, std::vector<net::Item>{banked}});
     REQUIRE(connection.inventory().at(banked.slot));
     CHECK(strength(connection) == baseline + 43);
 
     personal.active = false;
-    connection.receive_zone_packet_for_test(net::encode(personal));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::TributeUpdate, personal});
     CHECK(strength(connection) == baseline + 18);
-    connection.receive_zone_packet_for_test(net::encode_char_inventory({carried}));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::CharInventory, std::vector<net::Item>{carried}});
     for (std::int16_t slot = 0; slot < 5; ++slot)
         CHECK_FALSE(connection.inventory().at(tribute_slot(false, slot)));
     CHECK(strength(connection) == baseline + 18);
     guild.enabled = false;
-    connection.receive_zone_packet_for_test(net::encode(guild));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::GuildSendActiveTributes, guild});
     CHECK(strength(connection) == baseline);
-    connection.receive_zone_packet_for_test(net::encode_char_inventory({}));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::CharInventory, std::vector<net::Item>{}});
     CHECK_FALSE(connection.inventory().at(tribute_slot(true, 0)));
     CHECK_FALSE(connection.inventory().at(tribute_slot(true, 1)));
     CHECK(strength(connection) == baseline);

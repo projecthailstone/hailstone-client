@@ -12,7 +12,7 @@
 #include "app/lua_ui_windows.h"
 #include "core/byte_io.h"
 #include "mock_server/harness.h"
-#include "net/real_estate_packets.h"
+#include "net/protocol/rof2/packets/real_estate_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::net;

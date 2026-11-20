@@ -1,6 +1,6 @@
 // hailstone_check: checks a server's client_files/ folder as Hailstone will take it (docs/plugins.md): its
 // hailstone.cfg (what it says, and what Hailstone does not understand in it), and where each file goes in a player's
-// servers/<profile>/ folder (net/server_files.h server_file_destination), naming the files a client refuses.
+// servers/<profile>/ folder (game/server_file_sync.h server_file_destination), naming the files a client refuses.
 //
 //   hailstone_check CLIENT_FILES_DIR
 //
@@ -14,7 +14,7 @@
 #include <system_error>
 #include <vector>
 
-#include "net/server_files.h"
+#include "game/server_file_sync.h"
 #include "plugin/policy.h"
 
 namespace fs = std::filesystem;

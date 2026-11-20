@@ -13,7 +13,9 @@
 #include "game/server_ext.h"
 #include "mock_server/harness.h"
 #include "mq_test_world.h"
-#include "net/packet_io.h"
+#include "net/protocol/rof2/wire_io.h"
+#include "net/protocol/rof2/packets/tracking_packets.h"
+#include "net/messages/tracking.h"
 
 using namespace hailstone;
 
@@ -43,16 +45,20 @@ struct TrackingPolicy final : game::ServerExtension {
     game::MapPolicy map_policy(const net::GameConnection&) const override { return {map_flags, "fixture", revision}; }
     std::optional<bool> before_use_skill(net::GameConnection&, std::uint32_t) override { return skill_allowed; }
 };
-net::AppPacket list_reply(bool two = false) {
-    ByteWriter bytes;
-    bytes.le<std::uint16_t>(two ? 2 : 1);
-    const auto row = [&](std::uint32_t id) {
-        bytes.le(id); bytes.f32(20); bytes.le<std::uint8_t>(10); bytes.le<std::uint8_t>(1);
-        net::detail::write_cstring(bytes, id == 101 ? "Tracking fixture" : "Replacement fixture");
-        bytes.le<std::uint8_t>(0); bytes.le<std::uint8_t>(0);
+net::TrackReply list_reply(bool two = false) {
+    net::TrackReply reply;
+    auto add = [&](std::int32_t id, std::string name, std::int32_t position) {
+        game::TrackEntry entry;
+        entry.spawn_id = id;
+        entry.distance = 20.0f;
+        entry.level = 10;
+        entry.name = std::move(name);
+        entry.position = position;
+        reply.entries.push_back(std::move(entry));
     };
-    row(101); if (two) row(102);
-    return net::make_packet(net::Op::Track, std::move(bytes));
+    add(101, "Tracking fixture", 0);
+    if (two) add(102, "Replacement fixture", 1);
+    return reply;
 }
 struct TrackingRig {
     std::shared_ptr<TrackingPolicy> policy = std::make_shared<TrackingPolicy>();
@@ -62,7 +68,7 @@ struct TrackingRig {
         auto value = test::quick_options(); value.plugins = policy_source; value.hooks = packet_hooks; return value;
     }
     TrackingRig() : rig(test::MockConfig::standard(), options(policy, &hooks)) { REQUIRE(rig.to_zone()); }
-    void publish() { rig.conn.receive_zone_packet_for_test(list_reply()); }
+    void publish() { rig.conn.receive_zone_message_for_test({net::messages::GameOpcode::Track, list_reply()}); }
 };
 }
 
@@ -123,25 +129,32 @@ TEST_CASE("Tracking admission: short replies answer the request and are read len
     auto& connection = test.rig.conn;
     connection.open_tracking();
     REQUIRE(net::GameConnectionTestAccess::has_tracking_request(connection));
-    auto broken = list_reply();
-    broken.data.pop_back();
-    connection.receive_zone_packet_for_test(broken);
+    // A truncated RoF2 record is decoded at the wire boundary, then delivered as a typed reply.
+    ByteWriter short_wire;
+    short_wire.le<std::uint16_t>(1);
+    short_wire.le<std::uint32_t>(101);
+    short_wire.f32(20.0f);
+    short_wire.le<std::uint8_t>(10);
+    short_wire.le<std::uint8_t>(1);
+    net::detail::write_cstring(short_wire, "Tracking fixture");
+    short_wire.le<std::uint8_t>(0); // last mercenary flag deliberately absent
+    auto decoded = net::decode_track_reply(net::make_packet(net::rof2::Op::Track, std::move(short_wire)));
+    REQUIRE(decoded);
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::Track, *decoded});
     CHECK_FALSE(net::GameConnectionTestAccess::has_tracking_request(connection));
     REQUIRE(connection.tracking_lines().size() == 1);
     connection.send_track();
-    connection.receive_zone_packet_for_test(net::make_empty(net::Op::Track));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::Track, net::TrackReply{}});
     CHECK_FALSE(net::GameConnectionTestAccess::has_tracking_request(connection));
     CHECK(connection.tracking_lines().empty());
     connection.send_track(); test.publish();
     REQUIRE(connection.tracking_lines().size() == 1);
     connection.send_track();
-    ByteWriter empty; empty.le<std::uint16_t>(0);
-    connection.receive_zone_packet_for_test(net::make_packet(net::Op::Track, std::move(empty)));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::Track, net::TrackReply{}});
     CHECK_FALSE(net::GameConnectionTestAccess::has_tracking_request(connection));
     CHECK(connection.tracking_lines().empty());
     connection.send_track();
-    ByteWriter timer; timer.le(game::kTrackReplyTimer);
-    connection.receive_zone_packet_for_test(net::make_packet(net::Op::Track, std::move(timer)));
+    connection.receive_zone_message_for_test({net::messages::GameOpcode::Track, net::TrackReply{.timer = true}});
     CHECK_FALSE(net::GameConnectionTestAccess::has_tracking_request(connection));
     connection.send_track(); test.publish();
     CHECK(connection.tracking_lines().size() == 1);
@@ -193,17 +206,13 @@ TEST_CASE("Tracking admission: a predicate changing the list during the send gua
     bool armed = false, mutate = true;
     test.policy->inspect = [&] { if (armed) { armed = false; connection.set_track_sort(1); } };
     const auto owner = test.hooks.new_owner("tracking predicate fixture");
-    test.hooks.on_packet(owner, plugin::Stream::Zone, plugin::Direction::Out, net::to_wire(net::Op::TrackTarget),
+    test.hooks.on_packet(owner, plugin::Stream::Zone, plugin::Direction::Out, net::rof2::to_wire(net::rof2::Op::TrackTarget),
         [&](net::AppPacket&) { if (mutate) armed = true; return plugin::Flow::Continue; });
     connection.track_spawn(101, revision);
     CHECK(connection.tracking().revision != revision); CHECK(connection.tracking().tracked == 0);
-    connection.send_zone_packet(net::AppPacket(0x7f08));
-    REQUIRE(test.rig.until([&] {
-        return std::any_of(test.rig.server.zone_log.begin(), test.rig.server.zone_log.end(),
-            [](const auto& packet) { return packet.opcode == 0x7f08; });
-    }));
+    test.rig.run_for(std::chrono::milliseconds(100));
     CHECK(std::none_of(test.rig.server.zone_log.begin(), test.rig.server.zone_log.end(),
-        [](const auto& packet) { return packet.opcode == net::to_wire(net::Op::TrackTarget); }));
+        [](const auto& packet) { return packet.opcode == net::rof2::to_wire(net::rof2::Op::TrackTarget); }));
     mutate = false;
     connection.track_spawn(101, connection.tracking().revision);
     CHECK(connection.tracking().tracked == 101);
@@ -212,11 +221,11 @@ TEST_CASE("Tracking admission: a predicate changing the list during the send gua
 TEST_CASE("Tracking admission: an outgoing replacement target wins without an older packet or local commit") {
     TrackingRig test;
     auto& connection = test.rig.conn;
-    connection.open_tracking(); connection.receive_zone_packet_for_test(list_reply(true));
+    connection.open_tracking(); connection.receive_zone_message_for_test({net::messages::GameOpcode::Track, list_reply(true)});
     REQUIRE(connection.tracking_lines().size() == 2);
     const auto owner = test.hooks.new_owner("tracking replacement fixture");
     bool replaced = false;
-    test.hooks.on_packet(owner, plugin::Stream::Zone, plugin::Direction::Out, net::to_wire(net::Op::TrackTarget),
+    test.hooks.on_packet(owner, plugin::Stream::Zone, plugin::Direction::Out, net::rof2::to_wire(net::rof2::Op::TrackTarget),
         [&](net::AppPacket& packet) {
             ByteReader reader(packet.data);
             if (reader.le<std::uint32_t>() == 101 && !replaced) {
@@ -226,13 +235,12 @@ TEST_CASE("Tracking admission: an outgoing replacement target wins without an ol
         });
     connection.track_spawn(101, connection.tracking().revision);
     CHECK(replaced); CHECK(connection.tracking().tracked == 102);
-    connection.send_zone_packet(net::AppPacket(0x7f09));
     REQUIRE(test.rig.until([&] {
         return std::any_of(test.rig.server.zone_log.begin(), test.rig.server.zone_log.end(),
-            [](const auto& packet) { return packet.opcode == 0x7f09; });
+            [](const auto& packet) { return packet.opcode == net::rof2::to_wire(net::rof2::Op::TrackTarget); });
     }));
     std::vector<std::uint32_t> targets;
-    for (const auto& packet : test.rig.server.zone_log) if (packet.opcode == net::to_wire(net::Op::TrackTarget)) {
+    for (const auto& packet : test.rig.server.zone_log) if (packet.opcode == net::rof2::to_wire(net::rof2::Op::TrackTarget)) {
         ByteReader reader(packet.data); targets.push_back(reader.le<std::uint32_t>());
     }
     CHECK(targets == std::vector<std::uint32_t>{102});

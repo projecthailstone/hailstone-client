@@ -30,47 +30,47 @@
 #include "core/shared_file_cache.h"
 #include "core/update_manifest.h"
 #include "core/zip_read.h"
-#include "net/session_codec.h"
-#include "net/zone_packets.h"
+#include "net/session/soe/framing.h"
+#include "net/protocol/rof2/packets/zone_packets.h"
 #include "platform/gpu_ipc.h"
 #include "render/gpu_cache_protocol.h"
 #if defined(HAILSTONE_FUZZ_DECODERS)
 #include <iterator>
 
-#include "net/aa_packets.h"
-#include "net/achievement_packets.h"
-#include "net/ability_packets.h"
-#include "net/adventure_packets.h"
-#include "net/aggro_packets.h"
-#include "net/chat_server.h"
-#include "net/door_packets.h"
-#include "net/dz_packets.h"
-#include "net/group_packets.h"
-#include "net/fellowship_packets.h"
-#include "net/guild_banner_packets.h"
-#include "net/guild_bank_packets.h"
-#include "net/item_packets.h"
-#include "net/login.h"
-#include "net/market_packets.h"
-#include "net/marketplace_packets.h"
-#include "net/merchant_packets.h"
-#include "net/movement_packets.h"
-#include "net/notice_packets.h"
-#include "net/quest_npc_packets.h"
-#include "net/settings_packets.h"
-#include "net/zone_link_packets.h"
-#include "net/pet_packets.h"
-#include "net/real_estate_packets.h"
-#include "net/reward_packets.h"
-#include "net/player_packets.h"
-#include "net/social_packets.h"
-#include "net/spell_packets.h"
-#include "net/task_packets.h"
-#include "net/shroud_packets.h"
-#include "net/trade_packets.h"
-#include "net/training_packets.h"
-#include "net/tribute_packets.h"
-#include "net/world_packets.h"
+#include "net/protocol/rof2/packets/aa_packets.h"
+#include "net/protocol/rof2/packets/achievement_packets.h"
+#include "net/protocol/rof2/packets/ability_packets.h"
+#include "net/protocol/rof2/packets/adventure_packets.h"
+#include "net/protocol/rof2/packets/aggro_packets.h"
+#include "net/connection/chat_client.h"
+#include "net/protocol/rof2/packets/door_packets.h"
+#include "net/protocol/rof2/packets/dz_packets.h"
+#include "net/protocol/rof2/packets/group_packets.h"
+#include "net/protocol/rof2/packets/fellowship_packets.h"
+#include "net/protocol/rof2/packets/guild_banner_packets.h"
+#include "net/protocol/rof2/packets/guild_bank_packets.h"
+#include "net/protocol/rof2/packets/item_packets.h"
+#include "net/connection/login_client.h"
+#include "net/protocol/rof2/packets/market_packets.h"
+#include "net/protocol/rof2/packets/marketplace_packets.h"
+#include "net/protocol/rof2/packets/merchant_packets.h"
+#include "net/protocol/rof2/packets/movement_packets.h"
+#include "net/protocol/rof2/packets/notice_packets.h"
+#include "net/protocol/extensions/hailstone/quest_npc_packets.h"
+#include "net/protocol/extensions/hailstone/settings_packets.h"
+#include "net/protocol/extensions/hailstone/zone_link_packets.h"
+#include "net/protocol/rof2/packets/pet_packets.h"
+#include "net/protocol/rof2/packets/real_estate_packets.h"
+#include "net/protocol/rof2/packets/reward_packets.h"
+#include "net/protocol/rof2/packets/player_packets.h"
+#include "net/protocol/rof2/packets/social_packets.h"
+#include "net/protocol/rof2/packets/spell_packets.h"
+#include "net/protocol/rof2/packets/task_packets.h"
+#include "net/protocol/rof2/packets/shroud_packets.h"
+#include "net/protocol/rof2/packets/trade_packets.h"
+#include "net/protocol/rof2/packets/training_packets.h"
+#include "net/protocol/rof2/packets/tribute_packets.h"
+#include "net/protocol/rof2/packets/world_packets.h"
 #if defined(HAILSTONE_HAS_NMS)
 #include "nms_packets.h"
 #endif
@@ -78,8 +78,8 @@
 #include "triune_packets.h"
 #include "triune_windows.h"
 #endif
-#include "fuzz_game_decoders.h"
-#include "fuzz_achievements.h"
+#include "rof2/fuzz_game_decoders.h"
+#include "rof2/fuzz_achievements.h"
 #endif
 #endif
 
@@ -157,14 +157,14 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
             (void)hailstone::net::decode_zone_points(p);
         }
 #elif defined(HAILSTONE_FUZZ_DECODERS)
-        // Every typed decoder of tests/fuzz_decoders.inc: byte 0 picks it, bytes 1..2 are the opcode, the rest the
+        // Every typed decoder of tests/rof2/fuzz_decoders.inc: byte 0 picks it, bytes 1..2 are the opcode, the rest the
         // payload.
         using Fn = void (*)(const hailstone::net::AppPacket&);
         static const Fn kDecoders[] = {
 #define HAILSTONE_FUZZ_DECODER(fn) [](const hailstone::net::AppPacket& p) { (void)hailstone::net::fn(p); },
 #define HAILSTONE_FUZZ_PLUGIN_DECODER(ns, fn) [](const hailstone::net::AppPacket& p) { (void)::ns::fn(p.data); },
 #define HAILSTONE_FUZZ_GAME_DECODER(fn) [](const hailstone::net::AppPacket& p) { ::hailstone::fuzz_game::feed(&::hailstone::game::fn, p.data); },
-#include "fuzz_decoders.inc"
+#include "rof2/fuzz_decoders.inc"
 #undef HAILSTONE_FUZZ_GAME_DECODER
 #undef HAILSTONE_FUZZ_PLUGIN_DECODER
 #undef HAILSTONE_FUZZ_DECODER

@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <utility>
@@ -17,6 +18,7 @@
 #include <lua.hpp>
 
 #include "lua_ui_api_mock.h"
+#include "core/log.h"
 
 #include "ui/imgui_layer.h"
 #include "ui/lua/lua_host.h"
@@ -1799,4 +1801,52 @@ TEST_CASE("Lua UI: a runaway string match is stopped at the time limit") {
         CHECK(lua.run_for_test("", "return string.find(('a'):rep(100) .. 'b', 'a-b')") == "1"); // runs as before
     }
     ImGui::DestroyContext(ctx);
+}
+
+TEST_CASE("Lua UI: Log records Lua caller locations, function names, and formatted text") {
+    hailstone::test::ScratchDir scratch("lua_ui_logging_locations");
+    const auto dir = scratch.path() / "pack";
+    fs::create_directories(dir);
+    std::ofstream(dir / "loot.lua") << R"lua(local function on_loot()
+  ui.Log(string.format("chat: Your luck has upgraded %d drops!", 2))
+end
+on_loot()
+local function log_wrapper(text)
+  ui.Log(text)
+end
+log_wrapper("wrapper: a second message")
+)lua";
+    const auto file = scratch.path() / "logs" / "lua.log";
+    REQUIRE(hailstone::log::open_file(file));
+    {
+        std::unique_ptr<ImGuiContext, void(*)(ImGuiContext*)> context(ImGui::CreateContext(), ImGui::DestroyContext);
+        ImGui::GetIO().IniFilename = nullptr;
+        unsigned char* pixels = nullptr;
+        int width = 0, height = 0;
+        ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+        hailstone::ui::lua::LuaUi lua(dir, scratch.path() / "settings.txt");
+        ImGui::GetIO().DisplaySize = ImVec2(800, 600);
+        ImGui::GetIO().DeltaTime = 1.0f / 60.0f;
+        ImGui::NewFrame();
+        lua.frame();
+        ImGui::Render();
+        CHECK(lua.load_status().error_count == 0);
+        // An API call made directly from the C host has no Lua caller frame; it must still log cleanly.
+        lua_State* L = lua.state();
+        const int top = lua_gettop(L);
+        lua_getglobal(L, "ui");
+        lua_getfield(L, -1, "Log");
+        lua_remove(L, -2);
+        lua_pushliteral(L, "no Lua caller");
+        CHECK(lua_pcall(L, 1, 0, 0) == LUA_OK);
+        lua_settop(L, top);
+    }
+    hailstone::log::close_file();
+    std::ifstream input(file);
+    const std::string contents((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    CHECK(contents.find("[info] [loot.lua:2, on_loot] ui script: chat: Your luck has upgraded 2 drops!") !=
+          std::string::npos);
+    CHECK(contents.find("[info] [loot.lua:6, log_wrapper] ui script: wrapper: a second message") !=
+          std::string::npos);
+    CHECK(contents.find("[info] [unknown:?, ?] ui script: no Lua caller") != std::string::npos);
 }
