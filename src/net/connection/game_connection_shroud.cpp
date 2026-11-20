@@ -427,6 +427,7 @@ void GameConnection::apply_shroud_transition(ShroudTransition transition) {
     for (const auto& [key, item] : inventory_.items())
         if (key.first == kInvBank || key.first == kInvSharedBank) transition.possessions.push_back(item);
     inventory_.load(std::move(transition.possessions));
+    refresh_instrument_state();
     mark_cursor_origin(CursorOrigin::Unknown);
     quantity_.reset();
 }

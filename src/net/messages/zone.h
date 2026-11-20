@@ -649,6 +649,8 @@ struct RunMode { bool running = true; };
 struct ViewActorAcknowledgement { std::uint32_t spawn_id = 0; };
 // Player-state bit used by the sheathe/unsheathe command.
 inline constexpr std::uint32_t kPlayerStateSheathed = 0x2;
+// PlayerState bit for an equipped instrument in either hand (primary or secondary).
+inline constexpr std::uint32_t kPlayerStateInstrument = 0x10;
 
 struct PlayerState {
     std::uint32_t spawn_id = 0;

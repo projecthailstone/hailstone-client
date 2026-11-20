@@ -7,12 +7,13 @@
 #include <lua.hpp>
 
 #include "app/lua_ui.h"
-#include "core/byte_io.h"
+
 #include "game/mechanics/combat_ability.h"
 #include "game/spells.h"
 #include "mq_test_world.h"
 #include "net/messages/item.h"
 #include "net/messages/merchant.h"
+#include "net/messages/notice.h"
 
 using namespace hailstone;
 
@@ -225,11 +226,10 @@ TEST_CASE("merchant: Usable only hides learned discipline tomes and lower ranks"
     CHECK(lua.text(kNames) == "Tome: Guard,Tome: Guard II,Tome: Other Guard");
 
     auto learn = [&](std::uint32_t id) {
-        ByteWriter data;
-        data.le(id);
-        for (int n = 1; n < game::mechanics::combat_ability::kCombatAbilities; ++n)
-            data.le<std::uint32_t>(0);
-        c.receive_zone_packet_for_test(net::make_packet(net::Op::DisciplineUpdate, std::move(data)));
+        net::messages::LearnedDisciplines disciplines;
+        disciplines.spell_ids.resize(game::mechanics::combat_ability::kCombatAbilities);
+        disciplines.spell_ids.front() = id;
+        c.receive_zone_message_for_test({net::messages::GameOpcode::DisciplineUpdate, std::move(disciplines)});
         api.begin_frame();
     };
     learn(rank_one);

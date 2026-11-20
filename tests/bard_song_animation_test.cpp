@@ -13,9 +13,9 @@
 #include "game/spells.h"
 #include "mock_server/harness.h"
 #include "mq_test_world.h"
-#include "net/player_packets.h"
-#include "net/spell_packets.h"
-#include "net/zone_packets.h"
+#include "net/messages/spell.h"
+#include "net/messages/zone.h"
+#include "net/protocol/rof2/packets/player_packets.h"
 
 using namespace hailstone;
 
@@ -55,29 +55,29 @@ std::string spell_line(int id, int skill, int casting_anim) {
     return out + "\n";
 }
 
-net::AppPacket landing(std::uint32_t spell, std::uint16_t source, std::uint16_t target) {
-    net::Action a;
+net::messages::SpellAction landing(std::uint32_t spell, std::uint16_t source, std::uint16_t target) {
+    net::messages::SpellAction a;
     a.source = source;
     a.target = target;
     a.type = kSpellActionType;
     a.spell_id = spell;
-    return net::encode(a);
+    return a;
 }
 
-std::optional<std::size_t> player_state_index(const test::Rig& rig, net::Op op, std::uint32_t spawn_id,
+std::optional<std::size_t> player_state_index(const test::Rig& rig, net::rof2::Op op, std::uint32_t spawn_id,
                                               std::uint32_t state) {
     for (std::size_t i = 0; i < rig.server.zone_log.size(); ++i) {
         const auto& p = rig.server.zone_log[i];
-        if (p.opcode != net::to_wire(op)) continue;
+        if (p.opcode != net::rof2::to_wire(op)) continue;
         if (auto s = net::decode_player_state(p); s && s->spawn_id == spawn_id && s->state == state) return i;
     }
     return std::nullopt;
 }
 
-std::size_t player_state_count(const test::Rig& rig, net::Op op, std::uint32_t spawn_id, std::uint32_t state) {
+std::size_t player_state_count(const test::Rig& rig, net::rof2::Op op, std::uint32_t spawn_id, std::uint32_t state) {
     std::size_t n = 0;
     for (const auto& p : rig.server.zone_log) {
-        if (p.opcode != net::to_wire(op)) continue;
+        if (p.opcode != net::rof2::to_wire(op)) continue;
         if (auto s = net::decode_player_state(p); s && s->spawn_id == spawn_id && s->state == state) ++n;
     }
     return n;
@@ -85,7 +85,7 @@ std::size_t player_state_count(const test::Rig& rig, net::Op op, std::uint32_t s
 
 std::optional<std::size_t> client_ready_index(const test::Rig& rig) {
     for (std::size_t i = 0; i < rig.server.zone_log.size(); ++i)
-        if (rig.server.zone_log[i].opcode == net::to_wire(net::Op::ClientReady)) return i;
+        if (rig.server.zone_log[i].opcode == net::rof2::to_wire(net::rof2::Op::ClientReady)) return i;
     return std::nullopt;
 }
 
@@ -124,10 +124,10 @@ TEST_CASE("A bard entering the zone with an instrument publishes the bit after C
     REQUIRE(me != 0);
     CHECK((rig.conn.world().spawns.at(me).player_state & net::kPlayerStateInstrument) != 0);
     REQUIRE(rig.until([&] {
-        return player_state_index(rig, net::Op::PlayerStateAdd, me, net::kPlayerStateInstrument).has_value();
+        return player_state_index(rig, net::rof2::Op::PlayerStateAdd, me, net::kPlayerStateInstrument).has_value();
     }));
     const auto ready = client_ready_index(rig);
-    const auto add = player_state_index(rig, net::Op::PlayerStateAdd, me, net::kPlayerStateInstrument);
+    const auto add = player_state_index(rig, net::rof2::Op::PlayerStateAdd, me, net::kPlayerStateInstrument);
     REQUIRE(ready.has_value());
     REQUIRE(add.has_value());
     CHECK(*add > *ready);
@@ -149,7 +149,7 @@ TEST_CASE("A real worn-slot swap publishes the instrument bit") {
                                              net::ItemSlot::possessions(net::kSlotPrimary), 1);
     CHECK((spawn.player_state & net::kPlayerStateInstrument) != 0);
     CHECK(rig.until([&] {
-        return player_state_index(rig, net::Op::PlayerStateAdd, me, net::kPlayerStateInstrument).has_value();
+        return player_state_index(rig, net::rof2::Op::PlayerStateAdd, me, net::kPlayerStateInstrument).has_value();
     }));
     // The same state again sends nothing; the log stays for the count below.
     net::GameConnectionTestAccess::refresh_instrument_state(conn);
@@ -158,11 +158,11 @@ TEST_CASE("A real worn-slot swap publishes the instrument bit") {
                                              net::ItemSlot::possessions(net::kSlotGeneral1), 1);
     CHECK((spawn.player_state & net::kPlayerStateInstrument) == 0);
     CHECK(rig.until([&] {
-        return player_state_index(rig, net::Op::PlayerStateRemove, me, net::kPlayerStateInstrument).has_value();
+        return player_state_index(rig, net::rof2::Op::PlayerStateRemove, me, net::kPlayerStateInstrument).has_value();
     }));
     // Since the first Add: no second Add, exactly one Remove.
-    CHECK(player_state_count(rig, net::Op::PlayerStateAdd, me, net::kPlayerStateInstrument) == kOnePacket);
-    CHECK(player_state_count(rig, net::Op::PlayerStateRemove, me, net::kPlayerStateInstrument) == kOnePacket);
+    CHECK(player_state_count(rig, net::rof2::Op::PlayerStateAdd, me, net::kPlayerStateInstrument) == kOnePacket);
+    CHECK(player_state_count(rig, net::rof2::Op::PlayerStateRemove, me, net::kPlayerStateInstrument) == kOnePacket);
 }
 
 TEST_CASE("A received instrument bit on another spawn lets its landing animate") {
@@ -185,7 +185,7 @@ TEST_CASE("A received instrument bit on another spawn lets its landing animate")
     auto gate = [&] { return game::ActionGate{spawn.class_id, spawn.stand_state, game::holds_instrument(spawn)}; };
 
     // The landing sets the action; without the bit the clip path blocks it.
-    conn.receive_zone_packet_for_test(landing(kSong, kBard, me));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::Action, landing(kSong, kBard, me)});
     CHECK(spawn.action == kInstrumentAnim);
     {
         auto g = gate();
@@ -195,7 +195,7 @@ TEST_CASE("A received instrument bit on another spawn lets its landing animate")
     net::PlayerState add;
     add.spawn_id = kBard;
     add.state = net::kPlayerStateInstrument;
-    conn.receive_zone_packet_for_test(net::encode_player_state(true, add));
+    conn.receive_zone_message_for_test({net::messages::GameOpcode::PlayerStateAdd, add});
     CHECK((spawn.player_state & net::kPlayerStateInstrument) != 0);
     {
         auto g = gate();

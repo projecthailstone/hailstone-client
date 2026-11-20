@@ -631,6 +631,8 @@ void GameConnection::update() {
         for (auto& entry : world_.spawns) refresh_new_armor_bits(entry.second);
     raise_hook_events();
     marketplace_frame(now_ms());
+    // Network-update scope: subsequent cure actions must not see this frame's faded buffs.
+    faded_counter_spas_ = 0;
 }
 
 void GameConnection::refresh_new_armor_bits(game::Spawn& s) const {
@@ -964,6 +966,7 @@ void GameConnection::handle_world(const messages::GameMessage& message) {
         world_drop_deadline_ = Clock::now() + kWorldDropWait;
         retire_zone_observations();
         own_spawn_seen_ = weather_seen_ = client_spawn_requested_ = zone_ready_ = false;
+        instrument_published_ = false;
         zone_initial_ = {};
         // The new local EQPlayer (its constructor @0x596ac0): Send_OP_FloatListThing(1) for it, then the samples
         // are forgotten. MoveToZone sent the last zone's already; here they are only forgotten.
@@ -1009,6 +1012,10 @@ void GameConnection::handle_world(const messages::GameMessage& message) {
         poison_interacting_ = false;
         spells_.memorizing.reset();
         spells_.others.clear();
+        cast_stage_shown_.clear();
+        landing_animation_spell_ = 0;
+        landing_animation_until_ = 0;
+        faded_counter_spas_ = 0;
         effect_packets_.clear();
         blood_spurts_.clear();
         spells_.target_buffs.clear();
@@ -1511,6 +1518,8 @@ void GameConnection::maybe_complete_zone_in() {
     }
     zone_initial_.completion_sent = true;
     zone_ready_ = true;
+    // Republish any instrument equipped during zone entry after ClientReady is admitted.
+    refresh_instrument_state();
     position_tracker_.enable();
     finish_zone_in();
     send_server_filter();
@@ -1780,6 +1789,10 @@ void GameConnection::handle_zone(const messages::GameMessage& message) {
             } else {
                 maybe_request_client_spawn();
             }
+            // An own-spawn record may overwrite the locally published instrument state.
+            refresh_instrument_state();
+        } else if (s->npc == 0 && s->spawn_id == world_.player_id && s->name == character_) {
+            refresh_instrument_state();
         }
         break;
     }

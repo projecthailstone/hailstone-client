@@ -427,6 +427,12 @@ struct CoinReward {
 };
 
 inline constexpr std::uint8_t kItemTypeFood = 14, kItemTypeDrink = 15;
+// Item types 23..26: wind, stringed, brass and percussion instruments.
+inline constexpr std::uint8_t kItemTypeWindInstrument = 23, kItemTypeStringInstrument = 24,
+                              kItemTypeBrassInstrument = 25, kItemTypePercussionInstrument = 26;
+inline bool is_instrument_item_type(std::uint8_t item_type) {
+    return item_type >= kItemTypeWindInstrument && item_type <= kItemTypePercussionInstrument;
+}
 
 // The other item types Handle_OP_ItemVerifyReply tests (ItemClient::GetItemType).
 inline constexpr std::uint8_t kItemTypeScroll = 20, kItemTypePotion = 21, kItemTypeTome = 31, kItemTypeAlcohol = 38,

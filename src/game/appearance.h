@@ -9,7 +9,7 @@
 #include <string>
 
 #include "game/world_state.h"
-#include "net/player_packets.h"
+#include "net/messages/zone.h"
 
 namespace hailstone::game {
 

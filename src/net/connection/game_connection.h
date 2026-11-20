@@ -298,6 +298,8 @@ struct SpellEffectCue {
     std::int32_t duration_ms = 0; // the requested duration (the cast time for stage 0)
     std::uint32_t source = 0;     // the impact stage's caster (OP_Action's source)
     double delay = 0.0;           // seconds to hold it back (app/spell_bolts.h: a projectile still on its way)
+    // Client-added cast stage for a landed proc without OP_BeginCast, not a cast the player is making.
+    bool proc = false;
 };
 
 // An effect the server plays by number (a spellsnew.eff index, not a spell): OP_SpellEffect's add and remove
@@ -1464,6 +1466,7 @@ public:
     const game::EqStrings& strings() const { return strings_; }
     // The player's classes as a bit mask: server_class_mask(), else the profile's class.
     std::uint32_t player_class_mask() const;
+    bool knows_discipline(std::uint32_t id) const;
     // player_class_mask() where the server extension tests those class checks over the player's classes
     // (game/server_ext.h research_classes, focus_classes), else 0 (the profile's class alone).
     std::uint32_t research_class_mask() const { return server_ext().research_classes(*this) ? player_class_mask() : 0; }
@@ -3058,6 +3061,8 @@ private:
     void forget_pet_spawn(std::uint32_t spawn_id);
     void move_item(const ItemSlot& from, const ItemSlot& to, std::uint32_t count);
     void refresh_worn_slot(int slot);
+    // Own-spawn PlayerState instrument bit (primary/secondary item types 23..26).
+    void refresh_instrument_state();
     void init_spells_from_profile();
     void update_spells();
     void update_spells_at(std::int64_t now); // one step of update_spells, at `now` (now_ms()'s clock)
@@ -3375,6 +3380,8 @@ private:
         bool completion_sent = false;
     } zone_initial_;
     bool zone_ready_ = false;
+    // Instrument state last successfully published to the active zone.
+    bool instrument_published_ = false;
     std::optional<std::string> zone_to_load_;
     // The server's client files (game/server_file_sync.h): asked at the first zone-in; the zone-in waits for them.
     std::unique_ptr<ServerFileSync> server_files_;
@@ -3414,6 +3421,9 @@ private:
     bool attack_until_xtarget_clear_ = false;
     bool fast_camp_ = false;
     bool cast_animation_fallback_ = true; // set_cast_animation_fallback
+    // A spell landing on several targets sends one animation for this interval.
+    std::uint32_t landing_animation_spell_ = 0;
+    std::int64_t landing_animation_until_ = 0;
     bool attack_held_for_xtarget_ = false; // kept on at the target's death (attack_until_xtarget_clear)
     bool auto_target_xtarget_ = true;
     bool face_on_attack_ = true;
@@ -3476,6 +3486,8 @@ private:
     game::HitModes hit_modes_{};
     game::SpellHitModes spell_hit_modes_{};
     game::SpellState spells_;
+    // Counter SPAs whose buff the server faded during this network update; cleared after processing it.
+    std::uint8_t faded_counter_spas_ = 0;
 
     // Items.
     enum class CursorOrigin : std::uint8_t { Unknown = 0, Inventory = 1, Server = 2 };
@@ -3586,6 +3598,8 @@ private:
     std::vector<SoundCue> sound_cues_;
     std::vector<SpellEffectCue> effect_cues_;
     std::vector<EffectPacketCue> effect_packets_;
+    // Per caster: spell id and expiration for its most recent OP_BeginCast or proc cast stage.
+    std::unordered_map<std::uint32_t, std::pair<std::uint32_t, std::int64_t>> cast_stage_shown_;
     std::vector<std::uint32_t> blood_spurts_; // local player landed sharp-weapon hit target IDs
     std::vector<game::MissilePacket> missiles_;
     LandingEffects landing_;

@@ -194,6 +194,7 @@ void GameConnection::handle_item(messages::GameMessage message) {
             inventory_.load(std::move(*items));
             mark_cursor_origin(CursorOrigin::Unknown); // zone-in contents are not new arrivals
             set_bank_live(with_bank);
+            refresh_instrument_state();
         } else {
             log::warn("RoF2 inventory message has no decoded item list");
         }
@@ -415,6 +416,29 @@ void GameConnection::refresh_worn_slot(int slot) {
     if (item) look = game::worn_look(*item, ms);
     game::apply_wear_change(it->second.appearance, static_cast<std::uint8_t>(ms), look.material, look.hero_forge,
                             look.tint);
+    refresh_instrument_state();
+}
+
+void GameConnection::refresh_instrument_state() {
+    // PcClient_RefreshWornSlotVisual: item types 23..26 in either hand set PlayerState's bit 0x10.
+    // The local state must be reapplied after spawn replacement; only publish when the zone is ready.
+    auto it = world_.spawns.find(world_.player_id);
+    if (it == world_.spawns.end()) return;
+    bool holds = false;
+    for (std::int16_t slot : {kSlotPrimary, kSlotSecondary}) {
+        const Item* item = inventory_.at(ItemSlot::possessions(slot));
+        if (item && is_instrument_item_type(item->item_type)) {
+            holds = true;
+            break;
+        }
+    }
+    if (holds) it->second.player_state |= kPlayerStateInstrument;
+    else it->second.player_state &= ~kPlayerStateInstrument;
+    if (!zone_ready_ || holds == instrument_published_) return;
+    auto admitted = send_zone(messages::outgoing(
+        holds ? messages::GameOpcode::PlayerStateAdd : messages::GameOpcode::PlayerStateRemove,
+        PlayerState{world_.player_id, kPlayerStateInstrument}));
+    if (admitted && *admitted.value() != 0) instrument_published_ = holds;
 }
 
 void GameConnection::move_item(const ItemSlot& from, const ItemSlot& to, std::uint32_t count) {
