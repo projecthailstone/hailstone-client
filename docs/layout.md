@@ -57,7 +57,7 @@ hailstone/
     plugin-config/<plugin>/  a plugin's own files for this server (server_config_dir; the NMS plugin's nms.ini)
     plugin_approvals.txt     the player's answers to the server's compiled plugins, by SHA-256 (plugin/consent.h;
                              docs/plugins.md "The server's compiled plugins ask first"); never the server's to write
-    server_files.txt         the files downloaded from the server: SHA-256, size, path (net/server_files.h)
+    server_files.txt         the files downloaded from the server: SHA-256, size, path (game/server_file_sync.h)
     .download/               a download that has not finished; moved into place when every file has come
     maps/                    map edits made on this server, for all its worlds; maps added by hand for it
     zone_links.txt           how the zones connect, for the map's zone finder: "s <from> <to>" from the server's
@@ -88,6 +88,12 @@ hailstone/
                              the viewers write viewer.log, a second client hailstone.<pid>.log (removed at a later
                              start, but for the newest 5 and those written in the last day). A run's file stops at
                              100 MiB with a last line saying so; stdout and stderr still get every line
+                             each line has `[level] [file:line, function] category: message` (or the original message
+                             without a category). C++20 source_location records the original logging call;
+                             ui.Log from Lua uses Lua's debug call stack. Only the source basename is logged.
+                             Missing details are shown as `unknown:?, ?`; native plugin log callbacks do not
+                             supply a plugin source position, so they use `native plugin:?, ?`.
+                             Lua `print` still goes to chat and is not a diagnostic log entry.
   logs/hailstone.lock        held while a client writes hailstone.log, so a second one writes its own (left behind
                              on Linux and macOS, where it is only locked; Windows deletes it at exit)
   logs/crash-<time>.txt      a crash's report (crash-<time>.reported.txt once bundled into bug-reports/)

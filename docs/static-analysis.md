@@ -38,11 +38,19 @@ This code base is numeric and emulation-heavy, with float and x87 behaviour that
 
 ## Fixes (behaviour unchanged)
 
+<<<<<<< HEAD
 - `net/game_connection_death.cpp`: `if (!dead) return;` before the corpse update. `report_death` handles known spawns only, so this never fires in practice; it replaces an unchecked dereference with a return.
 - `net/game_connection_doors.cpp`: the drop confirmation text no longer dereferences a possibly empty cursor.
 - `net/game_connection_commerce.cpp`, `src/ui/commerce_windows.cpp`: the `int16_t` loop counter is compared with an `int16_t` bound (`slots()` is 4 or 8), so no narrower-than-bound loop variable.
 - `net/game_connection.cpp`: no `std::move` into a const reference (it never moved); `ConnectionOptions` moved into the member.
 - `net/game_connection_social.cpp`, `app/client_app.cpp`: arguments moved or taken by const reference instead of copied.
+=======
+- `net/connection/game_connection_death.cpp`: `if (!dead) return;` before the corpse update. `report_death` handles known spawns only, so this never fires in practice; it replaces an unchecked dereference with a return.
+- `net/connection/game_connection_doors.cpp`: the drop confirmation text no longer dereferences a possibly empty cursor.
+- `net/connection/game_connection_commerce.cpp`, `ui/commerce_windows.cpp`: the `int16_t` loop counter is compared with an `int16_t` bound (`slots()` is 4 or 8), so no narrower-than-bound loop variable.
+- `net/connection/game_connection.cpp`: no `std::move` into a const reference (it never moved); `ConnectionOptions` moved into the member.
+- `net/connection/game_connection_social.cpp`, `app/client_app.cpp`: arguments moved or taken by const reference instead of copied.
+>>>>>>> 1a9dced8 (Docs: explain protocol architecture and migration coverage)
 
 ## Suppressions (NOLINT)
 
@@ -50,7 +58,7 @@ This code base is numeric and emulation-heavy, with float and x87 behaviour that
 |---|---|---|
 | `assets/character.cpp` (actor listing) | `clang-analyzer-core.NullDereference` | false positive on a structured binding; `actors_` holds only non-null locations |
 | `assets/eqg_zone.cpp` (`blend_edge`) | `clang-analyzer-core.NullDereference` | false positive on the map lookup key (an undefined-value path the analyzer cannot rule out through `S`) |
-| `net/game_connection_death.cpp` (`in.distance`) | `clang-analyzer-core.NonNullParamChecker` | false positive; `dead` is non-null inside the `if (dead)` block |
+| `net/connection/game_connection_death.cpp` (`in.distance`) | `clang-analyzer-core.NonNullParamChecker` | false positive; `dead` is non-null inside the `if (dead)` block |
 | `game/combat.cpp` (`death_message`) | `clang-analyzer-core.NullDereference` | `by` is non-null after the earlier `!by` return, so `by == dead` implies `dead` is non-null |
 | `game/spell_record.cpp` (default record) | `bugprone-string-constructor` | the length includes the NUL on purpose; fixed-size record text |
 | `game/merchant.cpp` (`+ 0.5` truncation) | `bugprone-incorrect-roundings` | the specified price rounding; the result is checked against recorded vectors |

@@ -441,7 +441,7 @@ hot button does it) (docs/todo.md).
 
 ## Zone atlas
 
-Code: `game/zone_routes.h` (the links and routes), `game/atlas.h` (`index_atlas`), `net/zone_link_packets.h`, the
+Code: `game/zone_routes.h` (the links and routes), `game/atlas.h` (`index_atlas`), `net/protocol/extensions/hailstone/zone_link_packets.h`, the
 `hs.Atlas*` / `hs.Zone*` functions in `app/lua_ui_map.cpp`, and the modern pack's `ui/modern/lib/atlas.lua` (drawn
 by `map.lua`). Tests: `tests/zone_routes_test.cpp`, the index cases in `tests/atlas_test.cpp`.
 

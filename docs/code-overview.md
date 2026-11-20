@@ -208,7 +208,7 @@ Login, server select, character select, zoning (behind a loading screen), in zon
 
 | Task | Start here |
 |---|---|
-| A packet the client mishandles | the opcode in `handle_zone` (`net/game_connection.cpp`), its decoder in `net/*_packets.h`, the layout in docs/protocol/rof2-packets.md |
+| A packet the client mishandles | the opcode in `handle_zone` (`net/connection/game_connection.cpp`), its decoder in `net/*_packets.h`, the layout in docs/protocol/rof2-packets.md |
 | A rule (damage, speed, regen, a stat) | `game/mechanics/`, docs/mechanics.md, `tests/*_vectors_test.cpp` |
 | A window's look or layout | `ui/modern/<window>.lua` (and `ui/gamepad/` if it has one) |
 | What a window shows, or what its button does | the `hs.*` function it calls, in `app/lua_ui_<area>.cpp` |
@@ -232,7 +232,7 @@ Login, server select, character select, zoning (behind a loading screen), in zon
   install's newer files (hero's forge layers) need `EQ_LIVE_DIR`.
 - `mock_*_test.cpp` drive the real login and game connection against the in-process mock server
   (`tests/mock_server/README.md`).
-- `fuzz_*`: every decoder in `src/net/` must be in `fuzz_decoders.inc`; `fuzz_assets_test.cpp` covers the asset
+- `fuzz_*`: every decoder in `src/net/` must be in `tests/rof2/fuzz_decoders.inc`; `fuzz_assets_test.cpp` covers the asset
   parsers.
 - Helpers: `scratch_dir.h` for temporary files, `manual_clock.h` for time, `mq_test_world.h` for script tests.
 

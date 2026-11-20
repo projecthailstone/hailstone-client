@@ -50,6 +50,11 @@ Without a port, the server gets the login screen's default for a new server (`Se
 | 0x0025–0x002d, 0x0030, 0x0031 | server pushes (chat, GM list, banner, poll, game features, OP_LoginExpansionPacketData; ignored) | ← |
 | 0x0032 | the kick request's reply (base reply; not in EQEmu) | ← |
 
+EQEmu's `loginserver/client.cpp::SendExpansionPacketData` constructs opcode `0x0031` only when
+`display_expansions` is enabled **and** the login client version is `cv_sod`; it is not an unconditional
+server push. RoF2 uses EQEmu's SoD login port/profile. The native login UI's expansion-offer callback
+is not yet connected in Hailstone; no offer UI is inferred from the packet merely being received.
+
 All messages go on the reliable channel.
 
 ## Message format

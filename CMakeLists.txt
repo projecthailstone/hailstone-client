@@ -109,6 +109,11 @@ endif()
 
 # Engine library: everything except main(), so tools and tests link it too.
 add_library(hailstone_engine STATIC
+  src/net/messages/payload.cpp
+  src/net/messages/achievement_links.cpp
+  src/net/messages/bug_categories.cpp
+  src/net/messages/character_create.cpp
+  src/net/wire/item_serialization.cpp
   src/core/log.cpp
   src/core/build_info.cpp
   src/core/zip_write.cpp
@@ -127,13 +132,15 @@ add_library(hailstone_engine STATIC
   src/core/shared_file_cache.cpp
   src/core/worker_pool.cpp
   src/plugin/hooks.cpp
+  src/plugin/packet_bridge.cpp
   src/plugin/consent.cpp
   src/plugin/policy.cpp
-  src/net/settings_packets.cpp
-  src/net/quest_npc_packets.cpp
-  src/net/zone_link_packets.cpp
-  src/net/server_files_packets.cpp
-  src/net/server_files.cpp
+  src/net/protocol/extensions/hailstone/guild_packets.cpp
+  src/net/protocol/extensions/hailstone/settings_packets.cpp
+  src/net/protocol/extensions/hailstone/quest_npc_packets.cpp
+  src/net/protocol/extensions/hailstone/zone_link_packets.cpp
+  src/net/protocol/extensions/hailstone/server_files_packets.cpp
+  src/game/server_file_sync.cpp
   src/mq/calc.cpp
   src/mq/tlo.cpp
   src/mq/tlo_game.cpp
@@ -172,61 +179,95 @@ add_library(hailstone_engine STATIC
   src/platform/mapped_file.cpp
   src/platform/udp_socket.cpp
   src/platform/tcp_socket.cpp
-  src/net/session_codec.cpp
-  src/net/session.cpp
-  src/net/reliable_channel.cpp
-  src/net/des.cpp
-  src/net/login.cpp
-  src/net/game_connection.cpp
-  src/net/game_connection_spells.cpp
-  src/net/game_connection_ticks.cpp
-  src/net/game_connection_spell_sets.cpp
-  src/net/game_connection_ability_commands.cpp
-  src/net/game_connection_mounts.cpp
-  src/net/game_connection_cast.cpp
-  src/net/game_connection_spell_book.cpp
-  src/net/game_connection_vehicle.cpp
-  src/net/game_connection_items.cpp
-  src/net/game_connection_augments.cpp
-  src/net/game_connection_evolving.cpp
-  src/net/game_connection_item_use.cpp
-  src/net/game_connection_commerce.cpp
-  src/net/game_connection_bank.cpp
-  src/net/game_connection_item_sort.cpp
-  src/net/merchant_packets.cpp
-  src/net/trade_packets.cpp
-  src/net/game_connection_movement.cpp
-  src/net/game_connection_abilities.cpp
-  src/net/game_connection_tracking.cpp
-  src/net/game_connection_tribute.cpp
-  src/net/game_connection_adventure.cpp
-  src/net/game_connection_dz.cpp
-  src/net/game_connection_path.cpp
-  src/net/game_connection_guild_bank.cpp
-  src/net/game_connection_real_estate.cpp
-  src/net/ability_packets.cpp
-  src/net/game_connection_doors.cpp
-  src/net/game_connection_death.cpp
-  src/net/door_packets.cpp
-  src/net/game_connection_group.cpp
-  src/net/game_connection_fellowship.cpp
-  src/net/game_connection_guild_banner.cpp
-  src/net/game_connection_group_search.cpp
-  src/net/game_connection_marketplace.cpp
-  src/net/game_connection_social.cpp
-  src/net/game_connection_options.cpp
-  src/net/game_connection_client.cpp
-  src/net/game_connection_progress.cpp
-  src/net/game_connection_shroud.cpp
-  src/net/game_connection_player.cpp
-  src/net/game_connection_game_commands.cpp
-  src/net/game_connection_names.cpp
-  src/net/game_connection_market.cpp
-  src/net/game_connection_mail.cpp
-  src/net/game_connection_merc.cpp
-  src/net/player_packets.cpp
-  src/net/market_packets.cpp
-  src/net/marketplace_packets.cpp
+  src/net/session/soe/framing.cpp
+  src/net/connection/protocol_endpoint.cpp
+  src/net/protocol/profile.cpp
+  src/net/protocol/registry.cpp
+  src/net/protocol/rof2/codec.cpp
+  src/net/protocol/rof2/codec_mapping.cpp
+  src/net/protocol/rof2/codec_decode.cpp
+  src/net/protocol/rof2/codec_encode.cpp
+  src/net/protocol/rof2/codec_dispatch.cpp
+  src/net/protocol/rof2/codec_support.cpp
+  src/net/protocol/rof2/codec_validation.cpp
+  src/net/protocol/rof2/codec_encode_control.cpp
+  src/net/protocol/rof2/codec_encode_tasks.cpp
+  src/net/protocol/rof2/codec_encode_social.cpp
+  src/net/protocol/rof2/codec_encode_items.cpp
+  src/net/protocol/rof2/codec_encode_commerce.cpp
+  src/net/protocol/rof2/codec_encode_marketplace.cpp
+  src/net/protocol/rof2/codec_encode_world.cpp
+  src/net/protocol/rof2/codec_encode_progression.cpp
+  src/net/protocol/rof2/codec_encode_zone.cpp
+  src/net/protocol/rof2/codec_encode_combat_spell.cpp
+  src/net/protocol/rof2/codec_decode_service.cpp
+  src/net/protocol/rof2/codec_decode_zone_state.cpp
+  src/net/protocol/rof2/codec_decode_spell_combat.cpp
+  src/net/protocol/rof2/codec_decode_items_trade.cpp
+  src/net/protocol/rof2/codec_decode_social.cpp
+  src/net/protocol/rof2/codec_decode_commerce.cpp
+  src/net/protocol/rof2/codec_decode_marketplace.cpp
+  src/net/protocol/rof2/codec_decode_world_zone.cpp
+  src/net/session/soe/service_options.cpp
+  src/net/session/udp/transport.cpp
+  src/net/session/soe/session.cpp
+  src/net/session/soe/reliable_channel.cpp
+  src/net/crypto/des.cpp
+  src/net/protocol/extensions/hailstone/codec.cpp
+    src/net/protocol/login/codec.cpp
+  src/net/protocol/login/session_settings.cpp
+    src/net/connection/login_endpoint.cpp
+    src/net/connection/login_client.cpp
+  src/net/connection/game_connection.cpp
+  src/net/connection/game_connection_spells.cpp
+  src/net/connection/game_connection_ticks.cpp
+  src/net/connection/game_connection_spell_sets.cpp
+  src/net/connection/game_connection_ability_commands.cpp
+  src/net/connection/game_connection_mounts.cpp
+  src/net/connection/game_connection_cast.cpp
+  src/net/connection/game_connection_spell_book.cpp
+  src/net/connection/game_connection_vehicle.cpp
+  src/net/connection/game_connection_items.cpp
+  src/net/connection/game_connection_augments.cpp
+  src/net/connection/game_connection_evolving.cpp
+  src/net/connection/game_connection_item_use.cpp
+  src/net/connection/game_connection_commerce.cpp
+  src/net/connection/game_connection_bank.cpp
+  src/net/connection/game_connection_item_sort.cpp
+  src/net/protocol/rof2/packets/merchant_packets.cpp
+  src/net/protocol/rof2/packets/trade_packets.cpp
+  src/net/connection/game_connection_movement.cpp
+  src/net/connection/game_connection_abilities.cpp
+  src/net/connection/game_connection_tracking.cpp
+  src/net/connection/game_connection_tribute.cpp
+  src/net/connection/game_connection_adventure.cpp
+  src/net/connection/game_connection_dz.cpp
+  src/net/connection/game_connection_path.cpp
+  src/net/connection/game_connection_guild_bank.cpp
+  src/net/connection/game_connection_real_estate.cpp
+  src/net/protocol/rof2/packets/ability_packets.cpp
+  src/net/connection/game_connection_doors.cpp
+  src/net/connection/game_connection_death.cpp
+  src/net/protocol/rof2/packets/door_packets.cpp
+  src/net/connection/game_connection_group.cpp
+  src/net/connection/game_connection_fellowship.cpp
+  src/net/connection/game_connection_guild_banner.cpp
+  src/net/connection/game_connection_group_search.cpp
+  src/net/connection/game_connection_marketplace.cpp
+  src/net/connection/game_connection_social.cpp
+  src/net/connection/game_connection_options.cpp
+  src/net/connection/game_connection_client.cpp
+  src/net/connection/game_connection_progress.cpp
+  src/net/connection/game_connection_shroud.cpp
+  src/net/connection/game_connection_player.cpp
+  src/net/connection/game_connection_game_commands.cpp
+  src/net/connection/game_connection_names.cpp
+  src/net/connection/game_connection_market.cpp
+  src/net/connection/game_connection_mail.cpp
+  src/net/connection/game_connection_merc.cpp
+  src/net/protocol/rof2/packets/player_packets.cpp
+  src/net/protocol/rof2/packets/market_packets.cpp
+  src/net/protocol/rof2/packets/marketplace_packets.cpp
   src/game/interact.cpp
   src/game/barter.cpp
   src/game/marketplace.cpp
@@ -235,22 +276,25 @@ add_library(hailstone_engine STATIC
   src/game/feature_restrictions.cpp
   src/game/mail.cpp
   src/game/mercenary.cpp
-  src/net/aa_packets.cpp
-  src/net/training_packets.cpp
-  src/net/tribute_packets.cpp
-  src/net/adventure_packets.cpp
-  src/net/aggro_packets.cpp
-  src/net/dz_packets.cpp
-  src/net/guild_bank_packets.cpp
-  src/net/real_estate_packets.cpp
-  src/net/task_packets.cpp
-  src/net/shroud_packets.cpp
-  src/net/reward_packets.cpp
-  src/net/achievement_packets.cpp
-  src/net/game_connection_rewards.cpp
-  src/net/game_connection_achievements.cpp
-  src/net/social_packets.cpp
-  src/net/chat_server.cpp
+  src/net/protocol/rof2/packets/aa_packets.cpp
+  src/net/protocol/rof2/packets/training_packets.cpp
+  src/net/protocol/rof2/packets/tribute_packets.cpp
+  src/net/protocol/rof2/packets/adventure_packets.cpp
+  src/net/protocol/rof2/packets/aggro_packets.cpp
+  src/net/protocol/rof2/packets/dz_packets.cpp
+  src/net/protocol/rof2/packets/guild_bank_packets.cpp
+  src/net/protocol/rof2/packets/real_estate_packets.cpp
+  src/net/protocol/rof2/packets/task_packets.cpp
+  src/net/protocol/rof2/packets/shroud_packets.cpp
+  src/net/protocol/rof2/packets/reward_packets.cpp
+  src/net/protocol/rof2/packets/achievement_packets.cpp
+  src/net/connection/game_connection_rewards.cpp
+    src/net/connection/ucs_endpoint.cpp
+  src/net/connection/game_connection_achievements.cpp
+  src/net/protocol/rof2/packets/social_packets.cpp
+  src/net/protocol/ucs/codec.cpp
+  src/net/protocol/ucs/session_options.cpp
+  src/net/connection/chat_client.cpp
   src/game/social.cpp
   src/game/server_ext.cpp
   src/game/server_ext_chain.cpp
@@ -264,18 +308,21 @@ add_library(hailstone_engine STATIC
   src/game/missiles.cpp
   src/game/spell_projectiles.cpp
   src/game/slash_commands.cpp
-  src/net/group_packets.cpp
-  src/net/fellowship_packets.cpp
-  src/net/guild_banner_packets.cpp
+  src/net/protocol/rof2/packets/group_packets.cpp
+  src/net/protocol/rof2/packets/fellowship_packets.cpp
+  src/net/protocol/rof2/packets/guild_banner_packets.cpp
   src/game/fellowship_categories.cpp
-  src/net/pet_packets.cpp
-  src/net/item_packets.cpp
-  src/net/augment_packets.cpp
-  src/net/evolving_packets.cpp
-  src/net/spell_packets.cpp
+  src/net/protocol/rof2/packets/pet_packets.cpp
+  src/net/protocol/rof2/packets/item_packets.cpp
+  src/net/protocol/rof2/packets/augment_packets.cpp
+  src/net/protocol/rof2/packets/evolving_packets.cpp
+  src/net/protocol/rof2/packets/zoning_packets.cpp
+  src/net/protocol/rof2/packets/missile_packets.cpp
+  src/net/protocol/rof2/packets/spell_packets.cpp
   src/game/spell_description.cpp
   src/game/spell_effect_text.cpp
   src/game/item_compare.cpp
+  src/game/item_identity.cpp
   src/game/item_display.cpp
   src/game/augments.cpp
   src/game/spell_display.cpp
@@ -292,9 +339,9 @@ add_library(hailstone_engine STATIC
   src/game/spell_sets.cpp
   src/game/group_role_sets.cpp
   src/game/group_search.cpp
-  src/net/opcodes.cpp
-  src/net/world_packets.cpp
-  src/net/zone_packets.cpp
+  src/net/protocol/rof2/opcode_map.cpp
+  src/net/protocol/rof2/packets/world_packets.cpp
+  src/net/protocol/rof2/packets/zone_packets.cpp
   src/core/game_dir.cpp
   src/core/asset_folder.cpp
   src/core/asset_folder_choice.cpp
@@ -640,8 +687,10 @@ add_library(hailstone_engine STATIC
   src/game/mechanics/melee.cpp
   src/game/mechanics/use_skill.cpp
   src/game/mechanics/combat_ability.cpp
-  src/net/movement_packets.cpp
-  src/net/notice_packets.cpp
+  src/net/protocol/rof2/packets/movement_packets.cpp
+    src/net/protocol/rof2/packets/tracking_packets.cpp
+    src/net/protocol/rof2/packets/merc_packets.cpp
+  src/net/protocol/rof2/packets/notice_packets.cpp
   src/render/spawn_renderer.cpp
   src/render/spirv_file.cpp
   src/render/particle_textures.cpp
@@ -1063,7 +1112,9 @@ if(HAILSTONE_BUILD_TESTS)
   target_compile_options(hailstone_shared_cache_probe PRIVATE ${HAILSTONE_WARNINGS})
   target_link_libraries(hailstone_shared_cache_probe PRIVATE hailstone_engine)
   list(APPEND HAILSTONE_TOOLS hailstone_shared_cache_probe)
+  include("${CMAKE_CURRENT_SOURCE_DIR}/tests/rof2/CMakeLists.txt")
   add_executable(hailstone_tests ${HAILSTONE_WIN_MANIFEST}
+    ${HAILSTONE_ROF2_TEST_SOURCES}
     tests/gpu_share_capabilities_test.cpp
     tests/gpu_probe_scene_test.cpp
     tests/gpu_asset_view_probe_test.cpp
@@ -1071,6 +1122,7 @@ if(HAILSTONE_BUILD_TESTS)
     tests/shared_cache_test.cpp
     tests/shared_cache_store_test.cpp
     tests/shared_character_models_test.cpp
+    tests/message_payload_test.cpp
     tests/test_main.cpp
     tests/follow_profile_test.cpp
     tests/follow_connection_test.cpp
@@ -1220,8 +1272,6 @@ if(HAILSTONE_BUILD_TESTS)
     tests/attack_rules_vectors_test.cpp
     tests/ui_rules_vectors_test.cpp
     tests/net_login_test.cpp
-    tests/net_packets_test.cpp
-    tests/shroud_packets_test.cpp
     tests/pfs_test.cpp
     tests/pfs_mapped_test.cpp
     tests/wld_deferred_test.cpp
@@ -1262,7 +1312,6 @@ if(HAILSTONE_BUILD_TESTS)
     tests/ui_more_windows_test.cpp
     tests/conversation_journal_test.cpp
     tests/mail_windows_test.cpp
-    tests/marketplace_test.cpp
     tests/chat_windows_test.cpp
     tests/chat_filter_routes_test.cpp
     tests/chat_filter_menu_test.cpp
@@ -1292,24 +1341,18 @@ if(HAILSTONE_BUILD_TESTS)
     tests/stats_ui_test.cpp
     tests/spell_sets_test.cpp
     tests/hot_button_sets_test.cpp
-    tests/group_commands_test.cpp
     tests/shroud_flow_test.cpp
     tests/leadership_bonuses_test.cpp
     tests/leadership_spell_awareness_test.cpp
     tests/raid_invites_test.cpp
-    tests/group_search_test.cpp
     tests/chat_ui_test.cpp
     tests/chat_tabs_command_test.cpp
     tests/inventory_bandolier_ui_test.cpp
     tests/inventory_server_labels_ui_test.cpp
     tests/trade_ui_test.cpp
     tests/lua_scripts_test.cpp
-    tests/adventure_packets_test.cpp
     tests/adventure_request_test.cpp
     tests/adventure_windows_test.cpp
-    tests/dz_packets_test.cpp
-    tests/guild_bank_packets_test.cpp
-    tests/notice_packets_test.cpp
     tests/web_url_test.cpp
     tests/browser_host_test.cpp
     tests/server_links_test.cpp
@@ -1334,17 +1377,14 @@ if(HAILSTONE_BUILD_TESTS)
     tests/nameplate_canvas_context_test.cpp
     tests/nameplate_input_test.cpp
     tests/spawn_pick_test.cpp
-    tests/spells_test.cpp
     tests/spell_effect_text_test.cpp
     tests/spell_hit_modes_test.cpp
     tests/proc_cast_stage_test.cpp
     tests/passage_of_time_test.cpp
     tests/eye_control_test.cpp
-    tests/item_packets_test.cpp
     tests/augments_test.cpp
     tests/evolving_transfer_test.cpp
     tests/item_preview_test.cpp
-    tests/doors_test.cpp
     tests/touching_switch_test.cpp
     tests/position_tracker_test.cpp
     tests/perf_ui_test.cpp
@@ -1361,7 +1401,6 @@ if(HAILSTONE_BUILD_TESTS)
     tests/lua_ui_modern_windows_test.cpp
     tests/tradeskill_batch_test.cpp
     tests/tradeskill_combine_test.cpp
-    tests/missiles_test.cpp
     tests/combat_particles_test.cpp
     tests/class_names_test.cpp
     tests/multiclass_test.cpp
@@ -1372,15 +1411,12 @@ if(HAILSTONE_BUILD_TESTS)
     tests/lua_character_settings_test.cpp
     tests/lua_plugin_test.cpp
     tests/spell_projectiles_test.cpp
-    tests/commerce_test.cpp
     tests/bandolier_swap_test.cpp
     tests/bank_test.cpp
     tests/bank_snapshot_test.cpp
-    tests/real_estate_test.cpp
     tests/lua_ui_pregame_test.cpp
     tests/lua_ui_realestate_test.cpp
     tests/mock_real_estate_test.cpp
-    tests/placement_test.cpp
     tests/mock_placement_test.cpp
     tests/sky_test.cpp
     tests/clouds_test.cpp
@@ -1394,27 +1430,21 @@ if(HAILSTONE_BUILD_TESTS)
     tests/movement_vectors_test.cpp
     tests/mechanics_test.cpp
     tests/mechanics_vectors_test.cpp
-    tests/abilities_test.cpp
     tests/ability_book_test.cpp
     tests/combat_ability_test.cpp
     tests/ability_commands_test.cpp
     tests/hot_button_state_test.cpp
-    tests/group_packets_test.cpp
-    tests/fellowship_packets_test.cpp
-    tests/guild_banner_packets_test.cpp
     tests/fellowship_connection_test.cpp
     tests/fellowship_ui_test.cpp
     tests/fellowship_categories_test.cpp
     tests/fellowship_vitality_test.cpp
     tests/progress_test.cpp
     tests/task_window_test.cpp
-    tests/reward_packets_test.cpp
     tests/reward_selection_test.cpp
     tests/reward_connection_test.cpp
     tests/lua_ui_rewards_test.cpp
     tests/lua_ui_evolving_test.cpp
     tests/reward_selection_ui_test.cpp
-    tests/achievement_packets_test.cpp
     tests/achievements_test.cpp
     tests/achievement_connection_test.cpp
     tests/achievement_chat_test.cpp
@@ -1422,10 +1452,8 @@ if(HAILSTONE_BUILD_TESTS)
     tests/achievement_chat_input_test.cpp
     tests/lua_ui_achievements_test.cpp
     tests/achievements_ui_test.cpp
-    tests/social_test.cpp
     tests/friends_who_test.cpp
     tests/options_social_test.cpp
-    tests/player_market_test.cpp
     tests/barter_test.cpp
     tests/xtarget_test.cpp
     tests/player_customization_test.cpp
@@ -1510,7 +1538,6 @@ if(HAILSTONE_BUILD_TESTS)
     tests/mock_game_test.cpp
     tests/hover_respawn_test.cpp
     tests/tracking_death_test.cpp
-    tests/mock_eqemu_compat_test.cpp
     tests/item_use_test.cpp
     tests/game_connection_cast_test.cpp
     tests/game_connection_buff_test.cpp
@@ -1629,7 +1656,7 @@ if(HAILSTONE_LIBFUZZER)
     target_link_options(fuzz_${target} PRIVATE -fsanitize=fuzzer)
     target_link_libraries(fuzz_${target} PRIVATE hailstone_engine)
   endforeach()
-  # The checked-out server plugins' decoders (tests/fuzz_decoders.inc HAILSTONE_FUZZ_PLUGIN_DECODER).
+  # The checked-out server plugins' decoders (tests/rof2/fuzz_decoders.inc HAILSTONE_FUZZ_PLUGIN_DECODER).
   target_include_directories(fuzz_decoders PRIVATE sdk)
   if(HAILSTONE_HAS_NMS)
     target_sources(fuzz_decoders PRIVATE ${HAILSTONE_NMS_DIR}/nms_packets.cpp ${HAILSTONE_NMS_DIR}/nms_rules.cpp)

@@ -7,6 +7,8 @@ What `src/net/world_packets.*` and `src/net/zone_packets.*` encode and decode, a
 - All values are little-endian. "cstr" is a NUL-terminated string, `char[n]` a NUL-padded fixed field.
 - Sizes in this file are payload sizes, without the 2-byte opcode.
 
+Native plugins remain independent plugins. Their implementation details and private packet formats are not part of the core RoF2 codec or this refactor. The existing plugin wire interface is retained.
+
 ## 1. Sequence
 
 ### World (world/client.cpp)
@@ -118,11 +120,11 @@ It sends no `OP_SaveOnZoneReq` / `OP_DeleteSpawn`. Outside the game (character s
 |---|---|---|---|
 | SendLoginInfo | C→W | 0x7a09 | 464 B. +0 `char[64]` "account\0key\0"; +64 `char[124]` custom-files key (NUL-terminated, so at most 123 characters; empty normally); +188 u8 zoning; +192 u8 0xcc; rest 0 |
 | LogServer | W→C | 0x7ceb | 560 B. +4 u8 pvp, +8 u8 enable_FV, +36 `char[32]` world short name |
-| ApproveWorld | W→C | 0x7499 | 544-byte constant; not decoded |
+| ApproveWorld | W→C | 0x7499 | 544-byte access-grant notification; size checked, no gameplay fields |
 | EnterWorld | W→C | 0x578f | cstr name |
-| PostEnterWorld | W→C | 0x6259 | empty |
+| PostEnterWorld | W→C | 0x6259 | empty access-grant completion, decoded as a notification |
 | ExpansionInfo | W→C | 0x590d | 68 B, u32 mask at +64 |
-| SendMaxCharacters | W→C | 0x5475 | 12 B, u32 max at +0 |
+| SendMaxCharacters | W→C | 0x5475 | 12 B, u32 max at +0; retained by `GameConnection::max_characters()` |
 | SendMembership | W→C | 0x7acc | 116 B: u32 level (0 free, 1 silver, 2 gold), u32 races, u32 classes, u32 count, count × i32 (EQEmu 25; the client keeps the first 22) |
 | SendMembershipDetails | W→C | 0x057b | u32 count, count × {u32 level 0..2, u32 feature, i32 value} (EQEmu 72, the last 6 zero); u32 count, × {u32 purchase id, u32 bits} for races, the same for classes; two strings (u32 length + text, EQEmu empty) |
 | GuildsList | W→C | 0x507a | 64 zero bytes, u32 count, {u32 id, cstr name}… (note 1) |
@@ -131,7 +133,7 @@ It sends no `OP_SaveOnZoneReq` / `OP_DeleteSpawn`. Outside the game (character s
 | WorldClientReady | C→W | 0x23c1 | empty, once at character select |
 | EnterWorld | C→W | 0x578f | 72 B: `char[64]` name, u32 tutorial, u32 return home (note 2) |
 | MOTD | W→C | 0x0c22 | cstr |
-| SetChatServer(2) | W→C | 0x1bc5 / 0x7eec | cstr "host,port,short.Character,<type letter><8 hex key>" |
+| SetChatServer(2) | W→C | 0x1bc5 / 0x7eec | cstr "host,port,short.Character,<type letter><8 hex key>"; both decode as typed UCS endpoints, with the second preferred when both arrive |
 | ZoneServerInfo | W→C | 0x4c44 | 130 B: `char[128]` ip, u16 port |
 | ZoneUnavail | W→C | 0x4cb4 | `char[16]` zone name, 4×i16 |
 | WorldComplete | C→W | 0x4493 | empty |
@@ -191,6 +193,7 @@ Allocation 58: base STR 85, DEX 75, AGI 80, STA 85, INT 75, WIS 75, CHA 75, defa
 |---|---|---|---|
 | ZoneEntry | C→Z | 0x5089 | 76 B: u32 eq_crc32(name), `char[64]` name, u32 spell CRC, u32 spell-assoc CRC (EQEmu reads only the name) |
 | ZoneEntry / NewSpawn | Z→C | 0x5089 / 0x6097 | one spawn per packet (below) |
+| MobRename | Z→C | 0x2c57 | 200 B: old name `char[64]` twice, new name `char[64]`, u32 0, u32 1. Replaces the name of the existing spawn while preserving its ID, target and appearance (EQEmu `Mob::SendRename`) |
 | PlayerProfile | Z→C | 0x6506 | variable (below) |
 | NewZone | Z→C | 0x1795 | 948 B NewZone_Struct; decoded: names (+0/+64/+192), ztype +470, fog RGB +471/+475/+479 (×4), fog min/max clip +484/+500 (4 floats each), gravity +516, time type +520, rain/snow +521..+536, sky +570, exp mult +584, safe y/x/z +588/+592/+596, max z +604, underworld +608, minclip/maxclip +612/+616, short name 2 +704, zone id/instance +852/+854, underworld teleport +868, suspend buffs +876, lava +880/+884, no bind +889, no attack +890, fall damage +894, fast regen +896.., fog density +916, no levitate +940 |
 | TimeOfDay | Z→C | 0x5070 | 8 B: u8 hour, minute, day, month, u32 year (note 1) |
@@ -285,7 +288,7 @@ Consent rules:
 - A changed reserved destination or newer offer invalidates consent.
 - New death, completion, zoning and disconnect discard stale questions unanswered.
 
-### Items, inventory and loot (`net/item_packets.h`, `GameConnection` in `net/game_connection_items.cpp`, rules in `game/inventory.{h,cpp}`)
+### Items, inventory and loot (`net/protocol/rof2/packets/item_packets.h`, `GameConnection` in `net/connection/game_connection_items.cpp`, rules in `game/inventory.{h,cpp}`)
 
 | Packet | Dir | Opcode | Layout |
 |---|---|---|---|
@@ -340,7 +343,7 @@ EQEmu server, `playprobe --move-test 1 --link-test 1 --loot 1 --destroy-test 1`:
 - **Links:** a said link (`make_item_link`, 8-digit body) comes back in the echoed OP_ChannelMessage; clicking it (OP_ItemLinkClick, hash 0) answers OP_ItemLinkResponse.
 - **Looting** an NPC corpse: OP_MoneyOnCorpse response 1 (no coin), the OP_LootRequest echo, OP_MoneyOnCorpse response 6, then OP_EndLootRequest → OP_LootComplete.
 
-### Merchants, NPC dialogue and trade (`net/merchant_packets.h`, `net/trade_packets.h`, `GameConnection` in `net/game_connection_commerce.cpp`, prices in `game/merchant.{h,cpp}`)
+### Merchants, NPC dialogue and trade (`net/protocol/rof2/packets/merchant_packets.h`, `net/protocol/rof2/packets/trade_packets.h`, `GameConnection` in `net/connection/game_connection_commerce.cpp`, prices in `game/merchant.{h,cpp}`)
 
 Only OP_ShopPlayerBuy/Sell (field copies) and OP_CancelTrade have a RoF2 translator; the rest use rof2_structs.h's layouts.
 
@@ -393,7 +396,7 @@ EQEmu server, `playprobe --shop/--hail/--handin/--trade-with/--trade-accept`, So
 - **Player trade:** the partner gets OP_TradeRequest, acknowledges, receives the offer as item packet 0x65 and coin as OP_TradeCoins. Both OP_TradeAcceptClick, then OP_MoneyUpdate, the item as 0x67, OP_FinishTrade. A client that disconnects with an open give window gets its item back.
 - **Camp:** on every camp the server sends OP_CancelTrade {own id, action 7}; with no trade open it is ignored.
 
-### Evolving items (`net/evolving_packets.h`, `net/game_connection_evolving.cpp`)
+### Evolving items (`net/protocol/rof2/packets/evolving_packets.h`, `net/connection/game_connection_evolving.cpp`)
 
 `OP_EvolveItem` is `0x7cfb`. Actions 0 (progress) and 4 (Final Result) are in the item table above. Checked: EQEmu's RoF2 serializer; native handlers `0x6af8e0` (details), `0x6b0230` (selection/confirmation), `0x6b00b0` (confirmed transfer).
 
@@ -410,7 +413,7 @@ The details reply's header carries the original IDs; its serialized items are th
 
 There is no request nonce, so two replies for the same pair cannot be told apart (see `docs/unknowns.md`). The server rechecks on action 3 and reports through ordinary inventory updates and messages; nothing is applied to inventory in advance.
 
-### Bank, coin moves and stack splits (`GameConnection` in `net/game_connection_bank.cpp` and `net/game_connection_items.cpp`, rules in `game/bank.{h,cpp}`)
+### Bank, coin moves and stack splits (`GameConnection` in `net/connection/game_connection_bank.cpp` and `net/connection/game_connection_items.cpp`, rules in `game/bank.{h,cpp}`)
 
 The bank window has no packets of its own.
 
@@ -438,7 +441,7 @@ EQEmu server, `playprobe --bank any [--bank-keep 1]`, South Qeynos. 24 bank slot
 - Item moves between general, bank and shared bank, splits and merges: the server sends nothing back; a relog shows coin and items where the client put them.
 - Walking 40 units away closes the window with "Come back soon!".
 
-### Spells (`net/spell_packets.h`, `GameConnection` in `net/game_connection_spells.cpp`, rules and spell data in `game/spells.{h,cpp}`)
+### Spells (`net/protocol/rof2/packets/spell_packets.h`, `GameConnection` in `net/connection/game_connection_spells.cpp`, rules and spell data in `game/spells.{h,cpp}`)
 
 Spell data: the client reads `spells_us.txt` (237 '^'-separated columns, `game::SpellTable`). The server's table decides; the client uses its copy only to gate casts and to label (names and messages).
 
@@ -487,7 +490,7 @@ EQEmu server, `playprobe --spells 1` with a level 1 human cleric:
 - **Forgetting** (right-click a gem): C→Z `OP_MemorizeSpell` {gem, spell, 2}; the echo empties the gem ("You forget %1.", 12496).
 - **Zone-in:** `OP_BuffCreate` {all 1}, then each buff that lands again as `OP_Action` ×2 + `OP_BuffCreate` + `OP_Damage`. Every 6 s, `OP_Buff` (fade 2) + `OP_BuffCreate` (all 0) refresh tics; EQEmu's `OP_Buff` carries all `slot_data` as zero (`rof2.cpp` `ENCODE(OP_Buff)` TODO; see note 2).
 
-### Groups (`net/group_packets.h`, `GameConnection` in `net/game_connection_group.cpp`, state in `game/group.{h,cpp}`)
+### Groups (`net/protocol/rof2/packets/group_packets.h`, `GameConnection` in `net/connection/game_connection_group.cpp`, state in `game/group.{h,cpp}`)
 
 Server side: zone `Handle_OP_Group*` (client_packet.cpp), `Group::*` (groups.cpp), `Client::GroupFollow`, `SendGroupCreatePacket`, `SendGroupLeaderChangePacket`, `SendGroupJoinAcknowledge` (client.cpp), `ZoneDatabase::RefreshGroupFromDB`.
 
@@ -531,7 +534,7 @@ EQEmu server; the GUI client and `playprobe` as the second player.
 - `/makeleader`: everyone gets `OP_GroupLeaderChange` {new leader}, `OP_GroupUpdate` {new leader} and `OP_GroupLeadershipAAUpdate`.
 - Camping or dropping the link (two-member group): the other member gets `OP_GroupDisbandYou` {self, ""} and `OP_GroupLeadershipAAUpdate`.
 
-### Pets (`net/pet_packets.h`, same files)
+### Pets (`net/protocol/rof2/packets/pet_packets.h`, same files)
 
 | Packet | Dir | Opcode | Layout |
 |---|---|---|---|
@@ -570,7 +573,7 @@ The client decides locally whether a skill may be used and sends one request; th
 
 1. Track Z→C: the list is decoded, sorted and filtered for the tracking window (`net/game_connection_tracking.cpp`). A first u32 of 0xff8b344f (`decode_track_reply_header`) is the tracking timer, not a list.
 
-### Doors and ground objects (`net/door_packets.h`, `GameConnection` in `net/game_connection_doors.cpp`, rules in `game/doors.{h,cpp}`, drawing and collision in `app/world_objects.{h,cpp}`)
+### Doors and ground objects (`net/protocol/rof2/packets/door_packets.h`, `GameConnection` in `net/connection/game_connection_doors.cpp`, rules in `game/doors.{h,cpp}`, drawing and collision in `app/world_objects.{h,cpp}`)
 
 | Packet | Dir | Opcode | Layout |
 |---|---|---|---|
@@ -616,7 +619,7 @@ Teleport doors (types 57/58 with a destination) are moved by the server with OP_
 
 The actor is placed at (Y, X, Z), turned by Heading (counterclockwise like spawns), tilted by DoorAngle about its Y axis, and scaled by size %.
 
-### Alternate advancement, training, tradeskills and tasks (`net/aa_packets.h`, `net/training_packets.h`, `net/task_packets.h`, `GameConnection` in `net/game_connection_progress.cpp`, rules in `game/alt_adv.h`, `game/training.h`, `game/tasks.h`)
+### Alternate advancement, training, tradeskills and tasks (`net/protocol/rof2/packets/aa_packets.h`, `net/protocol/rof2/packets/training_packets.h`, `net/protocol/rof2/packets/task_packets.h`, `GameConnection` in `net/connection/game_connection_progress.cpp`, rules in `game/alt_adv.h`, `game/training.h`, `game/tasks.h`)
 
 All tried live against an EQEmu server (playprobe `--aa`, `--aa-use`, `--train`, `--task`, `--task-cancel`, `--object`), except a successful combine and the bag (inventory container) path, which have unit tests only.
 
@@ -846,7 +849,7 @@ Earned notifications require a matching received PC spawn/name.
 
 Neither path changes own completion state.
 
-### Chat and slash commands (`game/slash_commands.{h,cpp}`, `net/game_connection_social.cpp`)
+### Chat and slash commands (`game/slash_commands.{h,cpp}`, `net/connection/game_connection_social.cpp`)
 
 #### Chat: matching a typed line
 
@@ -964,7 +967,7 @@ Tried live (OP_GuildBank and OP_GuildBankItemList, in the table further down; on
 
 EQEmu's deposit acknowledgement has its failed flag where RoF2 reads the slot to select, so the selection goes to deposit slot 0 (1 after a refusal).
 
-### Raids (`net/social_packets.h`, state `game::RaidState`)
+### Raids (`net/protocol/rof2/packets/social_packets.h`, state `game::RaidState`)
 
 | Packet | Dir | Opcode | Layout |
 |---|---|---|---|
@@ -992,7 +995,7 @@ EQEmu's deposit acknowledgement has its failed flag where RoF2 reads the slot to
 
 Tried live: `/raidinvite` and accept, `/rsay` (template 5112 with an empty language part), and `/raiddisband` (leadership passes to the other member).
 
-### Chat server (UCS; `net/chat_server.{h,cpp}`)
+### Chat server (UCS; `net/connection/chat_client.*`, `net/connection/ucs_endpoint.*`, `net/protocol/ucs/codec.*`)
 
 World sends `OP_SetChatServer2` "host,port,short.Name,<type><key>" (`world_packets.h decode_chat_server`). After zone-in, the client opens a second UDP session to it (one-byte opcodes, EQEmu `utils/patches/mail_opcodes.conf`).
 
@@ -1010,7 +1013,7 @@ DNS runs off the frame thread; commands typed meanwhile wait for the login. Ever
 
 Tried live: `/join`, `/1 <text>` to the other client, `/friends <name>` and the list.
 
-### Duels, inspect and player commands (`net/player_packets.h`, `GameConnection` in `net/game_connection_player.cpp`, rules in `game/interact.{h,cpp}`)
+### Duels, inspect and player commands (`net/protocol/rof2/packets/player_packets.h`, `GameConnection` in `net/connection/game_connection_player.cpp`, rules in `game/interact.{h,cpp}`)
 
 Tried live against EQEmu with two clients (playprobe `--duel`, `--duel-wait`, `--duel-decline`, `--inspect`, `--cmd`): challenge, accept and decline (the challenger can challenge again at once), inspect both ways, `/keys`, `/rewind`, `/corpse`, `/toggleinspect`, `/autosplit`, `/language`, `/bandolier`. A duel's end (death or despawn), `/surname` (needs level 20), `/corpsedrag`, `/shield` and books have unit tests only.
 
@@ -1037,7 +1040,7 @@ Tried live against EQEmu with two clients (playprobe `--duel`, `--duel-wait`, `-
 | Bandolier | C→Z | 0x7677 | 40 B: u32 action (0 create, 1 remove, 2 activate), u8 set, char[32] name, 3 B (note 5) |
 | ReadBook | C→Z | 0x72df | 8216 B: u32 window 0xffffffff, slot {i16 slot, i16 sub, i16 aug −1, i16 0}, u32 book type, u32 target, u8, u8, char[8194] the item's book file |
 | ReadBook | Z→C | 0x72df | the same struct with the text; type 0 note, 1 book, 2 item info |
-| RequestTitles / SendTitleList | C→Z / Z→C | 0x6344 / 0x2d08 | empty / {u32 count, count × {u32 id, prefix, suffix}}: the titles we may take (`net/player_packets.h`) |
+| RequestTitles / SendTitleList | C→Z / Z→C | 0x6344 / 0x2d08 | empty / {u32 count, count × {u32 id, prefix, suffix}}: the titles we may take (`net/protocol/rof2/packets/player_packets.h`) |
 | AltCurrency | Z→C | 0x6b6d | mode 8: u32 count, count × 25 B {currency, 1, currency, item id, icon, stack size, u8 shown}; mode 7 (88 B): `char[64]`, currency, 1, amount, 2 × u32 |
 | AltCurrencyReclaim | C→Z | 0x0339 | 16 B {currency, 0, count, flag: 1 put the cursor item in, 0 take `count` out} |
 | AltCurrencyMerchantRequest / Reply | C→Z / Z→C | 0x5409 / 0x27a2 | u32 npc / text "cur\|1\|cur\|n" then "^name\|item\|cost\|0\|1\|races\|classes" per item |
@@ -1132,7 +1135,7 @@ Checked: request senders `0x420030`, `0x4209f0`, `0x41fed0`, `0x41ff80`; stats `
 
 The leaderboard reply carries no reliable category on stock EQEmu, so Hailstone serializes requests, holding the latest selection until the previous reply and the ten-second guard allow it; a missing reply is released after thirty seconds (Hailstone's choice). Late replies stay ambiguous (`docs/unknowns.md`).
 
-### Spirit Shrouds and Monster Missions (`net/shroud_packets.h`)
+### Spirit Shrouds and Monster Missions (`net/protocol/rof2/packets/shroud_packets.h`)
 
 | Opcode | Direction | RoF2 | Body |
 | --- | --- | --- | --- |
@@ -1183,7 +1186,7 @@ The local EQEmu draft supplies the form snapshot and a shared-task catalog throu
 - Its inbound decoders must use the native payload sizes above.
 - A withdrawal acknowledgement with the matching key removes the row; a refusal uses the all-ones key.
 
-### Bazaar and barter (`net/market_packets.h`, `GameConnection` in `net/game_connection_market.cpp`, rules in `game/bazaar.{h,cpp}`)
+### Bazaar and barter (`net/protocol/rof2/packets/market_packets.h`, `GameConnection` in `net/connection/game_connection_market.cpp`, rules in `game/bazaar.{h,cpp}`)
 
 Tried live with two clients (a trader on a rug stall, type 155, and a shopper): Begin Trader, slot selection and price load, the search, Find Trader (the button's 15 s wait), a row's Buy, /offlinemode's refusal 771. Also with playprobe (`--shop-trader`, `--bazaar`, `--bazaar-buy`): the trader list, search, a shop, and a purchase without coin (sub action 7).
 
@@ -1269,7 +1272,7 @@ Closing it turns buyer mode off and saves them.
 - Sales and buys give or take the coin locally with sound 0x8a, as EQEmu sends no coin update.
 - Quantities: a sale or compensation item at most 20, a count 0..999, a price 1..1,000,000 per coin button (capped at 1,000,000,000 copper).
 
-### Mail (UCS; `net/chat_server.h`, `GameConnection` in `net/game_connection_mail.cpp`, rules in `game/mail.{h,cpp}`)
+### Mail (UCS; `net/connection/chat_client.h`, `GameConnection` in `net/connection/game_connection_mail.cpp`, rules in `game/mail.{h,cpp}`)
 
 Tried live between two clients: send, new-mail notice, mailbox switch, headers, a body, delete.
 
@@ -1290,7 +1293,7 @@ Mail commands go on the chat session as OP_Mail with the mail command text, the 
 - The composition window's From is the current mailbox's address as MailLogin listed it.
 - The composition window opens and sends only with the membership feature 6.
 
-### Marketplace (`net/marketplace_packets.h`, `GameConnection` in `net/game_connection_marketplace.cpp`, rules in `game/marketplace.{h,cpp}`)
+### Marketplace (`net/protocol/rof2/packets/marketplace_packets.h`, `GameConnection` in `net/connection/game_connection_marketplace.cpp`, rules in `game/marketplace.{h,cpp}`)
 
 The in-game store (CMarketplaceWnd). Unit-tested and mock-server tested; not tried live.
 
@@ -1326,7 +1329,7 @@ Opcodes the original sends that this client does not (their meaning is unknown o
 
 Opcodes it accepts that this client ignores: 0x1eba (a funding preview's debug line), 0x3036, and the eight the original also ignores (0x1b5d, 0x1f6e, 0x20d9, 0x3042, 0x4ffc, 0x6e2a, 0x740d, 0x7aa9).
 
-### Personal tribute (`net/tribute_packets.h`, `GameConnection` in `net/game_connection_tribute.cpp`, windows in `app/lua_ui_progress.cpp`)
+### Personal tribute (`net/protocol/rof2/packets/tribute_packets.h`, `GameConnection` in `net/connection/game_connection_tribute.cpp`, windows in `app/lua_ui_progress.cpp`)
 
 From EQEmu (zone/tribute.cpp and the RoF2 translator). Not tried live.
 
@@ -1378,7 +1381,7 @@ Two deliberate changes for safety:
 
 Session reset or a later guild-master open reply retires an unanswered request; there is no local timeout. Tests: decoder fuzz and mock tests.
 
-### Mercenaries (`game/mercenary.{h,cpp}`, `GameConnection` in `net/game_connection_merc.cpp`, windows in `app/lua_ui_merc.cpp`)
+### Mercenaries (`game/mercenary.{h,cpp}`, `GameConnection` in `net/connection/game_connection_merc.cpp`, windows in `app/lua_ui_merc.cpp`)
 
 Checked against 25 recorded vector files (`tests/merc_vectors_test.cpp`). Not tried live (the test server has `Mercs:AllowMercs` off).
 
@@ -1437,7 +1440,7 @@ The record holds 10 pairs; this client skips any further ones (stance count kept
 
 Not built: the ownership transfer offer and its answer (0x5df8 from the server, 0x4333) and the upgrade prompt (0x69ca, 0x6e9f).
 
-### Real estate: housing, guild halls, placed objects (`net/real_estate_packets.h`, `GameConnection` in `net/game_connection_real_estate.cpp`, state in `game/real_estate.{h,cpp}`)
+### Real estate: housing, guild halls, placed objects (`net/protocol/rof2/packets/real_estate_packets.h`, `GameConnection` in `net/connection/game_connection_real_estate.cpp`, state in `game/real_estate.{h,cpp}`)
 
 None of these opcodes are in EQEmu's RoF2 table; a server with housing (such as Project Triune) sends them with the original's numbers.
 
