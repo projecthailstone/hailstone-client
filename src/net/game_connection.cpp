@@ -234,9 +234,14 @@ void GameConnection::update() {
             }
             // Zoning keeps state_ == Zoning; the world's OP_EnterWorld reply moves it on.
         }
-        while (auto p = world_session_ ? world_session_->receive() : std::nullopt)
+        // A failure ends the session's queue: a packet behind it must not move the connection on again (an
+        // OP_ZoneServerInfo after a bad character list would start a zone connection).
+        while (state_ != ConnectionState::Disconnected) {
+            auto p = world_session_ ? world_session_->receive() : std::nullopt;
+            if (!p) break;
             if (!options_.hooks || options_.hooks->packet(plugin::Stream::World, plugin::Direction::In, *p) == plugin::Flow::Continue)
                 handle_world(*p);
+        }
         if (world_session_ && world_session_->state() == SessionState::Disconnected) {
             bool expected = state_ == ConnectionState::ZoneConnecting || state_ == ConnectionState::ZoneEntering ||
                             state_ == ConnectionState::InZone || state_ == ConnectionState::Disconnected;
@@ -288,9 +293,12 @@ void GameConnection::update() {
             server_files_->update(ServerFileSync::Clock::now());
             if (server_files_->finished()) finish_server_files();
         }
-        while (auto p = zone_session_ ? zone_session_->receive() : std::nullopt)
+        while (state_ != ConnectionState::Disconnected) { // as the world's: nothing is handled after a failure
+            auto p = zone_session_ ? zone_session_->receive() : std::nullopt;
+            if (!p) break;
             if (!options_.hooks || options_.hooks->packet(plugin::Stream::Zone, plugin::Direction::In, *p) == plugin::Flow::Continue)
                 handle_zone(*p);
+        }
         // CTaskWnd::OnProcessFrame: the task compass mark looked for again once marked (0x76ff70).
         if (task_compass_dirty_ && state_ == ConnectionState::InZone) update_task_compass();
         if (zone_session_ && zone_exit_ != ZoneExit::None && zone_session_->state() != SessionState::Disconnected &&
@@ -1505,7 +1513,7 @@ void GameConnection::handle_zone(const AppPacket& p) {
     }
     case Op::DeleteSpawn:
         if (auto id = decode_delete_spawn(p)) {
-            duel_spawn_removed(*id, p.data.size() > 4 && p.data[4] != std::byte{0});
+            duel_spawn_removed(*id, decode_delete_spawn_decayed(p).value_or(false));
             // msgEQRmPlayer: the trade partner (pinstTradeTarget) leaving cancels and closes the trade
             // (CTradeWnd_CancelAndClose, which sends OP_CancelTrade). EQEmu tells only the player who left.
             if (trade_ && trade_->partner_id == *id) trade_cancel();

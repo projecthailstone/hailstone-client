@@ -48,7 +48,8 @@ int ClientApp::run() {
         retired_ui_textures_.reset(); // the last frame, which may have drawn it, is submitted (waits for the GPU)
         perf_ui_.begin_frame();
         // The frame cap (display.max_fps, --max-fps), and display.background_fps while another window has the focus:
-        // below 10 there, the loop runs on at 10 a second and draws only some frames, or none (app/frame_pace.h).
+        // below 10 there, the loop runs on at 10 a second and draws only some frames, or none (app/frame_pace.h). A
+        // minimised window runs at 10 a second whatever the settings say: nothing can be drawn.
         // Auto: just under the refresh rate of the display the window is on now (auto_frame_cap).
         const int max_fps =
             effective_max_fps(opts_.max_fps, opts_.max_fps == kMaxFpsAuto ? window_.refresh_rate() : 0.0f);
@@ -56,7 +57,8 @@ int ClientApp::run() {
         // settle after zone-in, where screen_ is already InGame but the loading overlay is still drawn.
         const bool light_screen = is_light_screen(screen_ == Screen::InGame, zone_settling());
         const FramePace pace = frame_pace(max_fps, background_fps_, window_.focused(),
-            std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - last_drawn), light_screen);
+            std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - last_drawn), light_screen,
+            window_.minimized());
         // To the microsecond on every system (platform/precise_sleep.h), timed from the last deadline (next_frame_deadline).
         if (pace.cap > 0) {
             frame_deadline = next_frame_deadline(frame_deadline, Clock::now(),

@@ -327,6 +327,17 @@ void ParticleSystem::set_still(std::uint32_t key, std::size_t definition, std::v
     emitters_.push_back(std::move(e));
 }
 
+void ParticleSystem::set_still(std::uint32_t key, std::size_t definition, std::span<const Particle> particles) {
+    if (definition >= definitions_.size()) return;
+    for (auto& e : emitters_)
+        if (e.key == key && e.still) {
+            e.definition = definition;
+            e.particles.assign(particles.begin(), particles.end());
+            return;
+        }
+    set_still(key, definition, std::vector<Particle>(particles.begin(), particles.end()));
+}
+
 namespace {
 
 // The ring layout of shape 2 for a batch of n (0x100727e0..): rings, particles per ring.

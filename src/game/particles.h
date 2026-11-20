@@ -278,6 +278,9 @@ public:
     std::size_t add_definition(assets::EmitterDefinition d);
     // The particles of the still emitter `key` (of `definition`), drawn as given until set again or stopped.
     void set_still(std::uint32_t key, std::size_t definition, std::vector<Particle> particles);
+    // The same, copied into the emitter's own list (its storage kept from the last call: a still set every frame
+    // allocates nothing once it has grown).
+    void set_still(std::uint32_t key, std::size_t definition, std::span<const Particle> particles);
     void clear() { emitters_.clear(); }
     // Advances by dt seconds; `attachment` places the attached emitters (EmitterAttachment).
     void update(float dt, const AttachmentFn& attachment);

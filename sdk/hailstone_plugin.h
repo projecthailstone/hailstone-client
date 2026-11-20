@@ -926,7 +926,8 @@ typedef struct PluginHostApi {
     int (*right_click_item)(void* host, const HailstoneItemSlot* slot, uint32_t class_id);
 
     /* ---- ABI 2: the plugin's Lua windows (HAILSTONE_CAP_UI) ---- */
-    /* A function its windows call as hs.UI.plugins.Get("<plugin>").<name>(...) (or .call("<name>", ...)). */
+    /* A function its windows call as hs.UI.plugins.Get("<plugin>").<name>(...) (or .call("<name>", ...)). The same
+     * name replaces the earlier one; 0 when the plugin already has 256 others. */
     int (*add_ui_function)(void* host, const char* name, HailstoneUiFn fn, void* user);
     void (*remove_ui_function)(void* host, const char* name);
     /* The arguments: their count; one as a value (a table gives HAILSTONE_TABLE); a table argument's field by key.
@@ -941,10 +942,12 @@ typedef struct PluginHostApi {
     void (*out_key)(void* host, HailstoneOut* out, const char* key);
     void (*out_end)(void* host, HailstoneOut* out);
     /* An option in the Options window's plugin section: max 1 a switch, else a slider from min to max. The plugin
-     * keeps the value (its own settings file): get reads it, set changes it. */
+     * keeps the value (its own settings file): get reads it, set changes it. The same name replaces the earlier
+     * one; 0 past 64 options of the plugin. */
     int (*add_option)(void* host, const char* name, const char* label, int min, int max, HailstoneOptionGetFn get,
                       HailstoneOptionSetFn set, void* user);
-    /* An entry in the packs' menus (the EQ menu, the gamepad pack's More page): choosing it runs `command`. */
+    /* An entry in the packs' menus (the EQ menu, the gamepad pack's More page): choosing it runs `command`. The same
+     * label replaces the earlier entry's command; 0 past 32 entries of the plugin. */
     int (*add_menu)(void* host, const char* label, const char* command);
 
     /* ---- ABI 2: more of the client ---- */

@@ -18,7 +18,7 @@
 #include <tuple>
 #include <utility>
 
-#include <SDL3/SDL_loadso.h>
+#include "platform/shared_library.h"
 
 #include "core/ascii_case.h"
 #include "core/atomic_file.h"
@@ -250,7 +250,7 @@ struct Loaded {
     fs::path file, copy;
     Sha256Digest hash{};
     std::uint32_t caps = 0;
-    SDL_SharedObject* lib = nullptr;
+    void* lib = nullptr; // platform::load_library's
     PluginHostApi table{};
     Hooks::Owner owner = 0;
     std::vector<std::string> tlos;
@@ -1141,13 +1141,12 @@ int h_add_ui_function(void* h, const char* name, HailstoneUiFn fn, void* user) {
     Loaded& l = Loaded::of(h);
     if (!name || !*name || !fn || !l.host->env.ui || !may_ui(l, "add_ui_function")) return 0;
     Loaded* lp = &l;
-    l.host->env.ui->add_function(l.name, name, [lp, fn, user](const std::vector<UiValue>& args) {
+    return l.host->env.ui->add_function(l.name, name, [lp, fn, user](const std::vector<UiValue>& args) {
         HailstoneArgs a{&args};
         HailstoneOut out;
         const int ok = guarded(*lp, "a UI function", [&] { return fn(user, &a, &out); });
         return ok && out.has_root ? std::move(out.root) : UiValue{};
-    });
-    return 1;
+    }) ? 1 : 0;
 }
 
 void h_remove_ui_function(void* h, const char* name) {
@@ -1228,15 +1227,13 @@ int h_add_option(void* h, const char* name, const char* label, int min, int max,
     o.max = std::max(min, max);
     o.get = [lp, get, user] { return guarded(*lp, "an option", [&] { return get(user); }); };
     o.set = [lp, set, user](int v) { guarded(*lp, "an option", [&] { set(user, v); }); };
-    l.host->env.ui->add_option(std::move(o));
-    return 1;
+    return l.host->env.ui->add_option(std::move(o)) ? 1 : 0;
 }
 
 int h_add_menu(void* h, const char* label, const char* command) {
     Loaded& l = Loaded::of(h);
     if (!label || !*label || !command || !*command || !l.host->env.ui || !may_ui(l, "add_menu")) return 0;
-    l.host->env.ui->add_menu({l.name, label, command});
-    return 1;
+    return l.host->env.ui->add_menu({l.name, label, command}) ? 1 : 0;
 }
 
 // The plugin's folder: plugins/<name>/ when its binary is there, else plugins/<name>/ beside the binary.
@@ -2450,7 +2447,10 @@ int32_t h_get_raid_data_bulk(void* h, unsigned char* data, int32_t datamax) {
         rec->y = m.y;
         rec->z = m.z;
         rec->distance = m.distance;
-        copy_name(rec->name, m.name);
+        // Through a local: no reference to a field of the packed record (AGENTS.md).
+        char name[sizeof rec->name];
+        copy_name(name, m.name);
+        std::memcpy(rec->name, name, sizeof name);
         pBuffer += sizeof(HS_BulkRaidData);
         written += static_cast<int32_t>(sizeof(HS_BulkRaidData));
         ++header.count;
@@ -2904,20 +2904,25 @@ template <auto F> constexpr auto main_only = &MainOnly<F>::call;
 template <auto F, auto Off> struct MainOnlyOr;
 template <typename R, typename... A, R (*F)(void*, A...), auto Off> struct MainOnlyOr<F, Off> {
     static R call(void* h, A... a) {
-        if (!on_main_thread()) {
-            off_thread(h);
+        try {
+            if (!on_main_thread()) {
+                off_thread(h);
+                return static_cast<R>(Off);
+            }
+            return F(h, a...);
+        } catch (...) {
+            host_threw(h); // as MainOnly: never through the plugin's frames; the call answers `off`, "unknown"
             return static_cast<R>(Off);
         }
-        return F(h, a...);
     }
 };
 template <auto F, auto Off> constexpr auto main_only_or = &MainOnlyOr<F, Off>::call;
 
-template <typename F> F symbol(SDL_SharedObject* lib, const char* name) {
-    return reinterpret_cast<F>(SDL_LoadFunction(lib, name));
+template <typename F> F symbol(void* lib, const char* name) {
+    return reinterpret_cast<F>(platform::library_symbol(lib, name));
 }
 // One of the SDK's own exports: hailstone_plugin_<what>, or nmsc_plugin_<what> as plugins built up to 0.6 name it.
-template <typename F> F sdk_symbol(SDL_SharedObject* lib, const std::string& what) {
+template <typename F> F sdk_symbol(void* lib, const std::string& what) {
     if (F f = symbol<F>(lib, ("hailstone_plugin_" + what).c_str())) return f;
     return symbol<F>(lib, ("nmsc_plugin_" + what).c_str());
 }
@@ -3137,7 +3142,7 @@ void discard(NativePlugins::Impl& m, std::unique_ptr<Loaded> l, bool shutdown) {
     }
     game::clear_class_name_overrides(l->class_names_owner);
     for (const auto& t : std::vector<std::string>(l->tlos)) h_remove_tlo(l.get(), t.c_str());
-    SDL_UnloadObject(l->lib);
+    platform::unload_library(l->lib);
 }
 } // namespace
 
@@ -3206,23 +3211,24 @@ bool NativePlugins::load_file(std::string_view name_in, std::string* why, Asker 
     p.copy = copy;
     p.hash = hash;
     p.caps = caps;
-    p.lib = SDL_LoadObject(copy.string().c_str());
-    if (!p.lib) return refuse(std::format("{} did not load: {}", name, SDL_GetError()));
+    std::string load_error;
+    p.lib = platform::load_library(copy, &load_error);
+    if (!p.lib) return refuse(std::format("{} did not load: {}", name, load_error));
     auto abi = sdk_symbol<std::uint32_t (*)()>(p.lib, "abi");
     auto set_host = sdk_symbol<void (*)(const PluginHostApi*)>(p.lib, "set_host");
     if (!abi || !set_host) {
-        SDL_UnloadObject(p.lib);
+        platform::unload_library(p.lib);
         return refuse(name +
                       " is not a Hailstone plugin (no hailstone_plugin_abi / hailstone_plugin_set_host; use HAILSTONE_PLUGIN)");
     }
     // Older ABIs load (the tables only grow at their end); a newer one needs a newer client.
     std::uint32_t got = 0;
     if (!guarded(p, "hailstone_plugin_abi", [&] { got = abi(); return true; })) {
-        SDL_UnloadObject(p.lib);
+        platform::unload_library(p.lib);
         return refuse(name + " failed while reporting its SDK ABI");
     }
     if (got < 1 || got > HAILSTONE_PLUGIN_ABI) {
-        SDL_UnloadObject(p.lib);
+        platform::unload_library(p.lib);
         return refuse(std::format("{} was built for plugin ABI {}, this client has {}", name, got, HAILSTONE_PLUGIN_ABI));
     }
     p.initialize = symbol<void (*)()>(p.lib, "InitializePlugin");

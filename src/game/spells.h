@@ -192,6 +192,15 @@ public:
 private:
     std::unordered_map<std::uint32_t, SpellData> spells_;
     std::unordered_map<std::uint32_t, std::uint32_t> crcs_;
+    // Built by parse from spells_, so find_by_name and by_group_and_rank do not scan the table (the merchant window
+    // asks per rank per scroll every frame). Ids, not pointers, so a copied table stays valid.
+    struct RankedId {
+        std::int32_t rank;
+        std::uint32_t id;
+    };
+    std::unordered_map<std::string, std::uint32_t> by_name_;               // lower-cased name -> lowest id
+    std::unordered_map<std::uint64_t, std::vector<RankedId>> by_group_;   // (group, subgroup) -> by rank, then id
+    void build_indices();
     std::uint32_t default_crc_ = 0;
     std::uint32_t file_crc_ = 0, assoc_file_crc_ = 0;
 };

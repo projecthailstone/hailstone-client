@@ -921,3 +921,25 @@ TEST_CASE("A held emitter keeps its actor's scale and alpha, and one held when m
         CHECK(ps.emitters()[0].particles.size() <= 6u);
     }
 }
+
+TEST_CASE("ParticleSystem::set_still from a span: the same emitter as from a vector, its list replaced in place") {
+    game::ParticleSystem ps({assets::EmitterDefinition{}, assets::EmitterDefinition{}});
+    std::vector<game::Particle> quads(3);
+    for (std::size_t i = 0; i < quads.size(); ++i) quads[i].position = glm::vec3(static_cast<float>(i), 0, 0);
+    ps.set_still(7, 0, std::span<const game::Particle>(quads));
+    REQUIRE(ps.emitters().size() == 1);
+    CHECK(ps.emitters()[0].still);
+    CHECK(ps.emitters()[0].key == 7);
+    REQUIRE(ps.emitters()[0].particles.size() == 3);
+    CHECK(ps.emitters()[0].particles[2].position.x == 2.0f);
+    // Set again (fewer, another definition): the same emitter, with the new list.
+    quads.resize(1);
+    quads[0].position.x = 9.0f;
+    ps.set_still(7, 1, std::span<const game::Particle>(quads));
+    REQUIRE(ps.emitters().size() == 1);
+    CHECK(ps.emitters()[0].definition == 1);
+    REQUIRE(ps.emitters()[0].particles.size() == 1);
+    CHECK(ps.emitters()[0].particles[0].position.x == 9.0f);
+    ps.set_still(8, 5, std::span<const game::Particle>(quads)); // a definition out of range: nothing
+    CHECK(ps.emitters().size() == 1);
+}

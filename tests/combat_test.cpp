@@ -2,6 +2,7 @@
 // client-side combat rules in game/combat.h.
 
 #include <doctest/doctest.h>
+#include <limits>
 
 #include <cstring>
 
@@ -504,6 +505,10 @@ TEST_CASE("targeting: nearest NPC in front, cycling, and ray picking") {
     auto down = game::pick_spawn(w, {20, 0, 50}, {0, 0, -1}, 500.0f, 1);
     REQUIRE(down);
     CHECK(*down == 3);
+    // No direction: nothing picked, even from inside a spawn's body.
+    CHECK_FALSE(game::pick_spawn(w, {20, 0, 1}, {0, 0, 0}, 500.0f, 1).has_value());
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    CHECK_FALSE(game::pick_spawn(w, {20, 0, 1}, {nan, 0, 0}, 500.0f, 1).has_value());
 }
 
 TEST_CASE("OP_SimpleMessage is SimpleMessage_Struct: string id, colour, unknown") {

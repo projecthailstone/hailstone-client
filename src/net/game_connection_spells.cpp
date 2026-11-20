@@ -1162,6 +1162,7 @@ void GameConnection::handle_spell(Op op, const AppPacket& p) {
                 if (spells_.target_buffs_entity != bi->entity_id || bi->all_buffs) spells_.target_buffs.clear();
                 spells_.target_buffs_entity = bi->entity_id;
                 for (const auto& e : bi->entries) {
+                    if (e.slot >= kMaxSpawnBuffSlots) continue;
                     auto it = std::find_if(spells_.target_buffs.begin(), spells_.target_buffs.end(),
                                            [&](const auto& t) { return t.first == e.slot; });
                     if (e.spell_id == 0xffffffffu) {

@@ -1145,6 +1145,7 @@ if(HAILSTONE_BUILD_TESTS)
     tests/wrap_math_test.cpp
     tests/wipe_test.cpp
     tests/log_escape_test.cpp
+    tests/test_shard_test.cpp
     tests/step_clock_test.cpp
     tests/frame_rate_test.cpp
     tests/particle_view_test.cpp
@@ -1607,7 +1608,18 @@ if(HAILSTONE_BUILD_TESTS)
     add_dependencies(hailstone_tests hailstone-web)
     target_compile_definitions(hailstone_tests PRIVATE HAILSTONE_WEB_HELPER="$<TARGET_FILE:hailstone-web>")
   endif()
-  add_test(NAME hailstone_tests COMMAND hailstone_tests)
+  # One ctest entry per part (tests/test_shard.h), so `ctest -j` runs them at once; build/hailstone_tests alone still
+  # runs everything in one process. 1 registers the single entry it was before.
+  set(HAILSTONE_TEST_SHARDS 8 CACHE STRING "Parts ctest splits hailstone_tests into")
+  if(HAILSTONE_TEST_SHARDS GREATER 1)
+    foreach(shard RANGE 1 ${HAILSTONE_TEST_SHARDS})
+      add_test(NAME hailstone_tests_${shard} COMMAND hailstone_tests)
+      set_tests_properties(hailstone_tests_${shard} PROPERTIES
+        ENVIRONMENT "HAILSTONE_TEST_SHARD=${shard}/${HAILSTONE_TEST_SHARDS}")
+    endforeach()
+  else()
+    add_test(NAME hailstone_tests COMMAND hailstone_tests)
+  endif()
   # Windows has no rpath: SDL3.dll has to sit next to the executable.
   if(WIN32)
     add_custom_command(TARGET hailstone_tests POST_BUILD

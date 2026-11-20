@@ -66,6 +66,17 @@ namespace hailstone::app {
 void chat_layout_loaded(ui::UiIni& ini, UiHost& host, const std::filesystem::path& user_dir);
 void chat_host_gone(const UiHost& host, const ui::UiIni& ini);
 
+namespace {
+// map[key] on a map with a transparent comparator, without building a std::string key when it is already there (the
+// per-frame lookups that would otherwise allocate one each time).
+template <class Map, class Key>
+typename Map::mapped_type& map_entry(Map& map, const Key& key) {
+    auto it = map.find(key);
+    if (it == map.end()) it = map.emplace(std::string(key), typename Map::mapped_type{}).first;
+    return it->second;
+}
+} // namespace
+
 struct UiApi::Impl {
     UiHost& host;
     std::shared_ptr<void> callback_lifetime = std::make_shared<int>(0);
@@ -112,14 +123,19 @@ struct UiApi::Impl {
     CascadeMenu cascade; // the EQ button's menu (app/lua_ui_menu.h)
     // Each item slot's CInvSlotWnd cool-down (CButtonWnd +0x21c / +0x220), by where the Lua asked for the item.
     std::map<std::string, game::ButtonCoolDown, std::less<>> slot_cool_downs;
+    std::string cool_down_key; // set_item_cool_down's key, kept so formatting it allocates nothing once it has grown
 
     // CInvSlotWnd_Draw @0x69a080's recast cool-down for the slot `key` holding `item` (game::update_item_cool_down),
     // as the item table's `cooldown`: DrawCooldown's fraction (the shaded part runs from the slot's top + fraction x
     // its height down to its bottom), absent while idle. The table is at the top of the stack.
-    void set_item_cool_down(lua_State* L, std::string key, const net::Item* item) {
+    // The key is formatted only for an item that is there.
+    template <class... Args>
+    void set_item_cool_down(lua_State* L, const net::Item* item, std::format_string<Args...> key, Args&&... args) {
         if (!item || !host.conn) return;
+        cool_down_key.clear();
+        std::format_to(std::back_inserter(cool_down_key), key, std::forward<Args>(args)...);
         HostButtonQueries q(host);
-        game::ButtonCoolDown& cd = slot_cool_downs[key];
+        game::ButtonCoolDown& cd = map_entry(slot_cool_downs, cool_down_key);
         game::update_item_cool_down(cd, item_recast_of(*host.conn, item), q.now(), q.fast_now());
         if (auto f = cd.overlay_fraction(q.now())) {
             lua_pushnumber(L, *f);
@@ -148,7 +164,7 @@ struct UiApi::Impl {
             StockWindow* w = window(screen_name);
             if (!w) continue;
             bool shown = w->shown(host);
-            bool& was = tip_shown[screen_name];
+            bool& was = map_entry(tip_shown, std::string_view(screen_name));
             if (shown && !was) {
                 if (tip == -100) {
                     // CActionsWnd::OnShow @0x614a20 (0x614510 on the tab box's page): the Abilities page 4,
@@ -596,7 +612,7 @@ int Item(lua_State* L) {
     if (!slot_args(L, 1, slot, bag)) return push_item(L, nullptr);
     const net::Item* item = h.conn->inventory().at(net::ItemSlot::possessions(slot, bag));
     push_item(L, item);
-    Impl::of(L).set_item_cool_down(L, std::format("inv:{}:{}", slot, bag), item);
+    Impl::of(L).set_item_cool_down(L, item, "inv:{}:{}", slot, bag);
     return 1;
 }
 
@@ -1664,7 +1680,7 @@ int SlotItem(lua_State* L) {
     StockWindow* w = m.window(name);
     const net::Item* item = w ? w->slot_item(m.host, child) : nullptr;
     push_item(L, item);
-    m.set_item_cool_down(L, std::format("win:{}:{}", name, child), item);
+    m.set_item_cool_down(L, item, "win:{}:{}", name, child);
     return 1;
 }
 
@@ -2073,7 +2089,7 @@ int BagSlotItem(lua_State* L) {
     StockWindow* w = m.window(name);
     const net::Item* item = w ? w->bag_item(m.host, index) : nullptr;
     push_item(L, item);
-    m.set_item_cool_down(L, std::format("bag:{}:{}", name, index), item);
+    m.set_item_cool_down(L, item, "bag:{}:{}", name, index);
     return 1;
 }
 
@@ -2447,7 +2463,7 @@ int SetSlider(lua_State* L) {
 // DrawQuantity writes a stack's count in a dark box at its bottom right.
 int CursorAttachment(lua_State* L) {
     auto& m = Impl::of(L);
-    m.replaced_at["CursorAttachment"] = m.frame;
+    map_entry(m.replaced_at, std::string_view("CursorAttachment")) = m.frame;
     const net::Item* held = m.host.conn && m.host.in_game ? m.host.conn->inventory().cursor() : nullptr;
     auto icon = held && m.host.textures ? m.host.textures->item_icon(held->icon) : std::nullopt;
     const game::HotButton* button = !held && m.host.in_game && m.host.cursor_button ? &*m.host.cursor_button : nullptr;

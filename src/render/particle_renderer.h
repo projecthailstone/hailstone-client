@@ -153,6 +153,11 @@ private:
     std::unordered_map<std::string, std::uint32_t> slots_; // lower-case name -> slot (kMissingParticleTexture: none)
     std::unordered_map<std::string, glm::vec3> colors_;    // lower-case name -> texture_color
     mutable std::string lower_scratch_;                    // lowered's buffer (main thread only)
+    // prepare's pass over the emitters: each definition's textures are asked for once a pass, not once per emitter
+    // (emitters share definitions by the hundred). def_pass_[d] is the pass that last asked for definition d.
+    std::vector<std::uint32_t> def_pass_;
+    std::uint32_t prepare_pass_ = 0;
+    std::vector<std::string> wanted_; // prepare's names to load this pass (kept for its capacity)
     std::uint32_t version_ = 1;
     std::array<std::uint32_t, VkContext::kFramesInFlight> set_version_{};
     std::array<Buffer, VkContext::kFramesInFlight> vertices_{};

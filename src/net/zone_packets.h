@@ -380,6 +380,8 @@ std::optional<Weather> decode_weather(const AppPacket& p);
 AppPacket encode_delete_spawn(std::uint32_t spawn_id);
 AppPacket encode_delete_own_spawn(std::uint32_t spawn_id);
 std::optional<std::uint32_t> decode_delete_spawn(const AppPacket& p);
+// The server's u8 after the id (msgEQRmPlayer's "decayed" flag); nullopt on the client's 4-byte form.
+std::optional<bool> decode_delete_spawn_decayed(const AppPacket& p);
 
 // OP_SpawnAppearance (8 bytes, both directions). Size changes arrive as
 // OP_ChangeSize instead (rof2.cpp ENCODE(OP_SpawnAppearance)).

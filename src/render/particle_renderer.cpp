@@ -269,21 +269,30 @@ void ParticleRenderer::prepare(const game::ParticleSystem& particles) {
     // and goes with it.
     std::vector<std::pair<std::string, LoadedParticleTexture>> done;
     if (loader_) done = loader_->take();
-    std::vector<std::string> wanted;
+    std::vector<std::string>& wanted = wanted_;
+    wanted.clear();
     auto request = [&](std::string_view texture) {
-        // Every live emitter asks each frame; only a name not yet loaded or loading is copied.
+        // Every live emitter's definition asks each frame; only a name not yet loaded or loading is copied.
         const std::string& name = lowered(texture);
         if (!name.empty() && !slots_.contains(name) && !loading_.contains(name) &&
             std::find(wanted.begin(), wanted.end(), name) == wanted.end())
             wanted.push_back(name);
     };
+    // Once per definition with a live emitter: the same names as asking per emitter, in the same order.
+    if (++prepare_pass_ == 0) {
+        std::fill(def_pass_.begin(), def_pass_.end(), 0u);
+        prepare_pass_ = 1;
+    }
+    if (def_pass_.size() < particles.definitions().size()) def_pass_.resize(particles.definitions().size(), 0u);
     for (const auto& e : particles.emitters()) {
+        if (def_pass_[e.definition] == prepare_pass_) continue;
+        def_pass_[e.definition] = prepare_pass_;
         const auto& d = particles.definitions()[e.definition];
         if (d.texture_frames.empty()) request(d.texture);
         else for (const auto& name : d.texture_frames) request(name);
     }
     if (!wanted.empty() && !loader_) loader_ = std::make_unique<core::LatestJobs<std::string, LoadedParticleTexture>>();
-    for (auto& name : wanted) {
+    for (const std::string& name : wanted) {
         std::optional<std::vector<std::byte>> zone_bytes;
         TextureReader late; // read in the job (reader_any_thread_)
         if (reader_ && reader_any_thread_) late = reader_;

@@ -1085,6 +1085,14 @@ std::optional<std::uint32_t> decode_delete_spawn(const AppPacket& p) {
     return decode_with(p, [](ByteReader& r) { return r.le<std::uint32_t>(); });
 }
 
+std::optional<bool> decode_delete_spawn_decayed(const AppPacket& p) {
+    if (p.data.size() < 5) return std::nullopt;
+    return decode_with(p, [](ByteReader& r) {
+        r.skip(4);
+        return r.le<std::uint8_t>() != 0;
+    });
+}
+
 AppPacket encode(const SpawnAppearance& v) {
     ByteWriter w;
     w.le(v.spawn_id);

@@ -127,6 +127,8 @@ private:
     BloodPoint blood_point_;
     MissilePose missile_pose_;
     std::vector<glm::vec3> guide_line_;          // set_guide_line
+    std::vector<glm::vec3> trail_line_;          // update_path's route, kept for its capacity
+    std::vector<game::Particle> trail_quads_;    // draw_trail's quads, kept for its capacity
     // A trail (game/path_trail.h) as the still particles of `key`, or none.
     void draw_trail(std::uint32_t key, std::span<const glm::vec3> line, float far);
     // A delayed cue and when it plays.

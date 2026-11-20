@@ -4507,17 +4507,48 @@ TEST_CASE("UI packs: the item display compares the item with what you wear") {
                 return b;
             };
             s.frames(3);
-            const std::string hp = "+50 HP (" + std::to_string(ch.max_hp(true)) + " to " +
-                                   std::to_string(ch.max_hp(true) + 50) + ")";
-            CHECK(seen("Compared with your Old Helm (Head)"));
+            // The HP change for you beside the item's HP in the stat grid, not as a line of its own below it.
+            const std::string heading = pack == std::string("modern") ? "vs your Old Helm (Head)"
+                                                                      : "Compared with your Old Helm (Head)";
+            CHECK(seen(heading));
             CHECK(seen("Upgrade"));
-            CHECK(seen(hp));
+            CHECK(seen("60"));
+            CHECK(seen("+50"));
+            CHECK_FALSE(seen("+50 HP"));
+            CHECK_FALSE(seen("+50 HP (" + std::to_string(ch.max_hp(true)) + " to " + std::to_string(ch.max_hp(true) + 50) + ")"));
             CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+
+            if (pack == std::string("modern")) {
+                // The tooltip: the verdict under the name, the HP change beside the item's HP, the rest as "+n NAME".
+                REQUIRE(luaL_dostring(L, R"(
+                    test_seen = {}
+                    local items = dofile("lib/items.lua")
+                    local c = { usable = true, whyNot = "", notes = {}, slots = { { slot = 2, slotName = "Head",
+                      current = { "Old Helm" }, verdict = "upgrade", score = 60, gained = {}, lost = {},
+                      changes = { { key = "hp", name = "HP", before = 100, after = 150, delta = 50, weight = 1 },
+                                  { key = "str", name = "STR", before = 80, after = 85, delta = 5, weight = 0.5 } } } } }
+                    local dt, tx, td = ui.DrawText, ui.Text, ui.TextDisabled
+                    ui.Text = function(t, ...) test_seen[tostring(t)] = true return tx(t, ...) end
+                    ui.TextDisabled = function(t, ...) test_seen[tostring(t)] = true return td(t, ...) end
+                    ui.window("Compare tooltip test", function()
+                      items.Tooltip({ name = "Iron Helm", hp = 60, weight = 3 }, "Head", c)
+                    end))") == LUA_OK);
+                s.frames(2);
+                CHECK(seen("Upgrade"));
+                CHECK(seen("HP 60"));
+                CHECK(seen("+50"));
+                CHECK(seen("+5 STR"));
+                CHECK_FALSE(seen("+50 HP"));
+                CHECK(seen("vs your Old Helm (Head)"));
+                CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+                REQUIRE(luaL_dostring(L, "ui.window('Compare tooltip test', function() end)") == LUA_OK);
+            }
 
             option = 0;
             REQUIRE(luaL_dostring(L, "test_seen = {}") == LUA_OK);
             s.frames(2);
-            CHECK_FALSE(seen("Compared with your Old Helm (Head)"));
+            CHECK_FALSE(seen(heading));
+            CHECK_FALSE(seen("+50"));
         }
         ImGui::DestroyContext(ctx);
     }

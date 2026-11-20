@@ -847,6 +847,43 @@ TEST_CASE("mock server: a wrong session key gets the world connection dropped") 
     CHECK(!rig.conn.link_death()->in_game);
 }
 
+TEST_CASE("mock server: a failure on the world link ends its queue; a packet behind it is not handled") {
+    Rig rig;
+    REQUIRE(rig.to_character_select());
+    // A short OP_ZoneServerInfo fails the connection; a good one in the same datagram behind it must not start a
+    // zone connection afterwards.
+    AppPacket good = encode(ZoneServerInfo{"127.0.0.1", rig.server.zone.port()});
+    AppPacket bad = good;
+    bad.data.resize(4);
+    rig.server.world.send_reliable_combined({bad, good});
+    REQUIRE(rig.until_state(ConnectionState::Disconnected));
+    CHECK(rig.conn.error() == "could not read the zone server address");
+    rig.run_for(100ms);
+    CHECK(rig.conn.state() == ConnectionState::Disconnected);
+    CHECK(MockEqServer::count(rig.server.world_log, Op::WorldComplete) == 0);
+    CHECK(rig.server.zone.sessions() == 0);
+}
+
+TEST_CASE("mock server: the target and pet windows keep no buff slot past RoF2's 97") {
+    Rig rig;
+    REQUIRE(rig.to_zone());
+    BuffIcons icons;
+    icons.entity_id = 4321;
+    icons.all_buffs = 1;
+    for (std::uint32_t slot : {3u, 96u, 97u, 5000u, 0xfffffffeu}) icons.entries.push_back({slot, 12, 10, 0, "Gennro"});
+    rig.server.zone.send_reliable(encode(icons, true)); // OP_TargetBuffs
+    AppPacket pet = encode(icons, false);
+    pet.opcode = to_wire(Op::PetBuffWindow);
+    rig.server.zone.send_reliable(pet);
+    REQUIRE(rig.until([&] { return !rig.conn.pet_buffs().empty(); })); // in order: the target's came first
+    const auto& target = rig.conn.spell_state().target_buffs;
+    REQUIRE(target.size() == 2);
+    CHECK(target[0].first == 3);
+    CHECK(target[1].first == 96);
+    REQUIRE(rig.conn.pet_buffs().size() == 2);
+    CHECK(rig.conn.pet_buffs()[1].first == 96);
+}
+
 TEST_CASE("mock server: losing the zone connection ends the session, and start() connects again") {
     Rig rig;
     auto& conn = rig.conn;

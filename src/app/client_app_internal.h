@@ -1200,6 +1200,10 @@ private:
     bool addons_dirty_ = false; // installed.txt changed without the manager (a removal): the ceilings again
     std::string addons_profile_;
     Clock::time_point addons_listed_{};
+    // update_addons: the view as built from AddonManager::changes() and the picked server's id, name and address.
+    bool addons_view_built_ = false;
+    std::uint32_t addons_changes_ = 0;
+    std::string addons_view_key_;
     std::vector<ServerAddon> server_addons_;
     std::vector<ManualAddon> manual_addons_;
     plugin::Rules addons_rules_;
