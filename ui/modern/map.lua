@@ -265,7 +265,7 @@ local function selectNpc(r)
 end
 
 local function findPage(x, y, w, h, s, rows, own)
-  local _, allowed = FL.policy()
+  local _, allowed, serverOnly = FL.policy()
   if not allowed then return end
   if not own then
     T.Text(x, y + 4 * s, "Find lists your own zone's", C.faint, T.font.small)
@@ -301,7 +301,9 @@ local function findPage(x, y, w, h, s, rows, own)
   if #rows == 0 then
     local any = F.search:match("%S")
     T.Text(x, ly + 4 * s, any and "Nothing matches." or "Nothing to find here.", C.faint, T.font.small)
-    if not any then T.Text(x, ly + 20 * s, "No merchants, bankers or trainers.", C.faint, T.font.small) end
+    if not any and not serverOnly then
+      T.Text(x, ly + 20 * s, "No merchants, bankers or trainers.", C.faint, T.font.small)
+    end
   end
   for i, r in ipairs(rows) do
     local rx, ry = ui.GetCursorScreenPos()
@@ -346,7 +348,7 @@ local function findPage(x, y, w, h, s, rows, own)
       ui.Separator()
       if ui.MenuItem("Target") then API.find.NpcTarget(r.id, r.token) end
       if ui.MenuItem("Show the path") then API.find.NpcPath(r.id, r.token) end
-      if ui.MenuItem("Walk there") then walkTo(r) end
+      if not serverOnly and ui.MenuItem("Walk there") then walkTo(r) end
       if ui.MenuItem("Centre the map here") then M.follow, M.cx, M.cy = false, r.x, r.y end
     else ui.CloseCurrentPopup() end
     ui.EndPopup()
@@ -355,7 +357,7 @@ local function findPage(x, y, w, h, s, rows, own)
   -- the selected NPC: its path, a walk there, and ending the path
   local fy = y + h - footer + 6 * s
   local pathShown = API.map.FindPathShown()
-  local n = pathShown and 3 or 2
+  local n = (serverOnly and 1 or 2) + (pathShown and 1 or 0)
   local bw = (w - (n - 1) * 6 * s) / n
   local selected = FL.current(F.sel, F.selToken)
   local on = selected ~= nil
@@ -363,11 +365,13 @@ local function findPage(x, y, w, h, s, rows, own)
     F.why = nil
     if selected then API.find.NpcPath(selected.id, selected.token) end
   end
-  if T.Button("##findwalk", x + bw + 6 * s, fy, x + 2 * bw + 6 * s, fy + 26 * s, s, "Walk there", { enabled = on }) then
-    walkTo(selected)
+  if not serverOnly then
+    if T.Button("##findwalk", x + bw + 6 * s, fy, x + 2 * bw + 6 * s, fy + 26 * s, s, "Walk there", { enabled = on }) then
+      walkTo(selected)
+    end
+    if ui.IsItemHovered() then ui.SetTooltip("Walks you there (any movement key stops it)") end
   end
-  if ui.IsItemHovered() then ui.SetTooltip("Walks you there (any movement key stops it)") end
-  if pathShown and T.Button("##findend", x + 2 * (bw + 6 * s), fy, x + w, fy + 26 * s, s, "End") then
+  if pathShown and T.Button("##findend", x + (n - 1) * (bw + 6 * s), fy, x + w, fy + 26 * s, s, "End") then
     F.why = nil
     API.find.End()
   end
@@ -456,7 +460,7 @@ local function body(x, y, w, h, s)
   local _, shownZone, own = API.map.ZoneShown()
   local list = own and drawnMarkers() or NONE
   local side = ui.GetSetting("map.sidebar") ~= "0"
-  local stockNpcs, npcFind = FL.policy()
+  local stockNpcs, npcFind, serverOnly = FL.policy()
   local findTab = npcFind and ui.GetSetting("map.sideTab") ~= "markers"
   local showNpcs = FL.marks()
   -- Find's NPCs are your own zone's: listed and marked only on its map
@@ -640,7 +644,8 @@ local function body(x, y, w, h, s)
     local sx0, sw = mx1 + 12 * s, SIDE_W * s
     local tw = (sw - 4 * s) / 2
     if npcFind then
-      if toolButton("##tabfind", sx0, my0, tw, s, "Find", findTab, "Merchants, bankers, trainers and more") and not findTab then
+      local findTip = serverOnly and "NPCs the server marks as findable" or "Merchants, bankers, trainers and more"
+      if toolButton("##tabfind", sx0, my0, tw, s, "Find", findTab, findTip) and not findTab then
         ui.SetSetting("map.sideTab", "find")
         API.find.Open(true); M.findWas = true
       end

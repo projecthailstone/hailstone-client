@@ -2143,7 +2143,7 @@ excepted), which the caller sets and the client respects.
 | `HailstoneFollowStatus` | 24 |
 | `HailstoneBinaryMeasurement` | 56 |
 | `HailstoneMerchantSellContext` | 32 |
-| `HailstoneMapPolicy` | 88 |
+| `HailstoneMapPolicy` | 96 |
 | `HailstoneWorldFrame` | 136 |
 | `HailstoneWorldAnchor` | 32 |
 | `HailstoneWorldVertex` | 28 |
@@ -2187,6 +2187,9 @@ The flags:
   Every provider's `map_visible` denial still wins.
 - `HIDE_STOCK_NPCS` removes the packs' Find/service NPC overlays and competing stock controls.
 - `DISABLE_NPC_FIND` blocks discovery requests, result rows, targets, guides, server paths and Find-owned walks.
+- The optional `npc_find_mode` value `HAILSTONE_NPC_FIND_SERVER_ONLY` admits living NPCs advertised in the zone's
+  `OP_SendFindableNPCs` list. Show Path requests the route from the server. Client discovery, guides and Find-owned
+  walks are unavailable in this mode. All Find visibility hooks still apply and `DISABLE_NPC_FIND` takes precedence.
 - Restrictive flags combine across providers; removing them restores stock defaults, saved UI preferences untouched.
 - Unaffected: PC group/raid Find, coordinates, ordinary navigation, static map labels, user pins, raw spawn getters.
 - Guides and Find walks pin connection/player/NPC identity and recheck eligibility before observing or moving.
@@ -2202,7 +2205,10 @@ Reading it back:
 Record prefixes:
 
 - The original 72-byte prefix is still accepted, including four-byte-aligned old reader records.
-- The 80-byte prefix adds `revision`; the 88-byte record adds `context`. Missing optional fields are zero.
+- The 80-byte prefix adds `revision`; the 88-byte prefix adds `context`. The 96-byte record adds `npc_find_mode`.
+  Missing optional fields are zero.
+- An add-on requiring server-only Find can return `DISABLE_NPC_FIND` when an older host supplies a shorter output
+  buffer. Likewise, an older reader sees `DISABLE_NPC_FIND` when the effective policy is server-only.
 - Zero-initialize the record before setting `size`; the host preserves that size.
 - Success or a returned size of 88 does not prove tail support on an older host; a nonzero `context` does (support for
   context-bound observations).

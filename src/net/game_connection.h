@@ -867,9 +867,8 @@ public:
     bool find_spawn(std::uint32_t spawn_id);
     bool npc_find_enabled() const;
     bool npc_find_allowed(std::uint32_t spawn_id) const;
-    // npc_find_allowed for one row of many, the map policy already read (npc_find_enabled) by the caller for them
-    // all: an NPC that is not a corpse and that every server extension lets Find show.
-    bool npc_find_visible(std::uint32_t spawn_id) const;
+    // Per-row visibility after the caller has read the map policy for the whole Find list.
+    bool npc_find_visible(std::uint32_t spawn_id, bool server_only) const;
     // PlayerPath_FindMapLocation (MapViewMap::HandleRButtonDown): the path to a point of the map, world coordinates
     // at the player's height.
     void find_map_location(const glm::vec3& at);
@@ -899,6 +898,7 @@ public:
     // The original's find window listed them (Handle_OP_SendFindableNPCs); the Find window here does too
     // (game/useful_npcs.h).
     const std::unordered_map<std::uint32_t, FindableNpc>& findable_npcs() const { return findable_npcs_; }
+    std::uint64_t findable_npcs_revision() const { return findable_npcs_revision_; }
     // The zone's quest NPCs from Hailstone's server script (net/quest_npc_packets.h), by their names as shown
     // (game::display_name, ASCII lower case): kQuestNpcItems / kQuestNpcTalks. Asked once a zone, the first time the
     // Find window wants them (request_quest_npcs); empty without the script. Cleared on zoning.
@@ -3873,6 +3873,7 @@ private:
     std::optional<FailedFind> failed_find_;
     std::uint32_t find_replies_ = 0;
     std::unordered_map<std::uint32_t, FindableNpc> findable_npcs_;
+    std::uint64_t findable_npcs_revision_ = 0;
     std::unordered_map<std::string, std::uint8_t> quest_npcs_;
     bool quest_npcs_asked_ = false;
     bool hailstone_script_ = false;   // a zone answered OP_HailstoneSettingsRequest

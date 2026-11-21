@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Server add-ons can offer Find for the zone server's advertised NPCs and draw the paths returned by the server.
 - Fixed stale Hide indicators on other players' nameplates after the server cancels Hide during combat.
 - When the server ends your Hide or Sneak, the chat says so, as in the original client.
 - Item descriptions and comparisons show named weapon procs and other item effects even when the spell ID or its local definition is unavailable.

@@ -460,8 +460,8 @@ server's. Flat `hs` bindings use the same guarded closures as the namespaced met
 
 ## Service policy and observed identities
 
-API 1.4 adds read-only `hs.UI.map.Policy()`: `custom_spawns`, `stock_npcs`, `npc_find`, `name`, `revision`,
-`context`.
+The read-only `hs.UI.map.Policy()` result includes `custom_spawns`, `stock_npcs`, `npc_find`, `name`, `revision`,
+and `context`. The optional `npc_find_server_only` field is true when Find uses the server's NPC list and path.
 
 - `revision` and `context` are opaque decimal strings: compare for equality only; never parse, persist or treat as
   authorization.
@@ -476,6 +476,7 @@ The flags:
   Find independently.
 - Stock presenters re-read policy and row eligibility before showing Find NPC rows, markers and controls, and keep
   saved preferences.
+- When `npc_find_server_only` is true, use Show Path and hide Walk. Treat an absent field as false for older hosts.
 - PC group/raid Find, coordinates, static labels, user pins, Tracking, nameplates and raw spawn reads keep their own
   rules.
 - Tracking invalidates source-owned work on provider lifecycle changes, not map-only content changes.

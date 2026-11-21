@@ -398,6 +398,9 @@ How it works:
   kinds and search (`ui/modern/lib/find.lua`). The selected and hovered ones are marked always.
 - Positions are where the client has the spawn, so a walking NPC far off may be shown a little behind.
 
+A server add-on can limit Find to the zone server's advertised list. In that mode, Show Path requests the server's
+route and the Find window offers no automatic walk. Map and minimap marker permissions follow the separate map policy.
+
 ### The guide path
 
 `app/guide_path.h`: a trail from the player to the NPC over the client's own mesh (`Navigator::plan_between`, the

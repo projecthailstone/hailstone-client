@@ -678,6 +678,7 @@ typedef struct HailstoneMapSpawn {
 #define HAILSTONE_MAP_POLICY_CUSTOM_SPAWNS 1u
 #define HAILSTONE_MAP_POLICY_HIDE_STOCK_NPCS 2u
 #define HAILSTONE_MAP_POLICY_DISABLE_NPC_FIND 4u
+#define HAILSTONE_NPC_FIND_SERVER_ONLY 1u
 typedef struct HailstoneMapPolicy {
     uint32_t size;
     uint32_t flags;
@@ -687,6 +688,9 @@ typedef struct HailstoneMapPolicy {
      * context is host-issued connection/zone/player lifetime, ignored in provider answers. */
     uint64_t revision;
     uint64_t context;
+    /* Zero is stock. HAILSTONE_NPC_FIND_SERVER_ONLY limits NPC Find to the server's advertised list and path.
+     * DISABLE_NPC_FIND takes precedence. Only write this field when the caller supplies the 96-byte record. */
+    uint64_t npc_find_mode;
 } HailstoneMapPolicy;
 
 typedef struct HailstoneSpell {

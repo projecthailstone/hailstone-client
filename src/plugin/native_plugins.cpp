@@ -63,7 +63,8 @@ static_assert(HAILSTONE_CAP_READ == kCapRead && HAILSTONE_CAP_COMMANDS == kCapCo
               HAILSTONE_CAP_EVENTS == kCapEvents && HAILSTONE_CAP_UI == kCapUi && HAILSTONE_CAP_PACKETS == kCapPackets &&
               HAILSTONE_CAP_EXTEND == kCapExtend && HAILSTONE_CAP_LOGIN == kCapLogin && HAILSTONE_CAP_NET == kCapNet &&
               HAILSTONE_CAP_WEB == kCapWeb);
-static_assert(offsetof(HailstoneMapPolicy, revision)==72 && offsetof(HailstoneMapPolicy, context)==80 && sizeof(HailstoneMapPolicy)==88);
+static_assert(offsetof(HailstoneMapPolicy, revision)==72 && offsetof(HailstoneMapPolicy, context)==80 &&
+              offsetof(HailstoneMapPolicy, npc_find_mode)==88 && sizeof(HailstoneMapPolicy)==96);
 // The add-on service records' sizes as released (docs/plugins.md "Server add-on services"): a field moved or added
 // anywhere but the end breaks a plugin built against an earlier header. The submission holds a pointer and a size_t.
 static_assert(sizeof(HailstoneFollowProfile) == 56 && sizeof(HailstoneMountProfile) == 8);
@@ -430,7 +431,9 @@ public:
             l_->map_content_revision = content;
             l_->policy_generation = core::next_process_identity();
         }
-        return {raw.flags, std::string(std::begin(raw.name), end), l_->policy_generation};
+        const auto flags = raw.size >= sizeof(raw) && raw.npc_find_mode == HAILSTONE_NPC_FIND_SERVER_ONLY
+            ? raw.flags | game::MapPolicyServerNpcFindOnly : raw.flags;
+        return {flags, std::string(std::begin(raw.name), end), l_->policy_generation};
     }
     bool merchant_right_click(net::GameConnection& c, std::uint32_t merchant, const net::ItemSlot& slot,
                               std::uint32_t item, std::uint32_t quantity) override {
@@ -1613,7 +1616,11 @@ int h_get_map_policy(void* h, HailstoneMapPolicy* out) {
     const auto policy = connection ? connection->server_ext().map_policy(*connection) : game::MapPolicy{};
     HailstoneMapPolicy value{};
     value.size = sizeof(value);
-    value.flags = policy.flags;
+    value.flags = policy.flags & ~game::MapPolicyServerNpcFindOnly;
+    if (policy.npc_find_server_only()) {
+        if (size >= sizeof(value)) value.npc_find_mode = HAILSTONE_NPC_FIND_SERVER_ONLY;
+        else value.flags |= HAILSTONE_MAP_POLICY_DISABLE_NPC_FIND;
+    }
     value.revision = policy.revision;
     value.context = connection ? connection->interaction_context() : 0;
     const auto length = std::min(policy.name.size(), sizeof(value.name) - 1);
