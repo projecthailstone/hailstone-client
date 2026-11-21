@@ -503,6 +503,7 @@ Its search field filters the open tab:
 
 - **LoadskinWnd** (`/loadskin`): this client's user interfaces, Keep your layout.
 - **LayoutCopyWindow** (`/copylayout`), **VideoModesWindow** (EQ menu; the modern Options' Resolution list does the same).
+- **Import character settings** (`/import`) shows the source files, category selection, slot preview, and confirmation for apply or restore.
 - **NameChangeWnd** / **NameChangePetWnd** / **NameChangeMercWnd** (`/changename`, `/changepetname`, `/changemercname`): one script, `namechange.lua`.
 
 ### Other shared windows

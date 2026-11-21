@@ -337,6 +337,7 @@ void ClientApp::update_zone_settle() {
 }
 
 void ClientApp::unload_zone() {
+    close_character_import();
     retire_world_geometry();
     zone_settle_.cancel();
     if (pre_game_loaded_) {

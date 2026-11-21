@@ -51,6 +51,9 @@
 #include <SDL3/SDL_filesystem.h>
 #include <imgui.h>
 
+#include "app/character_import_ui.h"
+#include "core/character_import_source.h"
+
 #include "assets/character.h"
 #include "assets/sky.h"
 #include "assets/texture_overrides.h"
@@ -747,6 +750,13 @@ private:
     // The original's slash commands that act on the client (app/client_app_commands.cpp), by handler name; true =
     // handled. GameConnection::run_slash_command hands them over.
     bool client_command(std::string_view handler, const std::string& args);
+    void open_character_import();
+    void draw_character_import();
+    void close_character_import();
+    bool character_import_target_active() const;
+    CharacterImportUi::Preview preview_character_import(const CharacterImportUi::Choice& choice);
+    CharacterImportUi::Result apply_character_import();
+    CharacterImportUi::Result restore_character_import();
     void xtarget_command(const std::string& args); // /xtarget (client_app_commands.cpp)
     // /channel, /url, /www and /outputfile (app/client_app_info.cpp).
     bool client_info_command(std::string_view handler, const std::string& args);
@@ -1318,6 +1328,17 @@ private:
     ProgressUi progress_ui_;            // AA, training and task debug windows (app/progress_ui.h)
     MarketUi market_ui_;                // duel, inspect, bazaar and mail debug windows (app/market_ui.h)
     std::unique_ptr<ActionsUi> actions_ui_; // key map, hot bar, Actions window, skills (app/actions_ui.h)
+    struct PendingCharacterImport {
+        ActionsUi::ImportPreview preview;
+        game::CharacterImportOptions options;
+        std::size_t source;
+        std::string bytes;
+    };
+    CharacterImportUi character_import_ui_;
+    std::vector<CharacterImportSource> character_import_sources_;
+    std::optional<PendingCharacterImport> pending_character_import_;
+    std::filesystem::path character_import_root_;
+    std::filesystem::path character_import_target_;
     std::vector<game::KeyMap::Event> key_events_; // this frame's key commands
     // The gamepad (app/gamepad.h): its mode, settings and bindings; this frame's key commands from it; the left
     // stick's movement as last sent; the group member its target_group gave last (0 yourself); the camera distance

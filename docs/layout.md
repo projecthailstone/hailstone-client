@@ -577,6 +577,20 @@ The asset folder's `defaults.ini`, `eqclient.ini` and `UI_<name>_<server>.ini` a
 and never written; so are its `userdata/AddressBook.txt` and `userdata/IgnoreList.txt`, the books a character starts
 from when it has none.
 
+#### Character settings import
+
+Use `/import` while playing the character that should receive the settings. Select a source character and world from
+the configured game data folder, then choose socials or hotbar buttons. The dialog lists detected layout, trader,
+barter, and saved hotbar files for reference.
+
+The preview shows additions, matching slots, and skips with reasons. It displays social commands for review and
+skips unsupported commands, occupied slots (including scripted socials), and unresolved action references. Applying
+fills only the reviewed empty slots. Imported socials run when activated in play. The source files are read-only.
+
+Hailstone saves the previous `hotbuttons.ini` under `import-backups/` in the active character's directory before
+updating the settings. **Restore backup** in the import window is available while the current settings match a
+saved import revision. Edits after an import prevent that backup from overwriting them.
+
 ## Builds and installs
 
 A build makes the same folder at `build/hailstone/`: the binary, `shaders/`, `ui/`, `icons/`, `pictures/`,
