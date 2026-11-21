@@ -302,6 +302,7 @@ Each entry names the window and what is particular to it; the `hs.*` calls behin
 
 - **MapViewWnd** (`map.lua`, over `hs.DrawZoneMap`):
   - resizable; wheel zoom around the cursor (around the player while following); drag to pan;
+  - the Zone and World views keep their zoom and centre when the map closes, until zoning or logging out;
   - Fit / Follow / Labels / Auto Z, and your own markers per zone in `map.markers.<zone>`;
   - right click: Find a path here (`hs.FindMapLocation`), the cursor's /loc and distance; Edit opens the map toolbar;
   - the side panel's Find page is Hailstone's Find window (`app/lua_ui_find.cpp`, docs/navigation.md "Find"); its NPCs button marks the listed NPCs on the map.

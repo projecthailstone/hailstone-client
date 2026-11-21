@@ -652,6 +652,7 @@ void ClientApp::enter_zone() {
         actions_ui_->setup_test_buttons(skills);
         actions_ui_->open_all();
     }
+    ++ui_host_.zone_entry;
     player_ready_ = true;
 }
 

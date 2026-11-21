@@ -1230,7 +1230,7 @@ achievement and reward-selection APIs.
 | FindMapLocation | (x, y) → — | Find path to a map point | commands |
 | FindPathShown | () → bool | A find path is shown | — |
 | EndFind | () → — | End the find path | commands |
-| ZoneName | () → long, short | Current zone | — |
+| ZoneName | ([with_entry]) → long, short [, entry] | Current zone. Pass `true` for the zone entry counter, which is nil outside the world. | — |
 | GameTime | () → hour, minute \| nothing | Game clock | — |
 | MapAutoZ | ([on [, above [, below]]]) → on, above, below | Auto Z setting (get or set) | commands |
 | AtlasIndex | () → {pages={{file,title,parent}}, zones={{zone,name,page,x0,y0,x1,y1,id,expansion,allowed}}} | Atlas index | — |

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The map remembers its zoom and position when reopened in Modern and Gamepad. Zoning or logging out resets the view.
 - Fixed stale Hide indicators on other players' nameplates after the server cancels Hide during combat.
 - When the server ends your Hide or Sneak, the chat says so, as in the original client.
 - Item descriptions and comparisons show named weapon procs and other item effects even when the spell ID or its local definition is unavailable.

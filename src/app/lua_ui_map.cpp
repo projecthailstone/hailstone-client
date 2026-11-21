@@ -226,6 +226,7 @@ struct MapState {
     bool toolbar_open = false;
     bool label_window_open = false;
     std::string player_zone; // the zone the map was loaded for when the player came in (CDisplay::StartWorldDisplay)
+    std::uint32_t player_zone_entry = 0;
 
     // ---- the atlas page (AtlasWnd in MVW_AtlasRenderArea)
     int tab = 0;                          // MVW_Subwindows: 0 the map page, 1 the atlas page
@@ -694,8 +695,10 @@ public:
         s.update_routes(h);
         // The player's zone on zone-in (and when the box comes); an emptied map (Current Zone, the maps directory)
         // loads the player's zone again. Another zone's map, chosen in the atlas, stays until then.
-        if (zone != s.player_zone || s.zone.empty() || (zone == s.zone && h.zone_box_valid && !s.box_valid)) {
+        if (zone != s.player_zone || h.zone_entry != s.player_zone_entry || s.zone.empty() ||
+            (zone == s.zone && h.zone_box_valid && !s.box_valid)) {
             s.player_zone = zone;
+            s.player_zone_entry = h.zone_entry;
             s.load_zone(h, zone);
         }
         if (!s.atlas_pending.empty()) s.load_atlas(h, std::exchange(s.atlas_pending, std::string()));
@@ -1950,12 +1953,17 @@ int EndFind(lua_State* L) {
     return 0;
 }
 
-// name, short_name = hs.ZoneName()   -- the zone the player is in ("" outside the world)
+// name, short_name [, entry] = hs.ZoneName([with_entry])   -- the zone the player is in ("" outside the world).
+// With a true argument, the third result changes on each zone entry and is nil outside the world.
 int ZoneName(lua_State* L) {
     UiHost& h = *host_of(L);
+    const bool with_entry = lua_isboolean(L, 1) && lua_toboolean(L, 1);
     lua_pushstring(L, h.in_game ? h.zone_long_name.c_str() : "");
     lua_pushstring(L, h.in_game ? h.zone_short_name.c_str() : "");
-    return 2;
+    if (!with_entry) return 2;
+    if (h.in_game) lua_pushinteger(L, h.zone_entry);
+    else lua_pushnil(L);
+    return 3;
 }
 
 // hour, minute = hs.GameTime()   -- the game clock, 0..23 and 0..59 (EQ hour h is h - 1 o'clock); nil before the

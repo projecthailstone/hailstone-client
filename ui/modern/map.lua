@@ -392,6 +392,7 @@ function viewZone(short)
   API.map.ShowZone(short)
   local _, here = API.map.ZoneName()
   M.view, M.zoom, M.cx, M.cy = "zone", 1, nil, nil
+  M.closedZone = nil
   ui.SetSetting("map.view", "zone")
   M.follow = short == nil or (here or ""):lower() == short:lower()
 end
@@ -683,6 +684,14 @@ end
 ui.window("Map", function()
   local _, npcFind = FL.policy()
   if not API.session.InGame() then return end
+  local _, here, entry = API.map.ZoneName(true)
+  if M.zoneEntry ~= entry or M.playerZone ~= here then
+    M.zoneEntry, M.playerZone = entry, here
+    M.zoom, M.follow, M.cx, M.cy = 1, true, nil, nil
+    M.closedZone = nil
+    atlas.ResetView()
+    if M.open and M.view == "world" then atlas.Opened() end
+  end
   local shown = API.windows.Shown(WINDOW)
   -- Find (hs.FindOpen) is this window's Find page: the find key opening it shows the map on that page, closing it
   -- closes the map, and the map closing closes it.
@@ -695,10 +704,13 @@ ui.window("Map", function()
       ui.SetSetting("map.sidebar", "1")
       ui.SetSetting("map.sideTab", "find")
       -- Find is your own zone's: the Zone view on your own map
-      M.view = "zone"
-      ui.SetSetting("map.view", "zone")
       local _, _, own = API.map.ZoneShown()
-      if not own then API.map.ShowZone(nil) end
+      if not own or M.closedZone then
+        viewZone(nil)
+      else
+        M.view = "zone"
+        ui.SetSetting("map.view", "zone")
+      end
       if not shown then API.windows.Show(WINDOW, true) end
     elseif shown and ui.GetSetting("map.sideTab") ~= "markers" then
       API.windows.Show(WINDOW, false)
@@ -708,9 +720,12 @@ ui.window("Map", function()
   if not shown then
     MC.Reset()
     if M.open then
-      -- closed while showing another zone's map: your own again (the minimap draws the same map)
-      local _, _, own = API.map.ZoneShown()
-      if not own then API.map.ShowZone(nil) end
+      -- The minimap draws the same map, so put your zone back until the window opens again.
+      local _, short, own = API.map.ZoneShown()
+      if not own then
+        M.closedZone = short
+        API.map.ShowZone(nil)
+      end
       if npcFind and findOpen then
         API.find.Open(false)
         M.findWas = false
@@ -719,8 +734,12 @@ ui.window("Map", function()
     M.open = false
     return
   end
-  if not M.open then -- each time it opens: the whole zone, following you, in the view it was left in
-    M.open, M.zoom, M.follow = true, 1, true
+  if not M.open then
+    M.open = true
+    if M.closedZone then
+      API.map.ShowZone(M.closedZone)
+      M.closedZone = nil
+    end
     M.view = ui.GetSetting("map.view") == "world" and "world" or "zone"
     if M.view == "world" then atlas.Opened() end
   end

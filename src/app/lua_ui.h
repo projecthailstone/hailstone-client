@@ -148,6 +148,7 @@ struct UiHost {
     // CollisionMesh::bounds).
     std::string zone_short_name;
     std::string zone_long_name;             // the zone's name for the windows (OP_NewZone)
+    std::uint32_t zone_entry = 0;           // advances on every successful entry, including the same zone again
     float game_hour = -1.0f;                // the game clock (game/sky_clock.h hour: 1.0 .. 24.99), -1 unknown
     // Where the map edits made on this server go and are read first (servers/<profile>/maps, core/server_profile.h);
     // empty: maps/ in the character's folder (the user_dir of StockWindow::ini_loaded).

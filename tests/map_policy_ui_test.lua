@@ -91,7 +91,7 @@ local function rig(pack)
  local function panel(drawBody)s.depth=s.depth+1;drawBody(0,0,1100,650,1);s.depth=s.depth-1 end
  hud.Dialog=function(_,_,_,body)panel(body)end
  hud.Window=function(_,_,_,body)panel(body)end
- local atlas={Opened=nop,Show=nop,DrawExits=nop,DrawRouteBanner=nop,DrawCrumbs=nop,DrawFinder=nop,DrawView=nop,zoom=1}
+ local atlas={Opened=nop,ResetView=nop,Show=nop,DrawExits=nop,DrawRouteBanner=nop,DrawCrumbs=nop,DrawFinder=nop,DrawView=nop,zoom=1}
  local window={shown=function()return false end,begin=function()s.depth=s.depth+1;return true end,
   area=function()return 0,0,1100,650 end,finish=function()s.depth=s.depth-1;return false end,
   pressed=function(key)return s.pressed==key end,
