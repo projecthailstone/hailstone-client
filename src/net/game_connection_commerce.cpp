@@ -150,7 +150,7 @@ void GameConnection::update_npc_interactions() {
     if (adventure_.recruiter && (recruiter_state_ == 1 || recruiter_state_ == 2) &&
         now > npc_checks_.recruiter + 500) {
         npc_checks_.recruiter = now;
-        if (out_of_reach(adventure_.recruiter)) close_adventure_recruiter();
+        if (!adventure_recruiter_available()) close_adventure_recruiter();
     }
     // The mercenary liaison window's observer (0x6eb560, vftable 0x9f1ef8 slot 1): a liaison id set and the
     // liaison missing or beyond reach hides it. What calls the observer, and how often, is not traced

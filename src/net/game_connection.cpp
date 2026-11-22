@@ -862,6 +862,9 @@ std::optional<ServerProfile> GameConnection::saved_server() const {
 void GameConnection::enter_world(const std::string& name, bool return_home) {
     if (state_ != ConnectionState::CharacterSelect) return;
     adventure_ = {};
+    ++adventure_assignment_revision_;
+    adventure_requested_recruiter_ = 0;
+    adventure_offer_until_ms_ = adventure_accept_until_ms_ = adventure_leave_until_ms_ = 0;
     reset_shroud_selection();
     monster_mission_catalog_.reset();
     shroud_mode_ = ShroudMode::Normal;

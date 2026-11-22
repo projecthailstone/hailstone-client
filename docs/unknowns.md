@@ -116,20 +116,21 @@ Short entries stay on one line.
   - Settle: a server-provided request identifier.
   - Native disables selectors during its ten-second guard. Hailstone deliberately allows choosing a pending category
     and sends only the latest after the previous reply.
-- **Leaving an adventure.**
-  - After a granted OP_LeaveAdventure stock EQEmu sends the client nothing (zone/worldserver.cpp ServerOP_AdventureLeaveReply clears only the zone's copy).
-  - Now: the window keeps showing the adventure, with Leave, until the next OP_AdventureData (usually on zoning).
-  - Unknown: what RoF2 shows after leaving. Its adventure dispatcher (`0x420610`) resets the adventure state
-    (`AdventureMgr_SetState(0)`) on opcode 0x0dcb, which EQEmu's patch_RoF2.conf does not map and no stock server
-    sends; whether that is the leave's answer is not established.
-  - Settle: a capture of a stock RoF2 client leaving against a live server, or a server sending the empty OP_AdventureData.
+- **Delayed offers.** An offer carries no recruiter or request ID. After the eight-second wait expires and a
+  new request is sent, a very late offer can be mistaken for the newer one.
+- **Leave replies on other servers.**
+  - EQEmu reports a granted leave or expiry with an AdventureInfo notice. Hailstone also clears the assignment
+    on an empty AdventureData snapshot.
+  - A server that uses a different reply may require a zone change to refresh the client. Settle with a capture of
+    the server's leave response.
 - **AdventureData's risk.**
   - RoF2 sets the window's risk choice to risk - 1 (`0x618790`, the 1 normal / 2 high of its own request); stock EQEmu sends 0 normal / 1 high.
   - Now: nonzero shows as high. Right for EQEmu; a server sending RoF2's 1 for normal would show as high.
   - Settle: a capture from the original live servers.
 - **Reserved words.**
   - Unknown: the native meaning of AdventureData's leading/trailing reserved words and leaderboard header +4.
-  - Now: Hailstone follows EQEmu's all-zero adventure clear and ignores the leaderboard reserved word.
+  - Hailstone uses the briefing and timers to distinguish an assignment from a finished-only snapshot and ignores
+    the leaderboard reserved word.
   - Some native actor interaction predicates beyond recruiter class, corpse status and range are not reproduced.
 
 ## Fellowships

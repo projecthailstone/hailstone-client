@@ -55,7 +55,7 @@ The steps are in `docs/plan.md` "Road to 1.0". This section maps items to steps;
 - [ ] Play it and fix what it finds.
 - [ ] Shadow step (SPA 379): the zone collision `land_spell` needs ("Combat and spells").
 - [ ] The collision radius, too wide for doorways ("Movement").
-- [ ] Leaving an adventure clears the window ("Adventures").
+- [ ] Verify leave and follow-up requests in live play ("Adventures").
 - [ ] UCS reconnection and a wrong chat key ("Items and commerce").
 
 ### 0.11, real estate
@@ -175,9 +175,8 @@ Server-dependent systems stock EQEmu never sends keep their live checks open pas
   - Request, accept/decline, zone in, objective updates, finish, leave and cross-zone refresh.
   - Confirm stats, leaderboard standings and physical controller operation.
   - Remaining protocol ambiguity is in unknowns.md.
-- [ ] **Leaving an adventure.**
-  - Stock EQEmu sends nothing after a granted leave, so the window stays on the adventure until zoning.
-  - Settle what RoF2 shows (unknowns.md) and clear the window to match.
+- [x] **Clear completed and abandoned assignments.**
+  - Mock coverage includes finished-instance snapshots, leave acknowledgements, denial, and retry after a missing reply.
 
 ### Fellowships
 

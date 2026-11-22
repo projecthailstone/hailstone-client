@@ -1206,11 +1206,15 @@ public:
     // an offer; a request still awaiting its answer keeps the recruiter, and the answer shows the window again.
     void close_adventure_recruiter();
     bool adventure_recruiter_available() const;
+    bool adventure_request_options_ready() const;
     bool adventure_request_ready() const;
     void adventure_request(std::uint32_t risk, std::uint32_t type);
     void adventure_answer(bool accept);
     // OP_LeaveAdventure (no body): leave the current adventure (EQEmu's world server may refuse, with its own line).
+    bool adventure_leave_pending() const;
+    bool adventure_leave_ready() const;
     void adventure_leave();
+    std::uint64_t adventure_assignment_revision() const { return adventure_assignment_revision_; }
     void set_adventure_stats_open(bool open);
     void set_adventure_leaderboard_open(bool open);
     void adventure_stats_request();
@@ -3868,6 +3872,11 @@ private:
     void handle_tribute(Op op, const AppPacket& p);
     Expedition expedition_;
     Adventure adventure_;
+    std::uint64_t adventure_assignment_revision_ = 0;
+    std::uint32_t adventure_requested_recruiter_ = 0;
+    std::int64_t adventure_offer_until_ms_ = 0;
+    std::int64_t adventure_accept_until_ms_ = 0;
+    std::int64_t adventure_leave_until_ms_ = 0;
     RaidOptions raid_options_;
     bool target_of_target_open_ = false;
     game::PlayerPath path_;
@@ -3970,6 +3979,8 @@ private:
     void reset_real_estate_for_zone();
     void server_coin(Op op, const AppPacket& p); // begging and pick-pocket coin (net/game_connection_abilities.cpp)
     void handle_adventure(Op op, const AppPacket& p);
+    void clear_adventure_assignment();
+    void handle_adventure_leave_denial(const SpecialMessage& m);
     void handle_dz(Op op, const AppPacket& p);
     void answer_dz_invite(bool accept);
     bool potion_belt_open_ = false;

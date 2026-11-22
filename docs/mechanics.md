@@ -2711,15 +2711,26 @@ Closing the window runs RoF2's `Send_OP_LDoNButton_0041fe10`:
 Closing the status window keeps the mission; leaving uses a separate confirmed control. The server picks the mission
 and decides eligibility, acceptance and departure.
 
+- Kind and Risk stay editable at a nearby recruiter during the request cooldown. The risk of an assigned adventure
+  is shown separately from the selection for the next request.
+- Request and Accept wait up to eight seconds for an offer or assignment before another request can be sent.
+  An offer that arrives after switching recruiters is declined.
+
 #### Adventure status
 
 - AdventureData selects the entry timer when nonzero, otherwise the completion timer.
 - Displays round remaining seconds up to whole minutes and clamp at zero (`0x618a00`, `0x618ae0`).
-- Progress counts are kept whenever they come and shown only during completion (`0x4204e0`).
+- Progress counts are kept while assigned and shown during the completion timer. A late count after completion
+  cannot carry over to the next adventure.
 - The risk selector shows AdventureData's risk: nonzero is high. Stock EQEmu sends 0 normal / 1 high, not the
   request's 1 / 2, which RoF2's `0x618790` assumes.
 - The compass uses the server's zone-local XYZ/flag.
-- AdventureFinish clears assignment, timers, compass and progress and closes the window (`0x4206eb`).
+- AdventureFinish clears the assignment, timers, compass and progress and closes the window. A finished instance can
+  remain accessible through its entrance. The server controls when occupants return, and a player can use its exit
+  after completing the objectives.
+- Leave waits for the server. A leave acknowledgement or an empty assignment snapshot clears the mission. EQEmu
+  can deny leaving while the player is still inside the active instance. A denial or eight seconds without a reply
+  re-enables Leave and keeps the assignment visible.
 - Zone changes clear the old recruiter and zone-local data; selecting another character clears cached state.
 
 #### Adventure stats
@@ -2728,8 +2739,7 @@ Themes 1..5 then Totals: win rank, successes, failures, win percentage, percenta
 Profile data supplies initial points. Point updates replace balances and request fresh stats, open window or not, as
 RoF2 does (`0x4208f5`), within the ten-second guard.
 
-After a granted leave stock EQEmu sends nothing, so the window shows the adventure until the next AdventureData
-(docs/unknowns.md). Rank zero shows a placeholder. Totals use wide arithmetic; row percentages round to binary32 before
+Rank zero shows a placeholder. Totals use wide arithmetic and row percentages round to binary32 before
 one-decimal formatting.
 
 #### Adventure leaderboard

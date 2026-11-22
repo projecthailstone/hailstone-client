@@ -1117,7 +1117,7 @@ Tried live against EQEmu with two clients (playprobe `--duel`, `--duel-wait`, `-
 | SharedTaskMemberList / MemberChange | Z→C | 0x1e7d / 0x0119 | {u32, u32, count, × {name, u32 mission, u8 leader}} / {u32, u32, u8 added, name} |
 | AdventureInfoRequest / AdventureInfo / AdventureDetails | C→Z / Z→C / Z→C | 0x3cb0 / 0x4c54 / 0x5648 | u32 the recruiter (class 60) / its text or the server's refusal / the adventure offered (NUL-terminated strings) |
 | AdventureRequest / LDoNButton | C→Z | 0x2c6c / 0x5327 | 12 B {risk 1 normal / 2 high, recruiter, objective 0 any .. 4 rescue} / 1 B accept the offer |
-| AdventureData / AdventureUpdate / AdventureFinish | Z→C | 0x7171 / 0x1b01 / 0x400f | 2084 B {u32 (0 with no adventure: all zero), `char[2048]` text, seconds to enter, seconds left, risk (EQEmu: 0 normal / 1 high; RoF2 reads it as the request's 1 / 2, `0x618790`), f32 x, y, z, show compass, u32} / 8 B {current, total} / 8 B {won, points} |
+| AdventureData / AdventureUpdate / AdventureFinish | Z→C | 0x7171 / 0x1b01 / 0x400f | 2084 B {u32 reserved, `char[2048]` text, seconds to enter, seconds left, risk (EQEmu: 0 normal / 1 high), f32 x, y, z, show compass, u32 reserved} / 8 B {current, total} / 8 B {won, points} |
 | AdventurePointsUpdate | Z→C | 0x65c3 | 140 B {available; each theme's points at +56, +76, +96, +116, +136} |
 | AdventureStatsRequest / Reply | C→Z / Z→C | 0x5a62 / 0x2370 | 1 B zero (native sender reserves one byte; EQEmu ignores it) / 96 B: successes, failures, rank, percentage rank × {total, five themes} |
 | AdventureLeaderboardRequest / Reply | C→Z / Z→C | 0x7093 / 0x7f79 | 12 B {order 0 wins / 1 percentage, theme 0..5, risk 0 all / 1 normal / 2 high (EQEmu ignores risk)} / 7220 B {order, reserved, our successes, failures, rank, 100 × {`char[64]`, successes, failures}}; EQEmu zeroes both leading words |
@@ -1159,6 +1159,10 @@ Duel state (`game::DuelState`) is the player we challenged or accepted, the chal
 
 #### Adventures: requests and leaderboard
 
+- EQEmu can send AdventureData with the usual reserved words and blank briefing and timers to retain door access
+  for a completed instance. A subsequent AdventureUpdate can still carry the final count.
+- EQEmu confirms leave and reports expiry with AdventureInfo text `You are not currently assigned to an adventure`
+  (with or without a final period). A denied leave uses a red system chat message and retains the assignment.
 - Stats and leaderboard requests are each gated for ten seconds (EQEmu: eight and four).
 - The leaderboard category index interleaves order within theme: `order = category % 2`, `theme = category / 2`. Risk is the second selector's raw index.
 - The player profile's counted LDoN block has six u32 entries: reserved, the five theme balances, then the available total (`rof2.cpp ENCODE(OP_PlayerProfile)`). Point updates replace these.
