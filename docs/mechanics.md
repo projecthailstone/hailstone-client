@@ -2019,7 +2019,7 @@ set is eqstr 2455. Without the file or the string, it names the raw ID.
 
 #### AFK
 
-The client has no idle timer.
+The zone owns the idle and AFK timers.
 
 - The AFK flag changes only with /afk (13199 / 13200, `;afk on|off silent` to the chat server, OP_SpawnAppearance {me,
   0x18, flag}) and OP_SpawnAppearance type 0x18 for our own spawn, so the zone's auto AFK sets it and /afk toggles it.
@@ -2031,10 +2031,13 @@ OP_ClientUpdate at the last position more than the AFK time after `ResetAFKTimer
 OP_ChannelMessage, OP_MoveItem, auto attack and OP_SpawnAppearance AFK reset that timer, not walking, so a player who
 only runs and clicks goes AFK at his next stop (seen live).
 
+Hailstone sends its position every 1.3 seconds while it is unchanged so the zone can check its idle and AFK timers.
+The zone applies any server-side AFK effects, such as disabling personal tribute when the player has opted in.
+
 Enhancement (`game::AfkKeepalive`, always on): while the user gives input (`InputState::user_activity`: keys, mouse,
 pad, touch, held or moved), the client sends OP_SpawnAppearance {me, 24, 0} at once, then at most once a minute. The
-zone takes it as the AFK toggle off (ResetAFKTimer); input after a zone-set AFK clears it with 13200. An /afk stays
-until /afk. Without input nothing is sent.
+zone takes it as the AFK toggle off (ResetAFKTimer). Input after a zone-set AFK clears it with 13200. An /afk stays
+until /afk. Without input there is no AFK keepalive.
 
 #### The NPC target keys
 

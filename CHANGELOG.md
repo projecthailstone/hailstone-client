@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fixed automatic AFK while standing still, including automatic tribute shutoff on servers that offer it.
 - Server owners can set `[client] deny = on` in `hailstone.cfg` to deny Hailstone access and show a notice at login. Launcher and `--user` test logins now ask for that file too, so on a server without Hailstone's script their first zone-in waits 5 s, as a saved server's already did.
 - **Linux arm64 release package** (`hailstone-<version>-linux-arm64.zip`) for arm64 handhelds, boards and laptops with a Vulkan 1.3 driver, such as Mesa's Turnip on Snapdragon; it updates itself like the x64 one. So far it has only been tested on a Qualcomm Snapdragon 8 Elite (an AYN Odin 3 Max)
 - Modern Player Info: right-click the frame to show mana and endurance percentages, current / maximum values, or both. Each readout defaults to off.

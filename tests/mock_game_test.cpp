@@ -24,6 +24,7 @@
 #include "net/group_packets.h"
 #include "net/packet_io.h"
 #include "net/player_packets.h"
+#include "net/tribute_packets.h"
 #include "platform/udp_socket.h"
 
 using namespace hailstone;
@@ -416,49 +417,92 @@ TEST_CASE("mock server: typed chat and socials expand chat variables") {
 
 // ---------------------------------------------------------------- OP_ClientUpdate cadence
 
-TEST_CASE("mock server: OP_ClientUpdate is sent at most every 280 ms, with the current position, only when it changed") {
-    // docs/protocol/rof2-packets.md: "OP_ClientUpdate (46 B) when moving"; the rate is the client's kPositionInterval
-    // (280 ms, net/game_connection.cpp). The client has no clock seam (game_connection.cpp reads
-    // steady_clock directly), so this test runs for real time, with bounds that hold however slow the machine is.
-    Rig rig;
+TEST_CASE("mock server: movement reports the current position at most every 280 ms") {
+    ManualClock clock;
+    ConnectionOptions options = quick_options();
+    options.session.clock = clock.source();
+    Rig rig(MockConfig::standard(), options);
     REQUIRE(rig.to_zone());
+    clock.hold();
+    rig.step();
     auto& updates = rig.server.client_updates;
-    // A player who has not moved sends nothing.
-    CHECK(updates.empty());
-
-    auto start = std::chrono::steady_clock::now();
-    int i = 0;
+    const auto initial_count = updates.size();
     rig.conn.set_speed_run(0.7f); // the controls' SpeedRun: the animation field carries it x 40
-    while (std::chrono::steady_clock::now() - start < 450ms) {
-        // The player keeps running east: the position changes every pass.
-        rig.conn.set_player_motion(glm::vec3(-90.0f + 0.5f * static_cast<float>(i++), -270.0f, 4.0f), 100.0f,
-                                   glm::vec3(0.5f, 0.0f, 0.0f), true);
+    const glm::vec3 velocity(0.5f, 0.0f, 0.0f);
+    rig.conn.set_player_motion({-90.0f, -270.0f, 4.0f}, 100.0f, velocity, true);
+    clock.advance(280ms);
+    REQUIRE(rig.until([&] { return updates.size() == initial_count + 1; }));
+    const auto first = updates.back();
+    CHECK(first.motion.y == -90.0f);
+
+    rig.conn.set_player_motion({-80.0f, -270.0f, 4.0f}, 100.0f, velocity, true);
+    clock.advance(279ms);
+    rig.step();
+    CHECK(updates.size() == initial_count + 1);
+    rig.conn.set_player_motion({-70.0f, -270.0f, 4.0f}, 100.0f, velocity, true);
+    clock.advance(1ms);
+    REQUIRE(rig.until([&] { return updates.size() == initial_count + 2; }));
+    const auto& second = updates.back();
+    CHECK(second.spawn_id == 7);
+    CHECK(static_cast<std::uint16_t>(second.sequence - first.sequence) == 1);
+    CHECK(second.motion.x == -270.0f);
+    CHECK(second.motion.y == -70.0f);
+    CHECK(second.motion.z == 4.0f);
+    CHECK(second.motion.animation == 28);
+}
+
+TEST_CASE("mock server: stationary position reports let the zone set AFK") {
+    ManualClock clock;
+    ConnectionOptions options = quick_options();
+    options.session.clock = clock.source();
+    Rig rig(MockConfig::standard(), options);
+    REQUIRE(rig.to_zone());
+    clock.hold();
+    rig.step();
+    auto& updates = rig.server.client_updates;
+    const auto initial_count = updates.size();
+    const auto player_id = static_cast<std::uint16_t>(rig.conn.world().player_id);
+    TributeSettings tribute;
+    tribute.active = true;
+    rig.server.zone.send_reliable(encode(tribute));
+    REQUIRE(rig.until([&] { return rig.conn.tribute().settings.active; }));
+    // A player can stand still from the moment they enter the zone.
+    clock.advance(1300ms);
+    REQUIRE(rig.until([&] { return updates.size() == initial_count + 1; }));
+
+    for (std::size_t expected : {initial_count + 2, initial_count + 3}) {
+        const auto previous = updates.back();
+        clock.advance(1299ms);
         rig.step();
-        std::this_thread::sleep_for(2ms);
-    }
-    float last_x = -90.0f + 0.5f * static_cast<float>(i - 1);
-    // The final position is always delivered: sent once the interval allows.
-    REQUIRE(rig.until([&] { return !updates.empty() && updates.back().motion.y == last_x; }));
-    auto elapsed = std::chrono::steady_clock::now() - start;
-
-    // Sends are at least 280 ms apart, so n updates need (n - 1) * 280 ms.
-    auto n = static_cast<long long>(updates.size());
-    CHECK(n >= 2);
-    CHECK((n - 1) * 280 <= std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
-    for (std::size_t k = 0; k < updates.size(); ++k) {
-        CHECK(updates[k].spawn_id == 7);
-        CHECK(updates[k].motion.animation == 28); // SpeedRun 0.7 x 40, truncated (PackPlayerPositionUpdate)
-        CHECK(updates[k].motion.x == -270.0f);   // world y is the server's x (game/coords.h)
-        CHECK(updates[k].motion.z == 4.0f);
-        if (k > 0) {
-            CHECK(static_cast<std::uint16_t>(updates[k].sequence - updates[k - 1].sequence) == 1);
-            CHECK(updates[k].motion.y > updates[k - 1].motion.y); // each carries the position at its own send
-        }
+        CHECK(updates.size() == expected - 1);
+        clock.advance(1ms);
+        REQUIRE(rig.until([&] { return updates.size() == expected; }));
+        const auto& update = updates.back();
+        CHECK(update.spawn_id == player_id);
+        CHECK(static_cast<std::uint16_t>(update.sequence - previous.sequence) == 1);
+        CHECK(update.motion.x == previous.motion.x);
+        CHECK(update.motion.y == previous.motion.y);
+        CHECK(update.motion.z == previous.motion.z);
+        CHECK(update.motion.heading == previous.motion.heading);
+        CHECK(update.motion.delta_x == 0.0f);
+        CHECK(update.motion.delta_y == 0.0f);
+        CHECK(update.motion.delta_z == 0.0f);
     }
 
-    // Nothing changed since: no more updates (the next one could not come sooner than 280 ms after the last).
-    rig.run_for(320ms);
-    CHECK(static_cast<long long>(updates.size()) == n);
+    constexpr std::uint16_t afk_appearance = 24;
+    CHECK_FALSE(rig.conn.world().spawns.at(player_id).afk);
+    CHECK(rig.conn.tribute().settings.active);
+    CHECK(std::none_of(rig.server.zone_log.begin(), rig.server.zone_log.end(), [](const AppPacket& packet) {
+        if (!is_op(packet, Op::SpawnAppearance)) return false;
+        const auto appearance = decode_spawn_appearance(packet);
+        return appearance && appearance->type == afk_appearance;
+    }));
+    tribute.active = false;
+    rig.server.zone.send_reliable(encode(tribute));
+    rig.server.zone.send_reliable(encode(SpawnAppearance{player_id, afk_appearance, 1}));
+    REQUIRE(rig.until([&] {
+        return rig.conn.world().spawns.at(player_id).afk && !rig.conn.tribute().settings.active;
+    }));
 }
 
 TEST_CASE("mock server: a slow walk at a high frame rate still sends OP_ClientUpdate") {

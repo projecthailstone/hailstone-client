@@ -52,6 +52,8 @@ constexpr std::uint16_t kOpAttackUnlock = 0x4d09;
 // The original client sends its position at most every 280 ms while it can
 // move (CEverQuest::DoMainLoop @0x53e0c1).
 constexpr auto kPositionInterval = std::chrono::milliseconds(280);
+// The zone evaluates its idle and AFK timers on position packets, including while the player stands still.
+constexpr auto kStationaryPositionInterval = std::chrono::milliseconds(1300);
 // RequestZoneChangeStatus @0x5203c0 waits up to 180 s for the answer to one OP_ZoneChange (@0x52050e).
 // RequestZoneChangeStatusBlocking @0x52cee0 sends it again 500 ms after a "not ready" answer (-1) while
 // MoveToZone's limit, 7 s from the first request (@0x541806), lasts.
@@ -1194,6 +1196,7 @@ void GameConnection::aggro_lock_toggle() {
 void GameConnection::finish_zone_in() {
     bool entered = state_ != ConnectionState::InZone;
     state_ = ConnectionState::InZone;
+    if (entered) last_position_send_ = options_.session.clock ? options_.session.clock() : Clock::now();
     status_.clear();
     report_state_ = 1; // Cmd_report's 0xddf640, set at each zone-in (the 0x345d step)
     // ProcessGame's zone-in after a death (CEverQuest +0x39580, set by 0x531730): the death tip, once.
@@ -2420,8 +2423,9 @@ void GameConnection::send_position(bool force, glm::vec3 position, bool reliable
     if (!zone_session_ || world_.player_id == 0 || pstatus_.dead) return;
     reconcile_eye_control();
     send_eye_position(force);
-    auto now = Clock::now();
-    if (!force && (!motion_dirty_ || now - last_position_send_ < kPositionInterval)) return;
+    const auto now = options_.session.clock ? options_.session.clock() : Clock::now();
+    const auto interval = motion_dirty_ ? kPositionInterval : kStationaryPositionInterval;
+    if (!force && now - last_position_send_ < interval) return;
     // DoMainLoop: the sequence is the position tracker's sample count, then sample 2 is recorded.
     ClientPositionUpdate u;
     u.sequence = position_tracker_.sequence();
