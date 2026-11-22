@@ -56,6 +56,12 @@ game::DoorSpawn door_spawn(const DoorRecord& r) {
 
 std::uint32_t switch_time() { return static_cast<std::uint32_t>(GameConnection::now_ms()); }
 
+const game::Spawn* controlled_eye(const game::WorldState& world) {
+    if (!world.eye_id || world.controlled_id != world.eye_id) return nullptr;
+    const auto eye = world.spawns.find(world.eye_id);
+    return eye != world.spawns.end() && !eye->second.is_corpse ? &eye->second : nullptr;
+}
+
 } // namespace
 
 const game::Door* GameConnection::door(std::uint8_t id) const {
@@ -197,10 +203,15 @@ bool GameConnection::click_door(std::uint8_t door_id, float actor_radius, std::i
 
 bool GameConnection::door_in_reach(std::uint8_t door_id, float actor_radius, std::optional<glm::vec3> hit) const {
     const game::Door* d = door(door_id);
-    if (!d) return false;
+    return d && switch_in_reach(*d, controlled_eye(world_), actor_radius, hit);
+}
+
+bool GameConnection::switch_in_reach(const game::Door& d, const game::Spawn* eye, float actor_radius,
+                                    std::optional<glm::vec3> hit) const {
+    if (eye) return game::door_within_reach(d, eye->position, eye->heights.height, actor_radius, hit);
     const game::Spawn* me = world_.player();
     float height = me && me->size > 0.0f ? me->size : 6.0f;
-    return game::door_within_reach(*d, position_, height, actor_radius, hit);
+    return game::door_within_reach(d, position_, height, actor_radius, hit);
 }
 
 bool GameConnection::use_switch(std::uint8_t door_id, std::uint32_t user, float actor_radius, std::int32_t key,
@@ -208,22 +219,21 @@ bool GameConnection::use_switch(std::uint8_t door_id, std::uint32_t user, float 
     if (state_ != ConnectionState::InZone) return false;
     const game::Door* d = door(door_id);
     if (!d || !game::door_can_be_used(*d)) return false;
-    // A user that is a PC (the local player here) must be within reach; nobody (0) needs not.
-    if (user != 0) {
-        if (!door_in_reach(door_id, actor_radius, hit)) {
-            chat(ChatEvent::Kind::System, strings_.format(kCantReach, {}));
-            return false;
-        }
+    // RoF2 UseSwitch substitutes the controlled actor for the local PC before testing reach and building the packet.
+    const game::Spawn* eye = user != 0 && user == world_.player_id ? controlled_eye(world_) : nullptr;
+    if (user != 0 && !switch_in_reach(*d, eye, actor_radius, hit)) {
+        chat(ChatEvent::Kind::System, strings_.format(kCantReach, {}));
+        return false;
     }
     // EQSwitch::UseSwitch(user, key, skill): the key and skill CEverQuest::ClickedSwitch chose.
     ClickDoor c;
     c.door_id = door_id;
     c.item_id = static_cast<std::uint32_t>(key);
     c.pick_skill = skill;
-    c.player_id = user;
+    c.player_id = eye ? eye->id : user;
     send_zone(encode(c));
     log::info("clicked door {} ({}, type {}, state {}, key {}, skill {}, user {})", d->id, d->name, d->type, d->state,
-              key, skill, user);
+              key, skill, c.player_id);
     return true;
 }
 

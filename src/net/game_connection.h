@@ -2062,7 +2062,7 @@ public:
     // OP_MoveDoor answers. Returns true when the click was sent.
     bool click_door(std::uint8_t door_id, float actor_radius, std::int32_t key = -1, std::int32_t skill = 0,
                     std::optional<glm::vec3> hit = std::nullopt);
-    // Whether the local player is within reach of the door for a click (UseSwitch's test, as click_door makes it).
+    // Whether the local player or controlled Eye is within reach of the door for a click.
     bool door_in_reach(std::uint8_t door_id, float actor_radius, std::optional<glm::vec3> hit = std::nullopt) const;
     // EQSwitch::UseSwitch also takes touch activations without a pick point. `user` is the spawn id;
     // 0 (nobody, type 0x23) skips the reach test and sends player id 0.
@@ -2979,6 +2979,8 @@ private:
     // its chat line, sounds and the target's animation.
     void report_successful_hit(const CombatDamage& d, bool reported);
     void update_doors();
+    bool switch_in_reach(const game::Door& door, const game::Spawn* eye, float actor_radius,
+                         std::optional<glm::vec3> hit) const;
     // Sends an OP_ZoneChange and waits for its answer (RequestZoneChangeStatus).
     void start_zone_change(const ZoneChange& request);
     const game::DoorRiders* door_riders_ = nullptr;

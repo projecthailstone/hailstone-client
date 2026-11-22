@@ -11,6 +11,7 @@
 #include "game/world_state.h"
 #include "mock_server/harness.h"
 #include "mq_test_world.h"
+#include "net/door_packets.h"
 #include "net/spell_packets.h"
 
 using namespace hailstone;
@@ -178,6 +179,69 @@ TEST_CASE("An Eye's view, control and physics incarnation retire at a zone hand-
     CHECK(c.controlled_id() == 0);
     CHECK(c.world().view_id == 0);
     CHECK(c.world().spawns.empty());
+}
+
+TEST_CASE("Door clicks follow the controlled Eye and return to the player's body when it fades") {
+    EyeRig rig;
+    rig.enter();
+    auto& c = rig.conn;
+    const glm::vec3 body = c.world().player()->position;
+    c.set_player_motion(body, 0, {}, false);
+    const glm::vec3 nearby_hit = body + glm::vec3{2, 0, 0};
+    const glm::vec3 distant_hit = body + glm::vec3{100, 0, 0};
+    const auto door_at = [](std::uint8_t id, glm::vec3 position) {
+        const auto server = game::world_to_server(position);
+        net::DoorRecord door;
+        door.name = "TESTDOOR";
+        door.door_id = id;
+        door.x = server.x;
+        door.y = server.y;
+        door.z = server.z;
+        return door;
+    };
+    c.receive_zone_packet_for_test(net::encode_spawn_doors({
+        door_at(1, nearby_hit), door_at(2, distant_hit + glm::vec3{30, 0, 0})}));
+    REQUIRE(c.door_in_reach(1, 0, nearby_hit));
+    CHECK_FALSE(c.door_in_reach(2, 0, distant_hit));
+
+    rig.spawn(eye_packet(c.world().player()->name));
+    rig.buff();
+    rig.tick();
+    REQUIRE(c.eye_id() == 987);
+    CHECK(c.world().view_spawn_id() == 987);
+    c.set_controlled_motion(distant_hit, 0, {}, 0);
+    CHECK(c.door_in_reach(2, 0, distant_hit)); // The picked surface is in reach even when the pivot is farther away.
+    CHECK_FALSE(c.door_in_reach(2, 0));
+    REQUIRE(c.click_door(2, 0, 123, 35, distant_hit));
+    REQUIRE(rig.until([&] { return test::MockEqServer::count(rig.server.zone_log, net::Op::ClickDoor) == 1; }));
+    for (const auto& packet : rig.server.zone_log) {
+        if (packet.opcode != net::to_wire(net::Op::ClickDoor)) continue;
+        const auto click = net::decode_click_door(packet);
+        REQUIRE(click);
+        CHECK(click->door_id == 2);
+        CHECK(click->player_id == 987);
+        CHECK(click->item_id == 123);
+        CHECK(click->pick_skill == 35);
+    }
+
+    c.set_controlled_motion(nearby_hit + glm::vec3{0, 0, 22}, 0, {}, 0);
+    CHECK_FALSE(c.door_in_reach(1, 0, nearby_hit)); // The size-one Eye reaches 21 units, including vertically.
+    CHECK_FALSE(c.click_door(1, 0, -1, 0, nearby_hit));
+    rig.buff(true);
+    REQUIRE(c.eye_id() == 0);
+    CHECK(c.world().view_spawn_id() == c.world().player_id);
+    CHECK(c.door_in_reach(1, 0, nearby_hit));
+    CHECK_FALSE(c.door_in_reach(2, 0, distant_hit));
+    REQUIRE(c.click_door(1, 0, -1, 0, nearby_hit));
+    REQUIRE(rig.until([&] { return test::MockEqServer::count(rig.server.zone_log, net::Op::ClickDoor) == 2; }));
+    for (auto i = rig.server.zone_log.rbegin(); i != rig.server.zone_log.rend(); ++i) {
+        if (i->opcode != net::to_wire(net::Op::ClickDoor)) continue;
+        const auto click = net::decode_click_door(*i);
+        REQUIRE(click);
+        CHECK(click->door_id == 1);
+        CHECK(click->player_id == c.world().player_id);
+        break;
+    }
 }
 
 TEST_CASE("Eye depop, reused spawn IDs and death retire control and the summon buff") {

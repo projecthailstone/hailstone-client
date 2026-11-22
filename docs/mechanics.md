@@ -1242,8 +1242,10 @@ object never gets them. Every pick is logged ("pick (left click) ...").
 #### Left clicks and switches
 
 `CEverQuest::ClickedSwitch` (0x51ecb0) passes the picked point to `EQSwitch::UseSwitch` (0x511d70).
-A click reaches up to the player's height plus 20 units in 3D from the player to that point. Activations without a
-pick point measure to the switch origin and add the model's radius to the reach.
+A click reaches up to the player's height plus 20 units in 3D from the player to that point. With Eye of Zomm active,
+`UseSwitch` uses the controlled Eye's position and height and sends its spawn ID in `OP_ClickDoor`. EQEmu can apply
+its own reach checks for scripted clicks. Activations without a pick point measure to the switch origin and add the
+model's radius to the reach. First-person picking excludes the active view actor, including the Eye.
 
 A left click in the world with a lockpick or key (item types 12, 0x21, 0x27) on the cursor goes to ClickedSwitch
 (`CEverQuest::LMouseUp` @0x5384d0), whatever is under it and whether or not the switch accepts it; the item stays on

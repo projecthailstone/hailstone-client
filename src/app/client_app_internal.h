@@ -969,10 +969,10 @@ private:
     std::int32_t viewer_see_invisible_rank() const;
     std::unordered_set<std::uint32_t> market_hidden_;
     game::PlateFade plate_fade_; // each overlapped name's fade toward its target alpha (game/nameplate_overlap.h)
-    // The spawn not to draw: the player's own in first person (camera 0's activate hides it; no other camera does).
+    // The spawn not to draw: the active view actor in first person.
     std::uint32_t hidden_spawn() const {
         return camera_type_ != game::kCameraFirstPerson || ui_host_.customization_zoom >= 0 ? 0u
-            : (conn_->world().view_id ? conn_->world().view_id : conn_->world().player_id);
+            : conn_->world().view_spawn_id();
     }
     // display.msaa (samples, read at start-up), display.tonemap (auto | none | agx | aces; auto is AgX with the modern
     // lighting and none with the classic), display.exposure (EV), display.shadows (the shadow map's size per cascade,

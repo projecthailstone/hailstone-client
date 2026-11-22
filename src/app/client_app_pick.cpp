@@ -187,13 +187,16 @@ ClientApp::PickTarget ClientApp::pick_at(float x, float y, std::uint32_t require
     x -= view_area_.x;
     y -= view_area_.y;
     const auto& world = conn_->world();
-    // 0x48b5c0: the view actor (the player's) is excluded in first person or with /clickthrough bit 0;
+    // 0x48b5c0: the view actor is excluded in first person or with /clickthrough bit 0;
     // mounts are not modelled.
+    const auto view_id = world.view_spawn_id();
     game::PickCallInput call_in;
     call_in.world_state = player_ready_ ? 1 : 0;
     call_in.camera_type = camera_type_;
     call_in.click_through = conn_->click_through_mask();
     call_in.have_local_player = world.player() != nullptr;
+    call_in.view_actor_is_local = view_id == world.player_id;
+    call_in.view_actor_nonnull = world.spawns.contains(view_id);
     call_in.x = static_cast<std::int32_t>(x);
     call_in.y = static_cast<std::int32_t>(y);
     game::PickCall call = game::pick_call(call_in);
@@ -245,7 +248,7 @@ ClientApp::PickTarget ClientApp::pick_at(float x, float y, std::uint32_t require
             };
             return true;
         };
-        if (add_world_click_spawn(actors, exclude, std::move(a), source, seg, id == world.player_id && call.exclude_view))
+        if (add_world_click_spawn(actors, exclude, std::move(a), source, seg, id == view_id && call.exclude_view))
             refs.push_back({PickTarget::Kind::Spawn, id, {}});
     }
     if (world_objects_) {
