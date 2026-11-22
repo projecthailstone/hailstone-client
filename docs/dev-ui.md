@@ -290,7 +290,10 @@ Each entry names the window and what is particular to it; the `hs.*` calls behin
 - **Chat windows**: tabs, the channel chip, the chat menu.
   - A button at the strip's right end folds the window into its tab strip.
   - Always Chat Here (`hs.ChatSetAlwaysHere`, `hs.ChatInfo`'s fifth value) picks the window Enter and '/' start a line in; the main window by default.
-  - Timestamps (`chat.timestamps`) put each line's local arrival time first, `[hh:mm:ss]`.
+  - Right-click a chat window and open **Timestamps** to choose **Off**, 12-hour with seconds (`[09:07:43 PM]`),
+    24-hour without seconds (`[21:07]`), or 24-hour with seconds (`[21:07:43]`). The Modern pack's setting
+    (`chat.timestamps`) applies to all its chat windows, including their existing lines, using each line's local
+    arrival time. Off is the default. Previously enabled timestamps keep the 24-hour format with seconds.
   - Each window and tab keeps its own last 1000 lines (Hailstone's limit).
   - A tell window flashes once when another player's tell comes in (`hs.ChatWindows`' `tellsIn`).
   - A window reads only the lines since its version (`hs.ChatText(slot, version, names, stamps, true)`), and everything again (`reset`) when its lines changed otherwise. Line wrap and height are cached until the width or font change. A word wider than the output (a long name or a run with no space) is broken where the row ends, at a character's start, as ImGui's own wrapped text breaks it.

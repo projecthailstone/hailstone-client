@@ -2,6 +2,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -75,22 +76,78 @@ TEST_CASE("Chat window script: new windows and tabs draw without script errors")
             lua_setfield(L, -2, "InGame");
             hailstone::test::sync_ui_api_aliases(L);
         });
-        view.add(ui::ChatChannel::Say, "hello");
-        for (int i = 0; i < 3; ++i) {
+        auto step = [&] {
             api.begin_frame();
             frame(lua);
-        }
+        };
+        // Observe the rendered chat script's real ChatText call, including a history reset as the format changes.
+        REQUIRE(lua.run_for_test("", R"(
+local read = hs.UI.chat.Text
+hs.UI.chat.Text = function(slot, ...)
+  local version, lines, reset, count = read(slot, ...)
+  if slot == 1 and reset and lines[1] then
+    chatTimestampLine = lines[1]:gsub("<[^>]*>", "")
+  end
+  return version, lines, reset, count
+end
+return true
+)") == "true");
+        view.add(ui::ChatChannel::Say, "hello");
+        for (int i = 0; i < 3; ++i) step();
         CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
         CHECK(ImGui::FindWindowByName("###modern.Chat1") != nullptr);
+
+        const auto timestamp_rows = [] {
+            const auto rows = app::chat_context_rows(1);
+            const auto item = std::find_if(rows.begin(), rows.end(), [](const auto& row) {
+                return row.text == "Timestamps";
+            });
+            REQUIRE(item != rows.end());
+            CHECK(item->enabled);
+            REQUIRE(item->submenu);
+            return item->submenu();
+        };
+        const auto check_selected_timestamp = [&](std::size_t selected) {
+            const auto rows = timestamp_rows();
+            REQUIRE(rows.size() == 4);
+            for (std::size_t i = 0; i < rows.size(); ++i) CHECK(rows[i].check == (i == selected));
+        };
+        const auto check_chat_line = [&](const char* pattern) {
+            CHECK(lua.run_for_test("", std::string("return chatTimestampLine:match('") + pattern + "') ~= nil") ==
+                  "true");
+        };
+        check_selected_timestamp(0); // missing setting
+        check_chat_line("^hello$");
+        lua.set_setting("chat.timestamps", "0");
+        check_selected_timestamp(0);
+        lua.set_setting("chat.timestamps", "1");
+        check_selected_timestamp(3);
+        step();
+        check_chat_line("^%[%d%d:%d%d:%d%d%] hello$");
+
+        const std::array labels{"Off", "[09:07:43 PM]", "[21:07]", "[21:07:43]"};
+        const std::array settings{"off", "12h-seconds", "24h-minutes", "24h-seconds"};
+        const std::array patterns{"^hello$", "^%[%d%d:%d%d:%d%d [AP]M%] hello$", "^%[%d%d:%d%d%] hello$",
+                                  "^%[%d%d:%d%d:%d%d%] hello$"};
+        for (std::size_t i = 0; i < labels.size(); ++i) {
+            CAPTURE(labels[i]);
+            const auto rows = timestamp_rows();
+            REQUIRE(rows.size() == labels.size());
+            CHECK(rows[i].text == labels[i]);
+            CHECK(rows[i].enabled);
+            REQUIRE(rows[i].act);
+            rows[i].act();
+            CHECK(lua.setting("chat.timestamps") == settings[i]);
+            check_selected_timestamp(i);
+            step();
+            check_chat_line(patterns[i]);
+        }
 
         // A new window from the menu's call, a second tab, a tell tab: all draw.
         lua_State* L = lua.state();
         REQUIRE(luaL_dostring(L, "hs.ChatNewWindow('Fights'); hs.ChatNewTab(1, 'Social'); hs.ChatSetTellWindows(true)") == LUA_OK);
         view.add(ui::ChatChannel::Tell, "Bob tells you, 'hi'", 0, 257, "Bob");
-        for (int i = 0; i < 3; ++i) {
-            api.begin_frame();
-            frame(lua);
-        }
+        for (int i = 0; i < 3; ++i) step();
         CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
         CHECK(ImGui::FindWindowByName("###modern.Chat2") != nullptr);
         // The frame keeps its ImGui identity across changes to the selected tab.
@@ -103,10 +160,6 @@ TEST_CASE("Chat window script: new windows and tabs draw without script errors")
         const int social = tabs::group(1).selected;
         REQUIRE(social > 1);
         CHECK(tabs::tab(social).title == "Social");
-        auto step = [&] {
-            api.begin_frame();
-            frame(lua);
-        };
         ImGuiIO& io = ImGui::GetIO();
         auto click_menu_item = [&](int tab, const char* label) {
             CAPTURE(label);
@@ -173,6 +226,10 @@ TEST_CASE("Chat window script: new windows and tabs draw without script errors")
         CHECK_FALSE(detached_window->Active);
         CHECK(tabs::group(1).selected == social);
         CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+    }
+    {
+        ui::lua::LuaUi saved(dir / "modern", dir / "modern.txt");
+        CHECK(saved.setting("chat.timestamps") == "24h-seconds");
     }
     ImGui::DestroyContext(ctx);
     fs::remove_all(dir);
