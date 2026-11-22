@@ -1317,6 +1317,33 @@ TEST_CASE("Group role menus: a server update while open preserves the displayed 
     CHECK_FALSE(rig.conn.group().slots[1].main_assist);
 }
 
+TEST_CASE("Potion Belt visibility survives camping and returning to the same character") {
+    test::ScratchDir game_scratch("ui_potion_belt");
+    GameDir game(game_scratch.path());
+    net::GameConnection next(game, {});
+    Harness t(game);
+    const auto file = t.api->layout_file();
+    CHECK_FALSE(t.api->shown("PotionBeltWnd"));
+
+    t.api->begin_frame();
+    t.conn.set_potion_belt_open(true); // the same visibility flag the key bind changes
+    t.api->begin_frame();
+    t.api->save_layout();
+
+    t.host.conn = &next;
+    t.host.in_game = false; // character select has a new connection
+    t.api->begin_frame();
+    t.api->load_layout(t.dir / "defaults.ini", file, {});
+    REQUIRE(t.api->shown("PotionBeltWnd"));
+
+    t.host.in_game = true;
+    t.api->show("PotionBeltWnd", false);
+    t.api->save_layout(); // camp immediately after closing, before the next UI frame
+    IniFile saved;
+    REQUIRE(saved.load(file));
+    CHECK(saved.get("PotionBeltWnd", "Show") == std::optional<std::string>("0"));
+}
+
 TEST_CASE("OP_PotionBelt: the right button held") {
     auto p = net::encode_potion_belt_hold(2, true);
     REQUIRE(p.data.size() == 12);

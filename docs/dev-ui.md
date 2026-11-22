@@ -848,6 +848,7 @@ Game fonts are built at the display's content scale (or `--ui-scale`), and the p
 
 - **Place and size**: the XML rectangle, then `Width`/`Height` and `XPos`/`YPos` for 1280x1024 and `...Windowed`. Windowed values are stored for 4096 x 4096 and moved by `ConvertToRes`, whose sums wrap in 32 bits as the original's do.
 - **Shown or not**: `Show` comes from the character's file only (defaults.ini too for HotButtonWnd). Without it a window starts shown when its IniFlags have bit 9 (player, target, group, buffs, songs, gems, compass, chat, EQ button, hot bar 1). Hailstone clears it for the aura window, which RoF2 starts shown.
+- Each character entry restores window visibility from `UI.ini`, including when you camp and return to the same character. With no saved visibility, the Potion Belt starts closed.
 - **Chat windows**: a file with no `[ChatManager] NumWindows` takes defaults.ini's extra chat windows as tabs of the main window; after that only the character's file counts. A deliberate change: through defaults.ini, "Other Chat" came back at every start after the player closed it.
 - Moves, resizes and show / hide are written back to the same keys.
 

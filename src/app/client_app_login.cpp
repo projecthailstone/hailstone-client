@@ -675,6 +675,7 @@ void ClientApp::back_to_login(std::string message, bool is_error) {
 void ClientApp::leave_character() {
     // The character's UI settings are saved and let go: the next login's character writes its own, never these.
     if (actions_ui_) actions_ui_->save_character(); // its hot buttons' last changes (ActionsUi::save_if_due)
+    layout_for_.clear(); // Even the same character gets a new connection and needs its window visibility restored.
     ui_character_dir_.clear();
     if (lua_ui_) lua_ui_->set_character_settings({});
     use_character_settings({}); // hailstone.ini's settings again
