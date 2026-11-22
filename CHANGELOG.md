@@ -16,6 +16,7 @@
 - Memorize individual spells and saved spell sets, or scribe scrolls, while mounted and stopped.
 - Closing the spell book aborts a scribe in progress with "Aborting scribing of spell.", as in the original, instead of pausing it or dropping it silently.
 - Copy Layout can also bring over another character's keyboard bindings, including movement remaps and alternate keys.
+- Modern Buffs and Songs can each use a horizontal or vertical layout with optional spell names, slot badges, timers, a background, a title bar, and drag resizing. Open **Window options** from an effect's right-click menu. The default stays the compact, transparent icon tray with timers.
 - Your bow appears in your left hand during the archery animation, then your equipped melee weapons or shield return.
 - Archery holds your bow in your left hand, as the original client does: from the first shot until your next melee swing, which brings back your weapons or shield. Other players in the zone see it too.
 - Options can show notices from active add-ons and explain why a setting is unavailable. Notices from several add-ons can appear together in Modern and Gamepad. No add-on can disable the Upscaler, UI pack or Texture pack choice, so the way out of an add-on or a broken pack stays open.

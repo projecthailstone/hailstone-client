@@ -280,8 +280,12 @@ Each entry names the window and what is particular to it; the `hs.*` calls behin
 
 - **GroupWindow**: member cards and the invite / disband / accept / decline buttons. Solo it shows only with an invitation or a player to invite.
 
-- **BuffWindow** and **ShortDurationBuffWindow**: icon trays (packed unless **Show empty slots** is on), the last ten seconds pulse. Right click: Spell Info, Add to Blocked Buffs, Remove.
-  - Icons fill each row from right to left. Alt-right-click an icon for the tray's layout menu. **Show empty slots** reserves space for gaps up to the last occupied slot; **Show slot numbers in tooltips** adds the slot number after the spell name, counted from 1 in each tray. Both are off by default and saved per tray and character (`hud.showEmptySlots.<window>`, `hud.showSlotNumbers.<window>`; `lib/bufftray.lua`).
+- **BuffWindow** and **ShortDurationBuffWindow**: the defaults are the compact horizontal icon trays with remaining time under each icon, a transparent background, and no title bar or drag resizing. Icons fill from right to left and pulse near expiry.
+  - Right-click an effect for Spell Info, Add to Blocked Buffs, Remove, and **Window options**. Right-click the title bar or an empty spot to open the options directly, or Alt-right-click anywhere in the tray.
+  - **Layout** chooses Horizontal or Vertical. Vertical fills down and continues in columns. **Show spell names**, **Show slot numbers**, and **Show remaining time** can be set independently. **Show empty slots** reserves gaps up to the last occupied slot. **Show slot numbers in tooltips** also works with the visible numbers off. Both kinds of numbering use the effect's one-based slot in its tray.
+  - **Show window background** and **Show title bar** are independent. The frame menu's **Opacity** controls the whole tray.
+  - Turn on **Allow window resizing** to drag the left edge and change the width. A horizontal tray wraps to fit. For vertical icons without names, drag the bottom edge to change how many icons fit in each column. The grip shows on hover. Turning resizing off keeps the size. **Reset size** restores automatic sizing. **Icons per row** also returns horizontal trays to fitting their contents.
+  - The `hud.*` settings are saved per tray and character (`lib/bufftray.lua`).
 
 - **CastSpellWnd**: gem tiles in a row or column, refresh shading, the spell book.
 
