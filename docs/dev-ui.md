@@ -13,6 +13,9 @@ The client uses [Dear ImGui](https://github.com/ocornut/imgui) (v1.91.9, fetched
 ## Pieces
 
 - `src/ui/imgui_layer.{h,cpp}`: the ImGui context and the SDL3 and Vulkan backends (our volk loader, dynamic rendering, recorded inside the colour + depth rendering `VkContext::begin_frame` started). Fonts follow the display's content scale: Liberation Sans or another common system font, else ImGui's built-in one.
+  The font atlas includes Latin and Unicode General Punctuation for both chat layouts. A face missing a curly quote
+  draws the corresponding straight quote glyph. The displayed glyph choice leaves the original chat text intact for
+  copying and logging.
 - `src/ui/dev_screens.{h,cpp}`: the screens. Each takes a view model and returns the player's action; none does networking:
   - `login_screen`
   - `server_select_screen`
