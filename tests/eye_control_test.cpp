@@ -26,7 +26,7 @@ net::Spawn eye_packet(const std::string& player, std::uint32_t id = 987) {
     eye.fly_mode = 1;
     eye.run_speed = 0.7f;
     eye.walk_speed = 0.46f;
-    eye.stand_state = 100;
+    eye.stand_state = net::kStandStanding;
     eye.motion.x = 10;
     eye.motion.y = 20;
     eye.motion.z = 30;
@@ -163,6 +163,40 @@ TEST_CASE("An Eye buff controls and reports the Eye while preserving the player'
     REQUIRE(restored);
     ByteReader restored_view(restored->data);
     CHECK(restored_view.le<std::uint32_t>() == 0);
+}
+
+TEST_CASE("Mouse and gamepad turning follow the Eye's posture while its owner sits") {
+    EyeRig rig;
+    rig.enter();
+    auto& c = rig.conn;
+    constexpr std::uint16_t eye_id = 987;
+    rig.spawn(eye_packet(c.world().player()->name, eye_id));
+    rig.buff();
+    rig.tick();
+    REQUIRE(c.eye_id() == eye_id);
+
+    REQUIRE(c.set_stand_state(net::kStandSitting));
+    CHECK(app::can_turn_controlled_actor(c));
+    c.receive_zone_packet_for_test(net::encode(net::SpawnAppearance{eye_id, net::kAppearanceAnimation, net::kStandFreeze}));
+    CHECK_FALSE(app::can_turn_controlled_actor(c));
+    c.receive_zone_packet_for_test(net::encode(net::SpawnAppearance{eye_id, net::kAppearanceAnimation, net::kStandCrouching}));
+    CHECK(app::can_turn_controlled_actor(c));
+
+    ByteWriter stun;
+    stun.le<std::uint32_t>(1000);
+    c.receive_zone_packet_for_test(net::AppPacket(net::to_wire(net::Op::Stun), stun.take()));
+    REQUIRE(c.stunned());
+    CHECK_FALSE(app::can_turn_controlled_actor(c));
+    rig.tick();
+    REQUIRE_FALSE(c.stunned());
+    CHECK(app::can_turn_controlled_actor(c));
+
+    rig.buff(true);
+    REQUIRE(c.eye_id() == 0);
+    CHECK(c.sitting());
+    CHECK_FALSE(app::can_turn_controlled_actor(c));
+    REQUIRE(c.set_stand_state(net::kStandStanding));
+    CHECK(app::can_turn_controlled_actor(c));
 }
 
 TEST_CASE("An Eye's view, control and physics incarnation retire at a zone hand-off") {

@@ -2171,6 +2171,9 @@ SPA 67 acquires an Eye summon named from the first 24 bytes of the player's name
 from the body, which keeps gravity, air and environment damage; the Eye sends its own spawn ID's movement. Fade,
 despawn, death and zoning restore control. Once held, control stays while that spawn lives.
 
+Mouse look and the gamepad's right stick use the Eye's posture for turning, so you can steer a standing or
+crouching Eye while your character sits. Stun still blocks turning.
+
 Deliberate safety differences:
 
 - ambiguous matching Eye names refuse acquisition;

@@ -28,6 +28,20 @@ namespace hailstone::app {
 
 namespace mech = game::mechanics;
 
+bool can_turn_controlled_actor(const net::GameConnection& conn) {
+    if (conn.stunned()) return false;
+    const auto& status = conn.player_status();
+    std::uint32_t stand = status.stand_state;
+    if (const auto eye_id = conn.eye_id()) {
+        // ProcessControls reads the controlled spawn's posture. The Eye's owner still supplies character status.
+        const auto& spawns = conn.world().spawns;
+        const auto eye = spawns.find(eye_id);
+        if (eye == spawns.end() || status.owner_status > 0) return false;
+        stand = eye->second.stand_state;
+    }
+    return stand == net::kStandStanding || stand == net::kStandCrouching;
+}
+
 std::int32_t remote_collision_type(const game::Spawn& spawn, const glm::vec3& from, const glm::vec3& to,
                                     const MoveWorld& world) {
     if (!world.collision_loaded()) return 0;
