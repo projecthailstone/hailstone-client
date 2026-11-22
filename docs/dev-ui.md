@@ -68,10 +68,11 @@ Windows** every window's IDs and tabs. The menu also has the tab's scrollbar and
 the **Window** layout menu. An overflow button lists all tabs when the strip fills.
 
 Moving a tab keeps its filters, output and scroll position. Background tabs flash in their colour every half second
-for five seconds, then stay highlighted until selected. Highlighting defaults to on in red; with it off, a tab with
-unseen lines shows a dot after its label. Each tab can hide its scrollbar. Groups, names, order, selection and tab
-settings are saved per character. The native model is shared by the Modern controls,
-[`hs.UI.chat`](ui-api.md#chat-tabs-and-windows) and [`/chattabs`](commands.md).
+for five seconds, then stay highlighted until selected. The overflow button takes the highlight colour of a hidden
+tab during its highlighted phase. **Highlight New Messages** defaults to on in red. Turning it off for a tab leaves
+the strip and overflow button visually unchanged when that tab receives new messages. Each tab can hide its
+scrollbar. Groups, names, order, selection and tab settings are saved per character. The native model is shared by
+the Modern controls, [`hs.UI.chat`](ui-api.md#chat-tabs-and-windows) and [`/chattabs`](commands.md).
 
 The menu's first rows are the original's, in its order (Window, Scrollbar, New Chat Window, Rename Window, Always
 Chat Here, the tell menus, Filters, Channel, Language, Hit Modes); the tab rows, highlight settings, Font Size, Use

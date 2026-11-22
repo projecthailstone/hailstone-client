@@ -4,8 +4,10 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -14,7 +16,6 @@
 #include "lua_ui_api_mock.h"
 
 #include "app/chat_context_menu.h"
-#include "app/chat_tab_bar.h"
 #include "app/chat_tabs.h"
 #include "app/lua_ui.h"
 #include "core/game_dir.h"
@@ -398,28 +399,14 @@ TEST_CASE("Native chat tabs: a layout saved with _Dock and _Up loads its frames,
     check();
 }
 
-// With Highlight New Messages off, a background tab with unseen lines shows the dot after its label, as the Lua
-// strip did; with it on, the tab is drawn in its highlight colour instead and gets no dot.
-TEST_CASE("Chat window script: a tab that does not flash shows an unread dot") {
+TEST_CASE("Chat window script: only enabled highlights mark unread tabs") {
     namespace tabs = app::chat_tabs;
-    tabs::Tab quiet;
-    quiet.unread = true;
-    quiet.highlight = false;
-    CHECK(app::unread_dot(quiet, false));
-    CHECK_FALSE(app::unread_dot(quiet, true)); // (the tab that is up)
-    tabs::Tab flashing = quiet;
-    flashing.highlight = true;
-    CHECK_FALSE(app::unread_dot(flashing, false));
-    tabs::Tab seen = quiet;
-    seen.unread = false;
-    CHECK_FALSE(app::unread_dot(seen, false));
-
     fs::path src = ui_dir() / "modern";
-    hailstone::test::ScratchDir dir_scratch("chat_ui_unread_dot");
+    hailstone::test::ScratchDir dir_scratch("chat_ui_unread_highlight");
     fs::path dir = dir_scratch.path();
     fs::create_directories(dir / "game");
     fs::copy(src, dir / "modern", fs::copy_options::recursive);
-    ImGuiContext* ctx = ImGui::CreateContext();
+    std::unique_ptr<ImGuiContext, decltype(&ImGui::DestroyContext)> ctx(ImGui::CreateContext(), ImGui::DestroyContext);
     ImGui::GetIO().IniFilename = nullptr;
     unsigned char* px = nullptr;
     int w = 0, h = 0;
@@ -448,28 +435,42 @@ TEST_CASE("Chat window script: a tab that does not flash shows an unread dot") {
             frame(lua);
         };
         ImGui::GetIO().AddMousePosEvent(-1000, -1000);
+        bool overflow = false;
+        SUBCASE("visible tab") {}
+        SUBCASE("tab behind the overflow button") {
+            overflow = true;
+            for (int i = 1; i <= 7; ++i) REQUIRE(tabs::new_tab(1, "Extra tab " + std::to_string(i)) > 1);
+        }
         const int social = tabs::new_tab(1, "Social");
         REQUIRE(social > 1);
         REQUIRE(luaL_dostring(L, "hs.ChatSetFilter(1, 5, true)") == LUA_OK); // OOC to Social (the tab up)
         REQUIRE(tabs::select(1, 1));
         REQUIRE(tabs::set_highlight(social, false));
+        REQUIRE(tabs::set_color(social, 0x123456));
         for (int i = 0; i < 3; ++i) step();
         ImGuiWindow* chat = ImGui::FindWindowByName("###modern.Chat1");
         REQUIRE(chat);
-        const int before = chat->DrawList->VtxBuffer.Size;
+        const auto& vertices = chat->DrawList->VtxBuffer;
+        std::vector<ImU32> before;
+        std::ranges::transform(vertices, std::back_inserter(before), &ImDrawVert::col);
         view.add(ui::ChatChannel::OOC, "to the background tab");
         step();
         step();
         REQUIRE(tabs::tab(social).unread);
-        CHECK(chat->DrawList->VtxBuffer.Size > before); // the dot
-        // Flashing on: the label takes the highlight colour, and there is no dot.
+        CHECK(std::ranges::equal(vertices, before, {}, &ImDrawVert::col));
+
         REQUIRE(tabs::set_highlight(social, true));
+        view.add(ui::ChatChannel::OOC, "another background message");
         step();
         step();
-        CHECK(chat->DrawList->VtxBuffer.Size == before);
+        const auto highlighted = std::ranges::count(vertices, IM_COL32(0x12, 0x34, 0x56, 0xff), &ImDrawVert::col);
+        if (overflow) CHECK_EQ(highlighted, 3); // the overflow arrow is a single triangle
+        else CHECK_GE(highlighted, 4); // each visible glyph has four vertices
+        REQUIRE(tabs::set_highlight(social, false));
+        step();
+        CHECK(std::ranges::equal(vertices, before, {}, &ImDrawVert::col));
         CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
     }
-    ImGui::DestroyContext(ctx);
 }
 
 // CChatWindowManager::CChatWindowManager @0x654c80: another window's FontStyle outside 0..7 loads as 3 (RoF2's own
