@@ -1191,9 +1191,11 @@ void GameConnection::finish_zone_in() {
     // ProcessLocalPCIni sends the lists from the character ini after each zone-in (restore_blocked_buffs, which the
     // app calls once it has given the ini); without one, the lists this session has.
     if (!char_ini_get_) resend_blocked_buffs();
-    // CEverQuest's zone-in (before "Initialization complete."): with /hidecorpses looted on, OP_HideCorpse action 3
-    // again (the second word is a stack value in the original).
-    if (hide_looted_corpses_) send_zone(encode_hide_corpse(kHideCorpseLooted));
+    // The original repeats the looted action at zone-in. Hailstone also reapplies saved server hide modes here
+    // since the next zone starts with no corpse filter.
+    const auto corpse_mode = hide_corpse_mode();
+    if (entered && corpse_mode != game::HideCorpseMode::None && corpse_mode != game::HideCorpseMode::Always)
+        send_hide_corpse_setting();
     // Which plugins and scripts may run here, once the server's files are checked (back from character select they
     // were at the login's first zone-in).
     if (entered && (!server_rules_ || server_rules_->provisional) && (!server_files_ || server_files_->finished()))

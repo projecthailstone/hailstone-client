@@ -2548,6 +2548,9 @@ public:
     // The Options window's game options (game/client_options.h): the character's options.ini over eqclient.ini's.
     const game::ClientOptions& client_options() const { return client_options_; }
     bool client_option(game::ClientOption id) const { return client_options_.on(id); }
+    game::HideCorpseMode hide_corpse_mode() const {
+        return static_cast<game::HideCorpseMode>(client_options_.get(game::ClientOption::HideCorpses));
+    }
     // Sets an option as the Options window does: kept in options.ini, then acted on (apply_client_option: the
     // original's COptionsWnd page handlers, e.g. the anonymous flag's spawn appearance and the chat line).
     void change_client_option(game::ClientOption id, int value);
@@ -3226,10 +3229,10 @@ private:
     void shield_group_command();
     void blockspell_command(const std::string& args);
     void hidecorpses_command(const std::string& args);
+    void send_hide_corpse_setting(game::HideCorpseMode previous = game::HideCorpseMode::None);
     void decaycorpse_command();
     // The loot window closing (CLootWnd::AboutToHide @0x6bcd40) with /hidecorpses looted on.
     void hide_looted_corpse();
-    bool hide_looted_corpses_ = false; // CDisplay +0x14 (bHideLootedCorpses)
     // /targetgroupbuff and /tgb (Cmd_targetgroupbuff @0x4ea820), /spellscribe (Cmd_spellscribe @0x4f7b90),
     // /offlinemode (Cmd_offlinemode @0x4e6660).
     void target_group_buff_command(const std::string& args);

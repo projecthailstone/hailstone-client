@@ -127,7 +127,7 @@ discipline's name may leave out its rank.
 | `/offlinemode` | Offline trader or buyer mode. |
 | `/corpse`, `/corpsedrag`, `/corpsedrop` | Pull your targeted corpse to you, drag a corpse, drop it. |
 | `/decaycorpse` | Let your targeted corpse decay, after a question. |
-| `/hidecorpses [all \| allbutgroup \| looted \| npc]` | Hide corpses; another word shows them again. |
+| `/hidecorpses [none \| all \| allbutgroup \| looted \| npc \| always]` | Choose which corpses to hide. The choice is saved per character and restored when logging in or zoning. `always` includes your own corpse. `none` shows corpses again. |
 | `/setstartcity <name>` | Set your start city (the server decides). |
 | `/servertransfer` | Ask the server for its transfer list. |
 

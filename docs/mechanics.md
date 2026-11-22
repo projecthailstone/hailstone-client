@@ -1990,14 +1990,16 @@ With it, a replaced hot button also drops the old one's cool-down.
 
 #### Viewer visibility
 
-Actor drawing, nameplates, picking and target cycling share viewer visibility (`game::spawn_invisible`,
-PlayerZoneClient::IsInvisible @0x5a1850).
+Actor drawing, nameplates, picking and target cycling share viewer visibility (`GameConnection::spawn_invisible` and
+`game::spawn_invisible`, which follows PlayerZoneClient::IsInvisible @0x5a1850).
 
 - Invisibility ranks and SpawnAppearance type 3 are compared with the viewer's SPA 13 total, built from the sheet only
   while some spawn is hidden at a rank.
 - Group members are exempt. A GM target stays hidden from a non-GM viewer whose rank reaches it.
 - The player's own model is hidden only for a GM with hide mode 3001.
-- Corpses and zero-HP targets are never hidden; remote HP comes from the server's percentage.
+- Invisibility effects leave corpses and zero-HP targets visible. Remote HP comes from the server's percentage.
+- The local `/hidecorpses always` option hides every corpse, including the player's own and corpses that arrive after
+  the option is selected.
 - Any other spawn with property 100 (PlayerBase::HasProperty(0x64)) is always hidden.
 - Visibility is independent of material opacity.
 

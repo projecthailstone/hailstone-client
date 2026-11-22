@@ -1205,6 +1205,9 @@ void GameConnection::apply_client_option(game::ClientOption id, int old_value) {
     case game::ClientOption::LootNoDrop: // the combo runs /lootnodrop with its word: "New Setting: ..."
         say_lootnodrop_setting(v);
         break;
+    case O::HideCorpses:
+        send_hide_corpse_setting(static_cast<game::HideCorpseMode>(old_value));
+        break;
     case O::Anonymous:
     case O::Roleplaying:
         // +0x23c / +0x240: the flags +1 / +2 (or less), 0x2f02 / 0x2f03 or 0x33b1 / 0x33b2 (0x111), SendAnonymous
