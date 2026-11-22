@@ -1369,6 +1369,8 @@ void GameConnection::handle_zone(const AppPacket& p) {
         profile_ = decode_player_profile(p);
         if (profile_) drunkenness_ = static_cast<std::int32_t>(std::min(profile_->intoxication, 200u));
         if (profile_) {
+            // The original's profile handler (@0x57a04a) starts the rest countdown from these seconds.
+            set_rest_state(false, profile_->rest_timer, now_ms());
             sync_shroud_mode();
             fellowship_.vitality.normal = profile_->fellowship_vitality_normal;
             fellowship_.vitality.aa = profile_->fellowship_vitality_aa;

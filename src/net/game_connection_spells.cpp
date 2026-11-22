@@ -636,6 +636,12 @@ void GameConnection::stop_spell_cast(std::uint32_t spell) {
 
 // ---------------------------------------------------------------- rest state and visibility
 
+void GameConnection::set_rest_state(bool in_combat, std::uint32_t downtime, std::int64_t now) {
+    in_combat_ = in_combat;
+    rest_downtime_ = downtime;
+    rest_since_ms_ = downtime != 0 ? now : 0;
+}
+
 std::uint32_t GameConnection::rest_downtime_left() const {
     // vtable +0x84 @0x577dd0: downtime - (FastTime - start), seconds; 0 once it ran out.
     if (rest_since_ms_ == 0) return 0;
@@ -987,14 +993,12 @@ void GameConnection::handle_spell(Op op, const AppPacket& p) {
     case Op::RestState: {
         // PcClient_HandleRestState @0x578530: u8 in combat; out of combat a u32 downtime (seconds) from now.
         ByteReader r(p.data);
-        if (r.remaining() >= 1) in_combat_ = r.le<std::uint8_t>() != 0;
-        if (in_combat_) {
-            rest_downtime_ = 0;
-            rest_since_ms_ = 0;
-        } else {
-            if (r.remaining() >= 4) rest_downtime_ = r.le<std::uint32_t>();
-            rest_since_ms_ = now;
-        }
+        if (r.remaining() < 1) break;
+        const bool in_combat = r.le<std::uint8_t>() != 0;
+        if (in_combat)
+            set_rest_state(true, 0, now);
+        else if (r.remaining() >= 4)
+            set_rest_state(false, r.le<std::uint32_t>(), now);
         break;
     }
     case Op::ManaChange: {

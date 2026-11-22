@@ -593,7 +593,7 @@ One entry per file: the windows it models and what is not obvious from the [func
 
 #### `lua_ui_values.cpp`
 
-Labels and gauges by EQType (`hs.Label`, `hs.Gauge`): the combat timer (label 137 "mm:ss", gauge 29 for the last 30 s, from OP_RestState's downtime); title (74), ATK (23), combat regeneration (212..214); target of target (135); group and extended target mana and endurance (139..148, 171..210); pet buffs (86..115); blocked buffs (550..579, 650..679); aggro names and percents (302..333).
+Labels and gauges by EQType (`hs.Label`, `hs.Gauge`): the combat timer (label 137 "mm:ss", gauge 29 for the last 30 s, initialized by OP_PlayerProfile and updated by OP_RestState); title (74), ATK (23), combat regeneration (212..214); target of target (135); group and extended target mana and endurance (139..148, 171..210); pet buffs (86..115); blocked buffs (550..579, 650..679); aggro names and percents (302..333).
 
 - A second argument `true` to `hs.Label` (1, 28) or `hs.Gauge` (1, 6, 27) adds the name plate's invisibility marks to the name: Hailstone's, the original's captions are plain.
 - `hs.Gauge` and `hs.ChildGauge` return a special value's fill tint as CGaugeWnd::Draw gives it (`gauge_fill`: -2 full in dark red, -110..-10 purple, -2000..-1000 pink); the group frames use it for a member out of zone.

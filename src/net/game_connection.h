@@ -1650,8 +1650,8 @@ public:
     // reason and its +4 dword; without one the client answers with OP_ZoneChange itself.
     using TeleportHandler = std::function<void(const game::TeleportBArgs&)>;
     void set_teleport_handler(TeleportHandler h) { teleport_handler_ = std::move(h); }
-    // OP_RestState (PcClient_HandleRestState @0x578530): the combat flag (+0x31bc, vtable +0x80) and the
-    // downtime still to run (+0x31c0 / +0x31c4, vtable +0x84 @0x577dd0, seconds).
+    // OP_RestState (PcClient_HandleRestState @0x578530) tracks the combat flag (+0x31bc, vtable +0x80) and
+    // remaining downtime (+0x31c0 / +0x31c4, vtable +0x84 @0x577dd0). OP_PlayerProfile seeds the downtime.
     bool in_combat() const { return in_combat_; }
     std::uint32_t rest_downtime_left() const;
     // PcZoneClient_IsRestingForFastRegen @0x580370.
@@ -3704,6 +3704,7 @@ private:
     // CastSpell's state.
     std::function<bool(const glm::vec3&, const glm::vec3&)> line_of_sight_;
     TeleportHandler teleport_handler_;
+    void set_rest_state(bool in_combat, std::uint32_t downtime, std::int64_t now);
     bool in_combat_ = false;          // PcClient +0x31bc
     std::uint32_t rest_downtime_ = 0; // +0x31c0, seconds
     std::int64_t rest_since_ms_ = 0;  // +0x31c4 (FastTime), 0 = no countdown

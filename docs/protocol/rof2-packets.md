@@ -1610,7 +1610,7 @@ Every array is read by its own count prefix (20 bandoliers × 4 items is the one
 13. Birthday, account start, last login, minutes played, entitled, expansions; counted languages (bytes).
 14. u16 zone, u16 instance, f32 y, x, z, heading; u8, pvp, u8, gm; u32 guild, u8 rank, u32, u8, u32; u64 exp; u8.
 15. Bank coin ×4, shared platinum, … `character_id` after 663 unknown bytes; … AA exp; ….
-16. u8 show helm; u32 rest timer; counted 1024 B; 2 u32; u8.
+16. u8 show helm; u32 remaining rest cooldown in seconds; counted 1024 B; 2 u32; u8.
 
 ### Guild banners
 
