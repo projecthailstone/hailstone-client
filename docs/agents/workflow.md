@@ -139,6 +139,52 @@ the source, then flag actionable findings with a file, symbol or line,
 affected behavior and a way to confirm it. Inspect both the stock path
 and the path the change adds or fixes.
 
+## Review and fix an organization PR
+
+When a maintainer assigns a review and the PR's head is a topic branch
+in this repository, handle the review, in-scope fixes, validation and
+review decision on that PR as one task. The assignment covers editing
+and pushing those fixes to the existing branch. Use the same branch
+and PR throughout. For a read-only review, provide findings. For a fork
+or a branch outside this repository, follow its own authorization.
+
+1. **Confirm the PR and branch.** Check the GitHub repository, base, head
+   repository, head branch and latest commit. Fetch that head into an
+   isolated worktree. Read the original request and review discussion so
+   the fix stays within scope and preserves collaborators' work.
+   If the branch is already checked out elsewhere, use a detached
+   worktree at the verified head and push the resulting commit to the
+   existing remote topic branch.
+2. **Make and validate the fixes.** Edit code, tests or docs directly on
+   the PR branch. Run the relevant checks, review the combined diff and
+   push a normal commit to the existing head branch. If the branch moved
+   while you worked, inspect and incorporate the concurrent changes,
+   then revalidate the result before pushing.
+3. **Review the final head.** Verify that GitHub shows the commit you
+   tested and that the applicable checks cover it. Submit the review on
+   the existing PR. Approve it if it is ready and your account is
+   eligible. Record the fixes, validation and any remaining findings.
+   GitHub bars approval by the PR author. Repository rules may require an
+   independent reviewer for the latest push or invalidate older
+   approvals. If your account cannot supply a required approval, record
+   the result and identify the review still required.
+   [GitHub review rules](https://docs.github.com/en/pull-requests/how-tos/review-pull-requests/approving-a-pull-request-with-required-reviews)
+4. **Complete an authorized merge.** Approval records the review decision.
+   A maintainer's request to merge or land the PR authorizes the merge in
+   the same task once the tested head, required reviews and checks meet
+   the [repository Git rules](../../AGENTS.md#git-workflow). Preserve draft
+   status unless taking the PR out of draft is part of the assignment.
+   Honor branch protections and match the merge to the tested head SHA
+   when the GitHub tool supports it. If the head changes, review and
+   validate it again. When acceptance is blocked, leave the fixes on
+   the same PR and state exactly what remains pending.
+
+For example, if a maintainer asks you to review a Modern UI fix on an
+organization branch and you find the same issue in Gamepad, update both
+affected paths on the PR, verify the two packs and record your review
+against the new head. The same PR carries the original change, the
+review fixes and the acceptance evidence.
+
 ## Handoff
 
 Keep a handoff with the task or PR. Use repo-relative paths in a shared

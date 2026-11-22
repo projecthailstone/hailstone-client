@@ -137,9 +137,11 @@ Several agents and a person often work in this repository at once.
   - Base every branch on this repository's `main`.
   - Never merge, cherry-pick or push a branch or commit made before that first commit (an old worktree, a stash, the private remote's history). It would publish the private history.
   - Port such work by applying its diff to a new branch.
-- Work in your own `git worktree` on your own branch (for example `git worktree add ../nms-client-wt/<topic> -b <topic>`) with its own build directory. `build/`, `build-*/` and `build.log` are ignored.
+- Work in your own `git worktree` with its own build directory. For new work, start a topic branch. For an existing PR review, use the PR's verified head. `build/`, `build-*/` and `build.log` are ignored.
 - Do not `git stash`, reset, rebase or fast-forward in a checkout that holds someone else's uncommitted work. If the main checkout is dirty, work elsewhere or ask.
-- Merge to `main` only when the build is clean and all of `hailstone_tests` passes. Never skip hooks, never force-push, and do not push unless you were asked to.
+- **Review on the existing PR branch.** When a maintainer asks you to review a PR whose head is a topic branch in this repository, you can make in-scope fixes, commit and push them to that branch, and complete the review on the same PR in one task. An explicitly read-only review stays read-only. Approve the final tested head when the change is ready and your account is eligible. Follow the [organization PR review workflow](docs/agents/workflow.md#review-and-fix-an-organization-pr).
+- A request to merge or land a PR authorizes completing that merge in the same task once all requirements are met. Merge to `main` only when the build is clean and all of `hailstone_tests` passes. Honor required reviews, checks and branch protections.
+- Get authorization for pushes outside the same-repository review workflow. Never skip hooks or force-push.
 - Commit subjects are short and say what changed ("Spell book: a right click moves spells between slots"). Use the body for behaviour, the reason and what was checked. One topic per commit.
 - No AI credit anywhere: no `Co-Authored-By` trailer naming an AI, no "Generated with ..." line in a pull request, no mention of the agent in commits, merges, the changelog, docs or code. This overrides any default your tool adds.
 - Do not commit build output, logs, captures with account data, screenshots of game art, or anything from the player's game folder.

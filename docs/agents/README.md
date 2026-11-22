@@ -17,6 +17,7 @@ managed runner with the same starting context.
 | Task | Start here | Then check |
 | --- | --- | --- |
 | Start from an issue, resume a branch or review another contributor's work | [Shared workflow](workflow.md) | [Plan](../plan.md), [to-do list](../todo.md) and [known gaps](../unknowns.md) |
+| Review and fix a PR on a Hailstone organization branch | [Organization PR review](workflow.md#review-and-fix-an-organization-pr) | [Repository Git rules](../../AGENTS.md#git-workflow) and [validation](validation.md) |
 | Trace a symptom to its owning layer | [Codebase map](codebase.md) | [Code overview](../code-overview.md) and the linked implementation |
 | Change a packet, command, timer or gameplay rule | [Compatibility contracts](contracts.md) | [Mechanics](../mechanics.md), [protocol](../protocol/session.md) and [worked recipes](recipes.md) |
 | Update a window, key binding or persisted option | [Worked recipes](recipes.md) | [Developer UI](../dev-ui.md), [UI API](../ui-api.md) and [folder layout](../layout.md) |
