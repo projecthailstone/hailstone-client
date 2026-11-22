@@ -278,7 +278,7 @@ Each entry names the window and what is particular to it; the `hs.*` calls behin
 
 - **TargetWindow**: con colour, health, target's target, the aggro meter (AggroMeterWnd's gauge 149 and labels 302..307; `aggro.lua` keeps the game's window hidden, and the EQ menu has no Aggro Meter row), and buffs with Spell Info on a right click.
 
-- **GroupWindow**: member cards and the invite / disband / accept / decline buttons. Solo it shows only with an invitation or a player to invite.
+- **GroupWindow** has member cards and the invite, disband, accept and decline buttons. A left click on `Gauge<n>` selects the member. A left click on `PetGauge<n>`, used by the Modern card's green pet bar, selects their pet. Solo the window shows only with an invitation or a player to invite.
 
 - **BuffWindow** and **ShortDurationBuffWindow**: icon trays (packed unless **Show empty slots** is on), the last ten seconds pulse. Right click: Spell Info, Add to Blocked Buffs, Remove.
   - Icons fill each row from right to left. Alt-right-click an icon for the tray's layout menu. **Show empty slots** reserves space for gaps up to the last occupied slot; **Show slot numbers in tooltips** adds the slot number after the spell name, counted from 1 in each tray. Both are off by default and saved per tray and character (`hud.showEmptySlots.<window>`, `hud.showSlotNumbers.<window>`; `lib/bufftray.lua`).

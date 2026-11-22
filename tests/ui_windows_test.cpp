@@ -231,6 +231,8 @@ TEST_CASE("Group window targets a member or their nearest player corpse") {
 
     REQUIRE(t.api->click_child("GroupWindow", "HPLabel1", "left"));
     CHECK(world.target_id == 11);
+    REQUIRE(t.api->click_child("GroupWindow", "HPLabel1", "left"));
+    CHECK(t.conn.group_member_targeted() == 2);
 
     world.spawns.erase(11);
     REQUIRE(t.api->click_child("GroupWindow", "Gauge1", "left"));
@@ -850,6 +852,81 @@ constexpr const char* kTextRectHook = R"lua(
 )lua";
 
 } // namespace
+
+TEST_CASE("Modern Group: clicking the pet bar targets the pet and clicking the owner bar targets the member") {
+    RolePackRig r("modern", {"group.lua"});
+    r.group("Leader");
+    auto& conn = r.t.conn;
+    net::GameConnectionTestAccess::state(conn) = net::ConnectionState::InZone;
+    r.t.api->show("GroupWindow", true);
+
+    net::Spawn member;
+    member.name = "Member";
+    member.spawn_id = 20;
+    member.race = 1;
+    member.hp_percent = 100;
+    member.targetable = member.targetable_with_hotkey = true;
+    conn.receive_zone_packet_for_test(net::encode(member));
+
+    net::Spawn pet = member;
+    pet.name = "FixturePet";
+    pet.spawn_id = 21;
+    pet.npc = 1;
+    pet.is_pet = true;
+    pet.pet_owner_id = member.spawn_id;
+    pet.hp_percent = 50;
+    conn.receive_zone_packet_for_test(net::encode(pet));
+
+    // Read the screen positions from the real bars without replacing their rendering or input.
+    REQUIRE(r.run(R"lua(
+      groupBarCenters = {}
+      local load = dofile
+      dofile = function(path)
+        local module = load(path)
+        if path == 'lib/hud.lua' then
+          local draw = module.T.Bar
+          module.T.Bar = function(id, x0, y0, x1, y1, ...)
+            groupBarCenters[id] = {(x0 + x1) / 2, (y0 + y1) / 2}
+            return draw(id, x0, y0, x1, y1, ...)
+          end
+        end
+        return module
+      end
+      return true
+    )lua") == "true");
+    r.frames(3);
+
+    const auto click_bar = [&](const char* id) {
+        lua_State* state = r.lua->state();
+        lua_getglobal(state, "groupBarCenters");
+        lua_getfield(state, -1, id);
+        REQUIRE(lua_istable(state, -1));
+        lua_rawgeti(state, -1, 1);
+        const auto x = static_cast<float>(lua_tonumber(state, -1));
+        lua_pop(state, 1);
+        lua_rawgeti(state, -1, 2);
+        const auto y = static_cast<float>(lua_tonumber(state, -1));
+        lua_pop(state, 3);
+
+        auto& io = ImGui::GetIO();
+        io.AddMousePosEvent(x, y);
+        r.frames(2);
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+        r.frames(1);
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+        r.frames(1);
+    };
+
+    REQUIRE(conn.world().target_id == 0);
+    click_bar("group.pet1");
+    CHECK(conn.world().target_id == pet.spawn_id);
+    click_bar("group.pet1");
+    CHECK(conn.world().target_id == pet.spawn_id);
+    click_bar("group.hp1");
+    CHECK(conn.world().target_id == member.spawn_id);
+    click_bar("group.hp1");
+    CHECK(conn.world().target_id == member.spawn_id);
+}
 
 TEST_CASE("Modern Player: Always show cast bar keeps the cast row and frame height between casts") {
     RolePackRig r("modern", {"player.lua"});

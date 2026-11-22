@@ -602,12 +602,12 @@ public:
     // Sets the target and tells the server (OP_TargetMouse, as the original
     // does on every target change); 0 clears it.
     void set_target(std::uint32_t spawn_id);
-    // LocalPlayer_TargetSelfOrPet (F1 = 0, F2..F6 = 1..5, the group window's
-    // rows): targets group member n, the n-th occupied slot, and selects it
-    // (game/group_rules.h). The selection /disband reads is
-    // group_member_targeted(): that ordinal, or, once the target changes, the
-    // new target's slot index (CTargetWnd::OnProcessFrame), -1 none.
-    void target_group_member(std::int32_t n, bool target_of_target = false);
+    enum class GroupTargetMode { CyclePet, MemberOnly };
+    // F1 = self, F2..F6 = the group's other rows. The keys select the pet when the owner is already
+    // targeted. A click on the member's row selects the member. The selection /disband reads is
+    // the corresponding roster slot (CTargetWnd::OnProcessFrame), -1 none.
+    void target_group_member(std::int32_t n, GroupTargetMode mode = GroupTargetMode::CyclePet);
+    const game::Spawn* group_member_pet(const game::GroupMember& member) const;
     std::int32_t group_member_targeted() const { return group_member_targeted_; }
     // The target's target (OP_TargetHoTT; PlayerZoneClient::TargetOfTarget), 0 none.
     std::uint32_t target_of_target() const { return target_of_target_; }

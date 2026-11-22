@@ -1704,10 +1704,15 @@ behaviour (`LockedActiveWindow=-1`, kept). The original has no locked window unt
 
 ## Group targeting
 
-Clicking a member's name in the Modern or Gamepad Group window or pressing F2–F6 targets their living spawn. If the
-client has no living spawn for that member, Hailstone falls back to the nearest player corpse with that member's
-name in the current zone. Mounts and NPC corpses are skipped. A member who has already returned to the zone is
-targeted even if their corpse is still there.
+F1 targets yourself and F2–F6 target the corresponding group member. When that player is already targeted, the
+same key targets their pet, if one is available. The next press returns to the owner. This follows RoF2's
+ExecuteCmd self and party cases (0x4d8000 and 0x4d80c0). Hailstone resolves the pet from its current owner ID,
+which also tracks charm changes. Temporary pets, mercenaries, mounts and corpses are skipped.
+
+Clicking a member's name in the Modern or Gamepad Group window selects the member. Click the green pet bar in
+Modern to select the pet directly. If the client has no living spawn for the member, the member click and group
+key fall back to the nearest player corpse with that member's name in the current zone. A member who has already
+returned to the zone is targeted even if their corpse is still there.
 
 ## Group roles
 

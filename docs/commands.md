@@ -326,8 +326,8 @@ the number pad moves you and **D** ducks.
 
 | Action | Key | Second key |
 |---|---|---|
-| Target yourself | F1 | |
-| Target group member 1..5 | F2..F6 | |
+| Target yourself, then your pet | F1 | |
+| Target group member 1..5, then their pet | F2..F6 | |
 | Target nearest player | F7 | |
 | Target nearest NPC | Tab | F8 |
 | Consider | C | |
