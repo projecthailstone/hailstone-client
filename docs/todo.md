@@ -332,6 +332,7 @@ Server-dependent systems stock EQEmu never sends keep their live checks open pas
 - [x] **World tradeskill station distance closure** in recipe, Experiment and hidden modes, with out-of-reach and busy replies and world-only quantity/mold/batch cleanup. Carried tradeskill bags stay when only the station closes.
 - [x] **The service windows' ranges and timers checked against the original** (docs/mechanics.md "Leaving an NPC interaction"). Open: the mercenary liaison's check cadence (docs/unknowns.md) and walking away from each service live.
 - [x] **Trades with players cancel out of range:** beyond the partner's avatar height + 20, on the same 500 ms check as hand-ins; outstanding items and coin return through the server. Checked: CTradeWnd::OnProcessFrame @0x780b50.
+- [x] **Trades with players: answers nobody asked for are cancelled** (EQEmu re-points the trade to whoever answers; docs/mechanics.md). Mock-server tests only.
 - [ ] **Trades with players: the merchant page-handler-2 exception** (docs/mechanics.md "Leaving an NPC interaction"). Live separation checked 2026-11-18: walking or teleporting out of reach cancels, items and coin intact.
 - [x] Partial-stack looting asks the quantity (EQEmu ignores it); Link All; the loot music (entry 5 has no asset).
 - [x] **Loot All keeps an active queue on repeated activation.** An individual request in flight does not block it; it keeps the first NO DROP question when a later confirmation aborts the queue (docs/mechanics.md "Loot All").

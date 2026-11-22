@@ -1023,6 +1023,24 @@ walking away closes silently, being teleported away usually shows the line. Both
 
 Hiding the trade or Give window cancels the trade it shows (CTradeWnd::AboutToHide); hiding the other leaves it alone.
 
+#### Trade answers nobody asked for (Hailstone)
+
+Stock EQEmu starts a trade on both sides whenever a player answers a trade request (Handle_OP_TradeRequestAck), even
+when the requester never asked them or is trading with someone else. The restart keeps what is in the requester's
+trade slots for the new partner and drops the coin offered, so a late or forged answer could send the items to the
+wrong player. Hailstone departs from the original here (`GameConnection::handle_commerce`):
+
+- While its own request waits for an answer, a request from someone else is refused as busy (TradeBusy reason 1, 1447).
+  The original's IsOkToTransact does not count a waiting request.
+- Only the answer to its own waiting request opens a trade. Any other answer gets OP_CancelTrade {sender, me}, so the
+  server returns the trade slots' items; when busy, the sender also gets the original's busy tell and 1447 is said. An
+  open trade window closes with it, since the server no longer holds that trade. A request of ours to someone else
+  keeps waiting. The original takes any answer while IsOkToTransact holds.
+
+Coin already in the trade when such an answer arrives is lost on the server; the client cannot get it back.
+The partner's ready flag (OP_TradeAcceptClick) cannot be checked: EQEmu forwards the sender's packet, which carries
+the receiver's own id.
+
 #### Late replies, the bank and sessions
 
 A late open reply cannot show a window out of reach: the tribute master's (CTributeMasterWnd::AboutToShow @0x7878b0)

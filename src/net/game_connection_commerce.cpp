@@ -677,7 +677,11 @@ void GameConnection::handle_commerce(Op op, const AppPacket& p) {
             in.pc = profile_.has_value();
             in.group = group_.active;
             in.requester_in_group = group_.has_member(game::display_name(name)) || group_.has_member(name);
-            in.ok_to_transact = ok_to_transact();
+            // Hailstone: our own request still waiting for its answer refuses as busy (reason 1). The original's
+            // IsOkToTransact does not count it, but EQEmu's Handle_OP_TradeRequestAck restarts the requester's
+            // trade with whoever answers, so the late answer would take over the trade opened here.
+            const bool own_request_pending = trade_ && !trade_->open;
+            in.ok_to_transact = ok_to_transact() && !own_request_pending;
             in.attacking = auto_attack_;
             game::TradeRequestResult res = game::handle_trade_request(in);
             if (res.refusal) {
@@ -702,10 +706,31 @@ void GameConnection::handle_commerce(Op op, const AppPacket& p) {
         if (auto r = decode_trade_request(p)) {
             auto it = world_.spawns.find(r->from_id);
             if (it == world_.spawns.end()) break;
-            if (!trade_ || trade_->partner_id != r->from_id) break;
-            if (!ok_to_transact()) {
-                log::info("trade: the answer from {} came while busy", it->second.name);
-                std::string partner = it->second.name;
+            // Hailstone: an answer that is not to our own waiting request is refused. EQEmu's
+            // Handle_OP_TradeRequestAck starts the trade on our side with whoever answers, without checking that we
+            // asked them or that we are trading with someone else; the trade restart keeps what is in our trade slots
+            // for the new partner and drops the coin. The cancel below has the server return the items and end its
+            // trade; an open window, whose server trade is gone, closes with it. (The original takes any answer
+            // while IsOkToTransact holds.)
+            const bool answers_ours = trade_ && !trade_->open && trade_->partner_id == r->from_id;
+            const bool busy = !ok_to_transact();
+            if (answers_ours && !busy) {
+                trade_->requested = false;
+                trade_->open = true;
+                if (inventory_.cursor()) trade_drop_cursor();
+                break;
+            }
+            std::string partner = it->second.name;
+            if (!answers_ours) {
+                if (trade_ && trade_->open)
+                    log::warn("trade: an answer from {} that was not asked for ended the trade with {}; cancelling",
+                              partner, trade_->partner_name);
+                else
+                    log::warn("trade: an answer from {} that was not asked for; cancelling", partner);
+            } else {
+                log::info("trade: the answer from {} came while busy", partner);
+            }
+            if (busy) {
                 if (!it->second.is_npc) {
                     ChannelMessage m;
                     m.sender = character_;
@@ -717,13 +742,11 @@ void GameConnection::handle_commerce(Op op, const AppPacket& p) {
                     send_zone(encode(m));
                 }
                 system(game::kStrTradeRefused, {game::display_name(partner)}, 0x111);
-                send_zone(encode(CancelTrade{r->from_id, world_.player_id}));
-                trade_.reset();
-                break;
             }
-            trade_->requested = false;
-            trade_->open = true;
-            if (inventory_.cursor()) trade_drop_cursor();
+            send_zone(encode(CancelTrade{r->from_id, world_.player_id}));
+            // Our own answered request had nothing offered yet; a request of ours to someone else stays waiting.
+            if (answers_ours) trade_.reset();
+            else if (trade_ && trade_->open) close_trade(false);
         }
         break;
     case Op::TradeAcceptClick:

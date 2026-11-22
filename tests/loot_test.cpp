@@ -713,3 +713,116 @@ TEST_CASE("trade: an answer that comes while busy cancels the trade (Handle_OP_T
     CHECK(MockEqServer::count(rig.server.zone_log, Op::ChannelMessage) >= 1);
     CHECK_FALSE(conn.trade().has_value());
 }
+
+namespace {
+void add_pc(GameConnection& conn, std::uint32_t id, const std::string& name) {
+    auto& w = conn.world_for_test();
+    const game::Spawn* me = w.player();
+    REQUIRE(me);
+    game::Spawn pc;
+    pc.id = id;
+    pc.name = name;
+    pc.position = me->position + glm::vec3(3.0f, 0.0f, 0.0f);
+    pc.heights.avatar_height = 6.0f;
+    w.spawns[pc.id] = pc;
+}
+
+std::vector<CancelTrade> cancels_sent(const Rig& rig) {
+    std::vector<CancelTrade> out;
+    for (const auto& p : rig.server.zone_log)
+        if (is_op(p, Op::CancelTrade))
+            if (auto c = decode_cancel_trade(p)) out.push_back(*c);
+    return out;
+}
+} // namespace
+
+// Hailstone: EQEmu's Handle_OP_TradeRequestAck restarts the requester's trade with whoever answers, so an answer that
+// is not to our own waiting request is refused, and no request is taken while ours waits.
+
+TEST_CASE("trade: a request that comes while our own waits for its answer is refused as busy") {
+    Rig rig(MockConfig::standard());
+    auto& conn = rig.conn;
+    REQUIRE(rig.to_zone());
+    add_pc(conn, 4100, "Partner");
+    add_pc(conn, 4101, "Other");
+    conn.destroy_cursor();
+    conn.set_auto_attack(false);
+    conn.give_to(4100);
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::TradeRequest) == 1; }));
+    const std::uint32_t me = conn.world().player_id;
+    conn.receive_zone_packet_for_test(encode_trade_request({me, 4101}));
+    REQUIRE(rig.until([&] { return MockEqServer::count(rig.server.zone_log, Op::TradeBusy) == 1; }));
+    std::optional<TradeBusy> busy;
+    for (const auto& p : rig.server.zone_log)
+        if (is_op(p, Op::TradeBusy)) busy = decode_trade_busy(p);
+    REQUIRE(busy);
+    CHECK(busy->to_id == 4101);
+    CHECK(busy->from_id == me);
+    CHECK(busy->type == 1);
+    CHECK(MockEqServer::count(rig.server.zone_log, Op::TradeRequestAck) == 0);
+    // Our request still waits, and its answer opens the trade.
+    REQUIRE(conn.trade().has_value());
+    CHECK(conn.trade()->partner_id == 4100);
+    CHECK_FALSE(conn.trade()->open);
+    conn.receive_zone_packet_for_test(encode_trade_request_ack({me, 4100}));
+    REQUIRE(conn.trade().has_value());
+    CHECK(conn.trade()->open);
+}
+
+TEST_CASE("trade: an answer from someone else during a trade cancels it and closes the window") {
+    Rig rig(MockConfig::standard());
+    auto& conn = rig.conn;
+    REQUIRE(rig.to_zone());
+    add_pc(conn, 4100, "Partner");
+    add_pc(conn, 4101, "Other");
+    conn.destroy_cursor();
+    conn.give_to(4100);
+    const std::uint32_t me = conn.world().player_id;
+    conn.receive_zone_packet_for_test(encode_trade_request_ack({me, 4100}));
+    REQUIRE(conn.trade().has_value());
+    REQUIRE(conn.trade()->open);
+    // The server has moved our trade to Other: cancel it there and close the window, whose server trade is gone.
+    conn.receive_zone_packet_for_test(encode_trade_request_ack({me, 4101}));
+    REQUIRE(rig.until([&] { return cancels_sent(rig).size() == 1; }));
+    auto cancels = cancels_sent(rig);
+    CHECK(cancels[0].from_id == 4101);
+    CHECK(cancels[0].action == me);
+    CHECK_FALSE(conn.trade().has_value());
+    // The open window made the client busy: Other gets the original's busy tell.
+    CHECK(MockEqServer::count(rig.server.zone_log, Op::ChannelMessage) >= 1);
+}
+
+TEST_CASE("trade: an answer nobody asked for opens nothing and is cancelled") {
+    Rig rig(MockConfig::standard());
+    auto& conn = rig.conn;
+    REQUIRE(rig.to_zone());
+    add_pc(conn, 4101, "Other");
+    const std::uint32_t me = conn.world().player_id;
+    conn.receive_zone_packet_for_test(encode_trade_request_ack({me, 4101}));
+    REQUIRE(rig.until([&] { return cancels_sent(rig).size() == 1; }));
+    CHECK(cancels_sent(rig)[0].from_id == 4101);
+    CHECK_FALSE(conn.trade().has_value());
+    rig.run_for(std::chrono::milliseconds(30));
+    CHECK(MockEqServer::count(rig.server.zone_log, Op::ChannelMessage) == 0); // not busy: no tell
+}
+
+TEST_CASE("trade: an answer from someone else while ours waits is cancelled and ours still opens") {
+    Rig rig(MockConfig::standard());
+    auto& conn = rig.conn;
+    REQUIRE(rig.to_zone());
+    add_pc(conn, 4100, "Partner");
+    add_pc(conn, 4101, "Other");
+    conn.destroy_cursor();
+    conn.give_to(4100);
+    const std::uint32_t me = conn.world().player_id;
+    conn.receive_zone_packet_for_test(encode_trade_request_ack({me, 4101}));
+    REQUIRE(rig.until([&] { return cancels_sent(rig).size() == 1; }));
+    CHECK(cancels_sent(rig)[0].from_id == 4101);
+    REQUIRE(conn.trade().has_value());
+    CHECK(conn.trade()->partner_id == 4100);
+    CHECK_FALSE(conn.trade()->open);
+    conn.receive_zone_packet_for_test(encode_trade_request_ack({me, 4100}));
+    REQUIRE(conn.trade().has_value());
+    CHECK(conn.trade()->open);
+    CHECK(cancels_sent(rig).size() == 1);
+}

@@ -412,6 +412,14 @@ The experimental texture broker (docs/graphics.md "Shared GPU textures", docs/re
     window no longer cancels an NPC hand-in.)
   - Settle: the log says which close it was (`trade with <name>: cancelled, ...`, `trade: the give window was closed`);
     the next occurrence settles it.
+- **Trade answers nobody asked for** (docs/mechanics.md "Trade answers nobody asked for"). Hailstone cancels a
+  TradeRequestAck that does not answer its own waiting request, closes an open trade with it, and refuses requests while
+  its own waits. A deliberate change from the original, against EQEmu re-pointing the trade.
+  - Not checked against the original's code: only the existing notes on Handle_OP_TradeRequestAck @0x4c2070 (IsOkToTransact,
+    then Activate or the busy reply). Whether it also compares the answer with the window's partner is not known.
+  - Not seen live; mock-server tests only.
+  - Settle: the analysis of 0x4c2070 and CTradeWnd::Activate for a partner change; a live two-client run with a third
+    player's request crossing a pending one.
 - **Which zone version the server runs.**
   - RoF2's zone-in packets do not say. With a live asset folder and no `.s3d`, the revamped `.eqg` of bazaar,
     highpasshold or lavastorm loads only when OP_NewZone's safe point stands on its floor (at most 10 units above it;
