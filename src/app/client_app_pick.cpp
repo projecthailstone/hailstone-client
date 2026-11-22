@@ -20,7 +20,7 @@ bool ClientApp::plate_input_blocked(bool ignore_right_button) const {
     return !ui_.visible() || !window_.focused() || !conn_ || screen_ != Screen::InGame || !player_ready_ || zone_settling() ||
            conn_->state() != net::ConnectionState::InZone || conn_->interface_locked() || conn_->player_down() ||
            conn_->player_status().stand_state == net::kStandFreeze || conn_->placement().active() ||
-           conn_->inventory().cursor() || ui_host_.cursor_button || ui_host_.cursor_spell ||
+           conn_->inventory().cursor() || conn_->held_coin() || ui_host_.cursor_button || ui_host_.cursor_spell ||
            ui_.wants_mouse() || mouse_look_.active || (!ignore_right_button && window_.input().right_button) ||
            ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
 }
@@ -543,7 +543,7 @@ void ClientApp::left_click_spawn(std::uint32_t id) {
     // PcClient_IsGuildmasterForMyClass: the spawn's class minus 19 is the player's.
     const game::Spawn* me = world.player();
     in.spawn.guildmaster_for_my_class = me && static_cast<int>(s.class_id) - 19 == static_cast<int>(me->class_id);
-    in.cursor_holds_something = conn_->inventory().cursor() != nullptr;
+    in.cursor_holds_something = conn_->inventory().cursor() || conn_->held_coin();
     game::LeftClickResult r = game::left_clicked_on_player(in, game::guildmaster_string_id(s.class_id));
     if (!r.handled) return;
     if (r.save_old_target) target_manager_.previous = old; // CTargetManager +0x168

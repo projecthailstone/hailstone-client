@@ -1943,6 +1943,7 @@ public:
     void give_to(std::uint32_t spawn_id);
     // CTradeWnd::DropItemIntoTrade: the cursor item into the first free trade slot.
     void trade_drop_cursor();
+    void trade_drop_cursor_coin();
     // Puts coin of one type (0 copper .. 3 platinum) into the trade (through the cursor, as the original).
     void trade_coin(int type, std::uint32_t amount);
     // The Trade / Give button (OP_TradeAcceptClick) and Cancel.
@@ -1973,6 +1974,7 @@ public:
     const game::BankCoins& bank_coins() const { return bank_coins_; }
     // Coin on the cursor by wire type (0 copper .. 3 platinum).
     const std::array<std::uint32_t, 4>& cursor_coins() const { return cursor_coins_; }
+    std::optional<std::pair<int, std::uint32_t>> held_coin() const;
     // CEverQuest::MoveMoney: moves coin between locations (kCoinCursor,
     // kCoinInventory, kCoinBank, kCoinSharedBank) with the original's
     // conversion, updates the local piles and sends OP_MoveCoin. Returns

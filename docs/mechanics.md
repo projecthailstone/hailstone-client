@@ -783,6 +783,12 @@ player. Auto-inventory equips only what passes it.
 `clicked_money_button`: cursor coin goes into the inventory as the button's coin; else a known amount comes onto the
 cursor, or the quantity dialog opens with all of that coin.
 
+To start a coin-only trade, pick up coin and click the other player. The coin stays on the cursor while the
+request is pending. Once the server acknowledges the trade, the held coin moves directly into the offer.
+Clicking a money button in an open trade also offers the held coin. Adding coin clears both players' acceptance,
+and the server sends the final balances on completion or cancellation.
+Large same-denomination moves may use two packets so the server can represent the full amount exactly.
+
 On the merchant's Parcels page (0x698290, `GameConnection::parcel_coin_button`) the button is first outlined (+0x259,
 0x6909a0) and the merchant's item and row are cleared (0x6f2120); any later SelectSlot clears the outline. The
 original puts the answer on the cursor for its SendMoneyWnd. Hailstone (a deliberate difference: no SendMoneyWnd)

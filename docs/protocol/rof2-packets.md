@@ -387,8 +387,8 @@ Only OP_ShopPlayerBuy/Sell (field copies) and OP_CancelTrade have a RoF2 transla
 
 1. ShopRequest stock: item packets type 0x64 (header slot type 9, slot = instance id = merchant slot, price = per-unit copper, merchant_slot = stock, -1 unlimited).
 2. ShopPlayerBuy reply: the item arrives first as an item packet type 0x67. There is **no** OP_MoneyUpdate: the client takes the price itself (smallest coins first; the split may differ from the server's, the total agrees) and prints 1437 "You give%1 to %2." in the Merchants colour 0x114. Wave 0x8a (the cash register) plays only when the purse could pay; otherwise the coin is zeroed silently (FinishBuyingItem @0x6ef220, also a trader purchase, TraderShop 10 method 0).
-3. TradeRequest C→Z is sent on a left click on a spawn while holding an item (within AvatarHeight + 20, 12294). Banker-type classes 40/63/64/66/74 refuse (8505). Z→C (a player asks): the client opens its trade window at once and answers the Ack.
-4. TradeRequestAck: for an NPC the server answers itself ({me, NPC}); the cursor item then goes into the trade (OP_MoveItem cursor → {3, slot}, count 0; a stack merges first) and the 4-slot give window opens. Players get the 8-slot trade window.
+3. TradeRequest C→Z is sent on a left click on a spawn while holding an item or coin (within AvatarHeight + 20, 12294). Banker-type classes 40/63/64/66/74 refuse (8505). Z→C (a player asks): the client opens its trade window and replies with the Ack if it can trade.
+4. TradeRequestAck: for an NPC the server answers itself ({me, NPC}). After the Ack for a pending request, the client opens the window and moves the held item (OP_MoveItem cursor → {3, slot}, count 0; a stack merges first) or coin (OP_MoveCoin cursor → trade) into the offer. NPCs get four slots and players get eight.
 5. CancelTrade: the client prints 1448/1450 and sends its own cancel back while a partner is set. Refunds come as item packets and OP_MoneyUpdate, then OP_FinishWindow/2 (empty).
 6. Say links: EQEmu say links are item links to item 0xF423F with the phrase id in augment 1 (augment 2 for silent links).
 
