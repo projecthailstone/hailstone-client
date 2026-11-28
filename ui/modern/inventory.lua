@@ -10,6 +10,7 @@ local hud = dofile("lib/hud.lua")
 local items = dofile("lib/items.lua")
 local tools = dofile("lib/itemtools.lua")
 local band = dofile("lib/bandolier.lua")
+local icons = dofile("lib/menuicons.lua")
 local T = hud.T
 local C = T.color
 local WINDOW = "InventoryWindow"
@@ -43,6 +44,7 @@ local H = HEADER_H + TABS_H + BODY_H + FOOT_H
 local bodyW, bodyH = W, BODY_H
 
 local page = "character" -- character, stats, bandolier, currency
+local FACE_PICK = { tooltip = "Change Appearance" }
 -- the game's tab box pages (it fills some only while shown); the Bandolier page is Hailstone's, the game's Character
 -- page stays up behind it
 local GAME_PAGE = { character = 0, stats = 1, bandolier = 0, currency = 4 }
@@ -447,19 +449,27 @@ local function body(x, y, w, h, s)
   bodyH = math.max(BODY_H, ah / s - HEADER_H - TABS_H - FOOT_H - footExtra())
   w = bodyW * s
   -- header: name, level, class, deity
+  local bw = 150 * s
+  local bx = x + w - bw
+  local faceSize = 28 * s
+  local faceX, faceY = bx - faceSize - 12 * s, y + 8 * s
+  local nameW = faceX - x - 8 * s
   local name = label(1)
   local last = label(73)
-  T.Text(x, y, name .. (last ~= "" and (" " .. last) or ""), C.text, T.font.large)
+  if last ~= "" then name = name .. " " .. last end
+  T.Text(x, y, T.Fit(name, nameW, T.font.large), C.text, T.font.large)
   local lvl, cls, deity = label(2), label(3):gsub("%s*\n%s*", " / "), label(4)
   local _, th = T.TextSize("Ag", T.font.large)
   local sub = "Level " .. lvl .. "  \xC2\xB7  " .. cls .. (deity ~= "" and ("  \xC2\xB7  " .. deity) or "")
   local shroud = API.windows.Text(WINDOW, "ShroudModeLabel") or ""
   if shroud ~= "" then sub = sub .. "  ·  " .. shroud end
-  T.Text(x, y + th + 2 * s, sub, C.muted, T.font.small)
+  T.Text(x, y + th + 2 * s, T.Fit(sub, nameW, T.font.small), C.muted, T.font.small)
+  if T.Button("##IW_FacePick", faceX, faceY, faceX + faceSize, faceY + faceSize, s, nil, FACE_PICK) then
+    API.windows.ClickChild(WINDOW, "IW_FacePick", "left")
+  end
+  icons.Draw(FACE_PICK.tooltip, faceX + faceSize / 2, faceY + faceSize / 2, 16 * s, C.text)
   -- experience at the right of the header
   local xp, aa = API.character.Gauge(4) or 0, API.character.Gauge(5) or 0
-  local bw = 150 * s
-  local bx = x + w - bw
   T.Text(bx, y + 2 * s, "XP", C.muted, T.font.tiny)
   T.Text(bx + bw, y + 2 * s, string.format("%.1f%%", xp * 100), C.text, T.font.tiny, "right")
   T.Bar("inv.xp", bx, y + 18 * s, bx + bw, y + 23 * s, s, xp, C.xp, NO_TRAIL)

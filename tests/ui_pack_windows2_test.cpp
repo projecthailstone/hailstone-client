@@ -998,6 +998,78 @@ TEST_CASE("UI packs (modern): the spell book's Memorize replaces the spell of a 
     }
 }
 
+TEST_CASE("UI packs: the inventory appearance control opens Set Appearance") {
+    for (const std::string_view pack : {"modern", "gamepad"}) {
+        INFO(pack);
+        const bool gamepad = pack == "gamepad";
+        hailstone::test::ScratchDir scratch("ui_pack_inventory_appearance");
+        const auto dir = scratch.path();
+        const auto source = fs::path(__FILE__).parent_path().parent_path() / "ui";
+        fs::create_directories(dir / "game");
+        fs::copy(source / pack, dir / pack, fs::copy_options::recursive);
+        std::ofstream(dir / "UI_Test_Server.ini") << "[Tips]\nShowTips=0\nShowTOTD=0\n";
+
+        ImGuiContext* ctx = ImGui::CreateContext();
+        auto& io = ImGui::GetIO();
+        io.IniFilename = nullptr;
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+        io.BackendFlags |= ImGuiBackendFlags_HasGamepad | ImGuiBackendFlags_RendererHasTextures;
+        {
+            hailstone::test::Rig rig;
+            REQUIRE(rig.to_zone());
+            Session s(dir, std::string(pack));
+            s.host.conn = &rig.conn;
+            auto* L = s.lua.state();
+            REQUIRE(luaL_dostring(L, R"lua(
+local invisible = ui.InvisibleButton
+ui.InvisibleButton = function(id, ...)
+  local clicked = invisible(id, ...)
+  if id == "##IW_FacePick" or id == "##facepick" then
+    local x0, y0, x1, y1 = ui.GetItemRect()
+    appearanceButton = {ui.GetItemID(), (x0 + x1) / 2, (y0 + y1) / 2}
+  end
+  return clicked
+end
+)lua") == LUA_OK);
+            s.api.show("TipWindow", false);
+            s.api.show("InventoryWindow", true);
+            s.frames(30); // past the gamepad's settling time after inventory takes focus
+            CHECK_FALSE(s.api.shown("PlayerCustomizationWnd"));
+            REQUIRE(luaL_dostring(L, "return table.unpack(assert(appearanceButton))") == LUA_OK);
+            const auto button_id = static_cast<ImGuiID>(lua_tointeger(L, -3));
+            const auto x = static_cast<float>(lua_tonumber(L, -2));
+            const auto y = static_cast<float>(lua_tonumber(L, -1));
+            lua_settop(L, 0);
+            REQUIRE(button_id != 0);
+
+            if (gamepad) {
+                auto* inventory = ImGui::FindWindowByName("Inventory");
+                REQUIRE(inventory);
+                ImGui::FocusWindow(inventory);
+                ImGui::SetFocusID(button_id, inventory);
+                ImGui::SetNavCursorVisible(true);
+                s.frames(1);
+                io.AddKeyEvent(ImGuiKey_GamepadFaceDown, true);
+                s.frames(1);
+                io.AddKeyEvent(ImGuiKey_GamepadFaceDown, false);
+            } else {
+                io.AddMousePosEvent(x, y);
+                s.frames(1);
+                io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+                s.frames(1);
+                io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+            }
+            s.frames(2);
+            CHECK(s.api.shown("InventoryWindow"));
+            CHECK(s.api.shown("PlayerCustomizationWnd"));
+            auto* appearance = ImGui::FindWindowByName(gamepad ? "Set Appearance" : "###modern.PlayerCustomizationWnd");
+            CHECK((appearance && appearance->Active));
+            CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+        }
+        ImGui::DestroyContext(ctx);
+    }
+}
+
 TEST_CASE("UI packs: the inventory's alternate currencies draw, and a row selects the stock list's row") {
     for (const char* pack : {"modern", "gamepad"}) {
         INFO(pack);

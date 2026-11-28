@@ -281,6 +281,7 @@ there is none:
 
 **Inventory and equipment**: a slot grid. A picks up and moves an item, Y shows its details.
 
+- Focus **Change Appearance** below the character sheet and press A to open the appearance editor.
 - Holding an item: X puts it away, RB drops it, LB destroys it with the game's confirmation (with Fast Item Destroy
   on, the window's own Yes / No comes first, since LB pages elsewhere).
 - With nothing held, LB puts the focused item on a hot button through the slot picker, as a link that follows it.
