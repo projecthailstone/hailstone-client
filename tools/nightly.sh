@@ -202,7 +202,10 @@ if [ "$perf" = 1 ] && [ -n "${EQ_GAME_DIR:-}" ]; then
     perf_live=()
     [ "$live" = 1 ] && [ -n "${HAILSTONE_LIVE_SERVER:-}" ] && [ -n "${HAILSTONE_LIVE_CHARACTER:-}" ] &&
       perf_live=(--live "$HAILSTONE_LIVE_SERVER")
-    python3 tools/perf_track.py --hailstone build-perf/hailstone/hailstone --csv "$cache/perf.csv" \
+    # The account stays unexported (above): it goes to perf_track.py's environment alone, which reads it there.
+    HAILSTONE_LIVE_USER="${HAILSTONE_LIVE_USER:-}" HAILSTONE_LIVE_PASSWORD="${HAILSTONE_LIVE_PASSWORD:-}" \
+      HAILSTONE_LIVE_CHARACTER="${HAILSTONE_LIVE_CHARACTER:-}" \
+      python3 tools/perf_track.py --hailstone build-perf/hailstone/hailstone --csv "$cache/perf.csv" \
       --commit "$commit" --logs "$logs/perf" "${perf_live[@]}" > "$logs/perf.log" 2>&1
     rc=$?
     while IFS= read -r line; do note "$line"; done < <(grep -E '^(perf |REGRESSION )' "$logs/perf.log")

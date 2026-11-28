@@ -1,9 +1,10 @@
 # Live smoke test (tools/live_smoke.sh, docs/ci.md "Live smoke tests"): combat.
 # Spawn an NPC with an item to loot, kill it in melee and loot the item. Stock PEQ's Qeynos Hills; any GM character.
 zone qeytoqrg
-# #spawn [name] [race] [level] [texture] [health]: a level 5 human with 200 HP, several rounds for an unarmed GM. It
-# is temporary (gone when the zone shuts down), and the item is in its loot only, so nothing is left behind.
-say #spawn Smoke_Dummy 1 5 0 200
+# #spawn [name] [race] [level] [texture] [health]: a level 5 human with 60 HP, a few rounds for an unarmed GM (one
+# hitting for 19 and missing often took over the melee step's 120 s on 200 HP). It is temporary (gone when the zone
+# shuts down), and the item is in its loot only, so nothing is left behind.
+say #spawn Smoke_Dummy 1 5 0 60
 wait 2
 near Smoke_Dummy
 say #npcloot add 13005

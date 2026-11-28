@@ -189,7 +189,8 @@ picks the binary (default `build/playprobe`) and `LIVE_SMOKE_LOGS` the log folde
 - `spells.quest`: clear the buffs (`#nukebuffs`), memorize Courage, cast it on ourselves, see the buff arrive and
   click it off (OP_BuffRemoveRequest, answered by the server); memorize Yaulp, cast it and wait for the server's fade
   (OP_Buff, about 24 s on); memorize Strike and cast it on a spawned NPC. A cast passes when the server lands the
-  spell (OP_Action from us with its id) without an interrupt or fizzle.
+  spell (OP_Action from us with its id) without an interrupt. A fizzle is the server's dice, not a fault (a low level
+  caster fizzles often), so the step casts again, up to 5 casts in all.
 
 `spells.quest` is played as a second character, `LIVE_SMOKE_CASTER`: a GM cleric of any level on the same account
 (the script scribes its three level 1 spells with `#scribespell` when the book lacks them). Without it the script is
