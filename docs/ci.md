@@ -182,7 +182,8 @@ picks the binary (default `build/playprobe`) and `LIVE_SMOKE_LOGS` the log folde
 
 - `zoning.quest`: after each zone-in the client's possessions match the server's; `#goto` moves within a zone.
 - `items.quest`: a summoned item reaches the inventory and stays after a zone-in.
-- `npc.quest`: hail an NPC, trade it an item it hands back, kill an NPC.
+- `npc.quest`: hail an NPC, trade it an item it hands back, kill an NPC. The guards patrol, so a trade the client
+  cancels out of reach is tried again beside the guard, up to 3 trades in all.
 - `combat.quest`: `#spawn` an NPC and give it an item to drop (`#npcloot add`), kill it with auto attack and loot
   the item. The melee step passes only when the server reports our hits (OP_Damage from us to it, or the killing
   blow in OP_Death) and it dies.

@@ -17,7 +17,8 @@
 //   kill NAME [N]       N times: near NAME, #damage until it dies
 //   open NAME           near NAME, then /open (an adventure chest NPC)
 //   loot ITEMID         loots ITEMID from the nearest corpse
-//   give NAME ITEMID    near NAME, then trades it ITEMID from the inventory
+//   give NAME ITEMID    near NAME, then trades it ITEMID from the inventory; a trade the client cancels (a patrolling
+//                       NPC walked out of reach) is tried again beside it, up to 3 trades in all
 //   click ITEMID        uses ITEMID from the inventory
 //   pickup              moves to the nearest ground spawn and picks it up (then auto-inventories it)
 //   journal             prints the task journal
@@ -324,6 +325,21 @@ private:
                 moved_ = false;
                 conn.say(goto_text(conn.world().spawns.at(target_).position + glm::vec3(3.0f, 0.0f, 0.0f)));
                 phase_ = 6;
+            } else if (phase_ == 7) {
+                if (!moved_) return;
+                phase_ = 2; // the server has handed the item back by now: pick it up again
+                wait_until_ = now + std::chrono::milliseconds(500);
+            } else if ((phase_ == 4 || phase_ == 5) && !conn.trade() && give_tries_ < kGiveTries &&
+                       conn.world().spawns.count(target_)) {
+                // The client cancelled the trade (a patrolling guard walked out of reach while it was open): go
+                // beside it again and give again. The server returns the item first (OP_CancelTrade).
+                ++give_tries_;
+                std::printf("  QUEST: the trade was cancelled; giving again (try %d of %d)\n", give_tries_ + 1,
+                            kGiveTries + 1);
+                moved_ = false;
+                conn.say(goto_text(conn.world().spawns.at(target_).position + glm::vec3(3.0f, 0.0f, 0.0f)));
+                phase_ = 7;
+                wait_until_ = now + std::chrono::milliseconds(1500);
             } else if (phase_ == 3) {
                 conn.give_to(target_);
                 phase_ = 4;
@@ -946,6 +962,7 @@ private:
         if (index_ < lines_.size()) ++index_;
         phase_ = 0;
         reapproached_ = false;
+        give_tries_ = 0;
     }
 
     void finish_run() {
@@ -990,6 +1007,8 @@ private:
     std::string cast_trouble_;                     // cast: an interrupt or fizzle line
     static constexpr int kCastTries = 5;           // cast: casts before a fizzle fails the step
     int cast_fizzles_ = 0;
+    static constexpr int kGiveTries = 2;           // give: trades again after the client cancels one
+    int give_tries_ = 0;
     Clock::time_point mem_started_{};
     glm::vec3 pos_{0.0f};
     Clock::time_point wait_until_{}, started_{}, since_{};
