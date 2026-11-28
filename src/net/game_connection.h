@@ -263,6 +263,11 @@ struct ChatEvent {
     // Hailstone: a plugin or script wrote it while its code ran (plugin::caller_name()); the chat windows route such
     // a line to its own channel (game::kChatChannelCode), not by its colour.
     bool from_code = false;
+    // The string id of a line from OP_FormattedMessage (0 for any other), which the chat windows route a few by
+    // (game::chat_channel_of_message).
+    std::uint32_t string_id = 0;
+    // Hailstone: never hidden by /filter name's texts (its own replies, as MacroQuest's never go through its filter).
+    bool unfiltered = false;
 };
 
 // Something the client plays a sound for (audio/; the wave each gets is
@@ -2794,6 +2799,8 @@ public:
     // A line in the chat windows as dsp_chat shows it (`color`: the chat colour index, 0 the default), and one from
     // the string table.
     void show_chat(std::string text, std::uint32_t color = 0) { chat(ChatEvent::Kind::System, std::move(text), 0, color); }
+    // The same, never hidden by /filter name (ChatEvent::unfiltered).
+    void show_chat_unfiltered(std::string text, std::uint32_t color = 0);
     void show_eqstr(std::uint32_t eqstr, std::vector<std::string> args = {}, std::uint32_t color = 0) {
         system(eqstr, std::move(args), color);
     }
@@ -3128,7 +3135,7 @@ private:
     // `client_codes`: the client's own line keeps the MQ colour codes it wrote (client_message).
     void chat(ChatEvent::Kind kind, std::string text, std::uint32_t rgb = 0, std::uint32_t color = 0,
               std::string peer = {}, std::optional<std::string> display_text = std::nullopt, bool filter = true,
-              bool client_codes = false);
+              bool client_codes = false, std::uint32_t string_id = 0);
     bool prepare_chat(ChatEvent& event, std::optional<std::string> display_text, bool filter,
                       bool group_member = false, bool client_codes = false);
     void enqueue_chat(ChatEvent event);

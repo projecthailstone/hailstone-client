@@ -455,7 +455,8 @@ Not yet:
 
 `/echo`, `/target` (`id N`, `clear`, `mycorpse`, `myself`, or a spawn search; with nothing, yourself; `next` / `prev`
 walk the search's matches), `/face` (target, `id`, `heading H`, `loc y,x`,
-a search; `fast`), `/mapfilter` (MacroQuest's map filters and colours), `/keypress <command> [hold|release]` (the game's
+a search; `fast`), `/mapfilter` (MacroQuest's map filters and colours), `/filter name` (MacroQuest's chat text
+filters, docs/commands.md), `/keypress <command> [hold|release]` (the game's
 key command names: `forward`, `jump`, `hot1_1`, ...), `/squelch <cmd>`, `/docommand <cmd>`, `/noparse <cmd>`, `/timed <deciseconds> <cmd>`, `/nomodkey`, `/shiftkey` and
 `/ctrlkey <cmd>`, `/itemnotify`, `/notify <window> <child> <notification> [value]`, `/doortarget`, `/memspell`,
 `/click`, `/makemevisible`, `/removelev`, `/removeaura`, `/removebuff [-pet|-both] <name>`, `/removepetbuff <name>`,

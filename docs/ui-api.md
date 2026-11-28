@@ -543,6 +543,18 @@ API 1.13 adds:
 
 Check `API.version.minor >= 13` (or feature-check the method) before relying on them.
 
+API 1.14 adds:
+
+- `hs.UI.chat.TextFilters()` (flat `hs.ChatTextFilters`): MacroQuest's `/filter name` texts, as `on, texts`. A
+  game chat line that starts with a text (case ignored), or contains one that starts with `*` (the rest, case kept),
+  is hidden from the chat windows while `on` is true.
+- `hs.UI.chat.SetTextFiltersOn(on)`, `hs.UI.chat.AddTextFilter(text)` and `hs.UI.chat.RemoveTextFilter(text)` (flat
+  `hs.ChatSetTextFiltersOn`, `hs.ChatAddTextFilter` and `hs.ChatRemoveTextFilter`): `/filter name on|off`, `add` and
+  `remove`. Adding gives false for an empty text or one already listed, and removing false for one not listed (case
+  ignored). The texts are shared by every character.
+
+Check `API.version.minor >= 14` (or feature-check the method) before relying on them.
+
 ## Service policy and observed identities
 
 The read-only `hs.UI.map.Policy()` result includes `custom_spawns`, `stock_npcs`, `npc_find`, `name`, `revision`,

@@ -127,10 +127,12 @@ bool Config::is_shared_key(std::string_view key) {
     // The client's own (asset folders, add-ons, updates, news, the browser, plugins and scripts it loads), the login
     // screen's (servers, worlds, the music there), the window's place and mode (one window, whoever plays in it), the
     // computer's graphics tier (render/graphics_tier.h), and what is taken only at start (the sample count, the
-    // upscaler, the UI pack and scale, the sound device, the navigation threads). The accessibility options are the
+    // upscaler, the UI pack and scale, the sound device, the navigation threads). MacroQuest's map filters and
+    // /filter name texts are shared by every character, as MacroQuest.ini keeps them. The accessibility options are the
     // player's, not a character's (game/accessibility.h).
     static constexpr std::string_view kPrefixes[] = {"assets.", "addons.", "update.", "news.", "login.", "browser.",
-                                                      "window.", "plugins.", "scripts.", "mapfilter.", "accessibility."};
+                                                      "window.", "plugins.", "scripts.", "mapfilter.", "chatfilter.",
+                                                      "accessibility."};
     static constexpr std::string_view kKeys[] = {
         "display.window_mode", "display.resolution", "display.msaa", "display.upscaler", "display.gpu_tier", "ui.name", "ui.scale", "ui.cpp_windows",
         "ui.dev_windows", "ui.perf_window", "ui.perf_log_hitches", "game.fixed_step", "audio.pregame_music",

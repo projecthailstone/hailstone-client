@@ -375,6 +375,20 @@ local PAGES = {
     end
     for i, h in ipairs(modes) do if i ~= 7 then addHitMode(h) end end
     if modes[7] then addHitMode(modes[7]) end
+    -- MacroQuest's /filter name (hs.ChatTextFilters): the switch, and A on a text removes it. Texts are added with
+    -- /filter name add <text> (a keyboard's work).
+    if API.chat.TextFilters then
+      local on, texts = API.chat.TextFilters()
+      if on ~= nil then
+        rows[#rows + 1] = { "Hide chat lines by text", on and "On" or "Off", function()
+          API.chat.SetTextFiltersOn(not on)
+        end }
+        for _, t in ipairs(texts) do
+          rows[#rows + 1] = { "Text filter: " .. t, "A: remove", press = function() API.chat.RemoveTextFilter(t) end,
+            key = "textfilter:" .. t }
+        end
+      end
+    end
     return rows
   end },
   { "Game", function()

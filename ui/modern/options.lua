@@ -1275,8 +1275,39 @@ end
 -- ---------------------------------------------------------------- Chat
 local FILTERS, FILTER_SETTING = "FilterList", "FilterComboBox"
 
+-- MacroQuest's /filter name (hs.ChatTextFilters, a Hailstone option): game lines hidden from the chat windows by
+-- their text. Plugins, scripts and the chat log still get them.
+local textFilterInput = ""
+local function textFilters()
+  if not API.chat.TextFilters then return end
+  local on, texts = API.chat.TextFilters()
+  if on == nil then return end
+  local v, changed = ui.Checkbox("Hide chat lines by text##textfilters", on)
+  if changed then API.chat.SetTextFiltersOn(v) end
+  tip("MacroQuest's /filter name: a game line that starts with a text below is hidden (case ignored), or one that "
+    .. "contains it when the text starts with *. Plugins, scripts and the chat log still get the line. Shared by "
+    .. "every character.")
+  local add
+  ui.SetNextItemWidth(-90 * U)
+  textFilterInput, add = ui.InputTextWithHint("##textfilteradd", "Text a line starts with, or *text anywhere in it",
+    textFilterInput, 256, ui.InputTextFlags.EnterReturnsTrue)
+  ui.SameLine()
+  if (ui.Button("Add##textfilter", -1, 0) or add) and textFilterInput ~= "" then
+    if API.chat.AddTextFilter(textFilterInput) then textFilterInput = "" end
+  end
+  for i, t in ipairs(texts) do
+    ui.PushID("textfilter" .. i)
+    if ui.SmallButton("Remove") then API.chat.RemoveTextFilter(t) end
+    ui.SameLine()
+    ui.Text(t)
+    ui.PopID()
+  end
+  ui.Separator()
+end
+
 local function chatTab()
   ui.TextDisabled("What the chat windows show of each kind of message.")
+  textFilters()
   local rows = API.windows.ListInfo(WINDOW, FILTERS)
   if not rows then return end
   local _, availH = ui.GetContentRegionAvail()

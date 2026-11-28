@@ -39,7 +39,7 @@ namespace hailstone::net { class GameConnection; struct Item; struct ItemSlot; s
 namespace hailstone::game { class HotButtonStore; struct HotButton; namespace mechanics { class Character; } }
 namespace hailstone { class GameDir; }
 namespace hailstone::assets { class CharacterLibrary; struct CharacterModel; }
-namespace hailstone::mq { class ScriptHost; class Registry; class MapFilters; struct Context; }
+namespace hailstone::mq { class ScriptHost; class Registry; class MapFilters; class ChatTextFilters; struct Context; }
 namespace hailstone::ui {
 class UiTextures; class UiIni; struct ChatView; struct ServerSelectView; struct LoginView; struct CharacterSelectView;
 struct CharacterCreateView;
@@ -164,6 +164,7 @@ struct UiHost {
     std::string zone_long_name;             // the zone's name for the windows (OP_NewZone)
     std::uint32_t zone_entry = 0;           // advances on every successful entry, including the same zone again
     mq::MapFilters* map_filters = nullptr;  // /mapfilter state read by the shared C++ map presenter
+    mq::ChatTextFilters* chat_text_filters = nullptr; // /filter name texts (hs.ChatTextFilters)
     float game_hour = -1.0f;                // the game clock (game/sky_clock.h hour: 1.0 .. 24.99), -1 unknown
     // Where the map edits made on this server go and are read first (servers/<profile>/maps, core/server_profile.h);
     // empty: maps/ in the character's folder (the user_dir of StockWindow::ini_loaded).

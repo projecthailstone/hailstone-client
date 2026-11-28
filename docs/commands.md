@@ -191,6 +191,7 @@ discipline's name may leave out its rank.
 | `/map` | The map. |
 | `/note [text]` | The notes window, or add a dated line to your notes. |
 | `/filter` | Chat filters. |
+| `/filter name [on\|off\|add <text>\|remove <text>\|remove all]` | MacroQuest's text filters: a game chat line that starts with a text (case ignored), or contains one that starts with `*` (the rest, case kept: `*beams a smile at`), is hidden from the chat windows. With nothing after `name`, the list. Plugins, scripts and the chat log still get the line, and lines plugins and scripts write are never hidden. The texts are shared by every character (`chatfilter.*` in hailstone.ini) and are also on the Options window's Chat page. MacroQuest's other `/filter` words (`skills`, `target`, `money` ...) are not here. |
 | `/hotbutton <name> [colour] <text>` | Make a hot button from a line and put it on the cursor. |
 | `/loadskin <name> [keep]` | Load a UI skin. |
 | `/copylayout` | Open Copy Layout to copy another character's layout and optionally their keyboard bindings. For a direct copy with arguments, use a bare file name beside the current layout file. |

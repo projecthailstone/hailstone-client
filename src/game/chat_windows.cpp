@@ -219,6 +219,17 @@ constexpr ChatDefaultItem kDefaultItems[] = {
 
 } // namespace
 
+int chat_channel_of_message(std::int32_t color, std::uint32_t string_id) {
+    constexpr std::int32_t kDotDamageColor = 325; // EQEmu's Chat::DotDamage
+    if (color != kDotDamageColor) return -1;
+    switch (string_id) {
+    case 9072: return 77;  // YOUR_HIT_DOT: "Your damage over time"
+    case 13327: return 78; // OTHER_HIT_DOT: "Others' damage over time"
+    case 12954: return 100; // YOU_TAKE_DOT: "Damage over time received"
+    default: return -1;
+    }
+}
+
 int chat_channel_of_color(std::int32_t color) {
     if (color >= kFirstColor && color <= kLastColor)
         return kChannelFromColor[static_cast<std::size_t>(color - kFirstColor)];

@@ -58,6 +58,26 @@ TEST_CASE("Chat filters: every colour up to 354 goes to the channel GetChannelFr
     }
 }
 
+TEST_CASE("Chat filters: a stock server's DoT ticks (Chat::DotDamage) go to the extended Damage Over Time routes") {
+    // EQEmu's YOUR_HIT_DOT, OTHER_HIT_DOT and YOU_TAKE_DOT, all in colour 325, which by colour alone is Other.
+    CHECK(chat_channel_of_message(325, 9072) == 77);
+    CHECK(chat_channel_of_message(325, 13327) == 78);
+    CHECK(chat_channel_of_message(325, 12954) == 100);
+    // Any other string, and those strings in another colour, go by the colour.
+    CHECK(chat_channel_of_message(325, 0) == -1);
+    CHECK(chat_channel_of_message(325, 6688) == -1);
+    CHECK(chat_channel_of_message(283, 9072) == -1);
+    CHECK(chat_channel_of_message(376, 9072) == -1);
+    // Each route is a Damage Over Time item.
+    for (const int channel : {77, 78, 100}) {
+        CAPTURE(channel);
+        bool found = false;
+        for (const auto& item : chat_filter_items())
+            if (item.channel == channel) found = item.menu == ChatFilterMenu::DamageOverTime;
+        CHECK(found);
+    }
+}
+
 TEST_CASE("Chat filters: menu descriptors cover every destination and form an acyclic hierarchy") {
     std::array<int, kChatChannelCount> destinations{};
     for (const auto& item : chat_filter_items()) {

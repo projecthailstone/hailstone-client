@@ -257,9 +257,18 @@ void GameConnection::enqueue_chat(ChatEvent event) {
 }
 
 void GameConnection::chat(ChatEvent::Kind kind, std::string text, std::uint32_t rgb, std::uint32_t color,
-                          std::string peer, std::optional<std::string> display_text, bool filter, bool client_codes) {
+                          std::string peer, std::optional<std::string> display_text, bool filter, bool client_codes,
+                          std::uint32_t string_id) {
     ChatEvent event{kind, std::move(text), rgb, color, std::move(peer), {}};
+    event.string_id = string_id;
     if (!prepare_chat(event, std::move(display_text), filter, false, client_codes)) return;
+    enqueue_chat(std::move(event));
+}
+
+void GameConnection::show_chat_unfiltered(std::string text, std::uint32_t color) {
+    ChatEvent event{ChatEvent::Kind::System, std::move(text), 0, color, {}, {}};
+    event.unfiltered = true;
+    if (!prepare_chat(event, std::nullopt, true)) return;
     enqueue_chat(std::move(event));
 }
 
@@ -2412,7 +2421,7 @@ void GameConnection::handle_zone(const AppPacket& p) {
                 auto mode = spell_hit_modes_[static_cast<std::size_t>(line->kind)];
                 display = game::report_spell_hit_line(*line, full, mode);
             }
-            chat(ChatEvent::Kind::System, std::move(full), 0, m->type, {}, std::move(display));
+            chat(ChatEvent::Kind::System, std::move(full), 0, m->type, {}, std::move(display), true, false, m->string_id);
             if (m->string_id > 0x1d4 && m->string_id < 0x1d9) context_tip(0x1e); // msgTokenText: the faction tip
         }
         break;

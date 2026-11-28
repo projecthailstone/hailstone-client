@@ -34,6 +34,12 @@ inline constexpr int kChatHitModeCount = 8;   // CChatWindowManager::HitModes (+
 // by the table at 0x650780; any other colour, the basic ones below 256 too, is channel 22). Hailstone adds the
 // extended colours 356..408 (chat_windows.cpp).
 int chat_channel_of_color(std::int32_t color);
+// Hailstone (a deliberate difference, docs/mechanics.md "Extended chat routing"): the channel a server's formatted
+// message goes to by its string id, where that differs from its colour's, else -1 (chat_channel_of_color decides).
+// Stock EQEmu sends every damage over time tick in Chat::DotDamage (325), which the original routes to Other (22),
+// so the extended Damage Over Time routes were never reached; its three tick strings go there instead: 9072
+// (YOUR_HIT_DOT) to 77, 13327 (OTHER_HIT_DOT) to 78, 12954 (YOU_TAKE_DOT) to 100. The line keeps its colour.
+int chat_channel_of_message(std::int32_t color, std::uint32_t string_id);
 
 // The Filters menu (CChatWindowManager::InitContextMenu @0x6513c0): the menu (+0x180) and its Chat Channel (+0x1a4),
 // Melee (+0x194) and Spells (+0x19c) submenus, each item a channel (item id 100 + channel) by its eqstr name, in

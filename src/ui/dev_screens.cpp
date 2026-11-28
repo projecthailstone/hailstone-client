@@ -2080,9 +2080,9 @@ std::string ChatLine::group_label() const {
 }
 
 void ChatView::add(ChatChannel channel, std::string text, std::uint32_t rgb, std::uint32_t color, std::string peer,
-                   bool from_code) {
+                   bool from_code, int route) {
     lines.push_back({channel, std::move(text), rgb, color, std::move(peer), 0, false,
-                     static_cast<std::int64_t>(std::time(nullptr)), ++revision, {}, false, from_code});
+                     static_cast<std::int64_t>(std::time(nullptr)), ++revision, {}, false, from_code, route});
     while (lines.size() > max_lines) lines.pop_front();
     scroll_to_bottom = true;
 }

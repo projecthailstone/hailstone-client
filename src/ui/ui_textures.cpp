@@ -410,12 +410,17 @@ std::optional<UiTextures::Cell> UiTextures::item_icon(std::uint32_t icon) {
     return c ? grid("dragitem{}.dds", c->sheet, 40, c->x, c->y) : std::nullopt;
 }
 
+// Spell and gem icons are cells of the A_SpellIcons and A_SpellGems grid animations, with as many sheets as the UI's
+// EQUI_Animations.xml lists (IconCache::GetIcon, as grid_cell draws them): stock RoF2's 7 and 3, or more where a
+// server's UI adds them (Project Lazarus's lists 63 and 23). The fixed stock grids only without the animation.
 std::optional<UiTextures::Cell> UiTextures::spell_icon(std::int32_t icon) {
+    if (grid_cells("A_SpellIcons")) return grid_cell("A_SpellIcons", icon);
     auto c = spell_icon_cell(icon);
     return c ? grid("spells{:02}.tga", c->sheet, 40, c->x, c->y) : std::nullopt;
 }
 
 std::optional<UiTextures::Cell> UiTextures::gem_icon(std::int32_t icon) {
+    if (grid_cells("A_SpellGems")) return grid_cell("A_SpellGems", icon);
     auto c = gem_icon_cell(icon);
     return c ? grid("gemicons{:02}.tga", c->sheet, 24, c->x, c->y) : std::nullopt;
 }

@@ -1712,7 +1712,8 @@ Other (22), and keeps 99 user colours (User_1..99). Checked: `CChatWindowManager
   to 95, 397 to Non Melee Hits (40), 398..408 to 97..107. 355, 381 and 384..387 go to Other. (The original sends
   them all to Other in user colour 0's RGB: `GetUserDefinedColor` reads index 0 past 98.)
 - Every colour up to 354 goes where the original sends it: `Chat::NonMelee` (283) to Non Melee Hits,
-  `Chat::DotDamage` (325) and colours below 256 to Other, 348 to Emotes, 349 to Guild.
+  `Chat::DotDamage` (325) and colours below 256 to Other (stock EQEmu's DoT ticks excepted, below), 348 to
+  Emotes, 349 to Guild.
 - The client's own lines keep the original's colours (environmental hits 0x10a / 0x149 / 0x117, deaths 0x116, randoms
   0x11f, interruptions 289, considers); none is extended.
 - The Filters menu is InitContextMenu's for channels 0..56; the extended channels are in an Extended (server) submenu
@@ -1726,8 +1727,16 @@ Other (22), and keeps 99 user colours (User_1..99). Checked: `CChatWindowManager
   goes there whatever its colour. Its item is in the Filters menu after System Messages, so the Filters menu's ALL
   moves it too. It starts on the main window, so nothing moves until the player moves it.
 
-Stock EQEmu sends no colour above 340 (`common/eq_constants.h` `Chat`), so on a stock server everything routes as in
-the original; the extension has no switch. The names and meanings of 355..408 are not confirmed (docs/unknowns.md
+- A stock server's damage over time ticks (a deliberate difference): EQEmu sends each in `Chat::DotDamage` (325),
+  which the original routes to Other, as an OP_FormattedMessage of one of three strings (`zone/attack.cpp`, the buff
+  tick in `Mob::CommonDamage`). Those go by their string instead (`game::chat_channel_of_message`): 9072
+  (YOUR_HIT_DOT) to Your damage over time (77), 13327 (OTHER_HIT_DOT) to Others' damage over time (78), 12954
+  (YOU_TAKE_DOT) to Damage over time received (100), so the Extended (server) Damage Over Time items work on a stock
+  server. The line keeps colour 325, and the chat history keeps the route (`325:77` in its colour column). The
+  channels start on the main window, so nothing moves until the player moves them.
+
+Stock EQEmu sends no colour above 340 (`common/eq_constants.h` `Chat`), so on a stock server everything else routes as
+in the original; the extension has no switch. The names and meanings of 355..408 are not confirmed (docs/unknowns.md
 "Chat").
 
 ## Chat keys, the PvP rule set, trade and group invites

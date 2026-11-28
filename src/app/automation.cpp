@@ -19,6 +19,7 @@
 #include "game/nameplate_canvas.h"
 #include "mq/commands.h"
 #include "mq/lua_mq.h"
+#include "mq/chat_text_filter.h"
 #include "mq/map_filter.h"
 #include "mq/tlo.h"
 #include "net/game_connection.h"
@@ -59,6 +60,7 @@ struct Automation::Impl {
     mq::Registry registry;
     mq::Context ctx;
     mq::MapFilters map_filters;
+    mq::ChatTextFilters chat_text_filters;
     mq::MapFilterTargetPathState map_filter_target_path;
     std::unique_ptr<mq::Commands> commands;
     std::unique_ptr<mq::ScriptHost> scripts;
@@ -245,7 +247,10 @@ struct Automation::Impl {
 Automation::Automation(AutomationEnv env) : impl_(std::make_unique<Impl>()) {
     Impl& m = *impl_;
     m.env = std::move(env);
-    if (m.env.config) m.map_filters.load(*m.env.config);
+    if (m.env.config) {
+        m.map_filters.load(*m.env.config);
+        m.chat_text_filters.load(*m.env.config);
+    }
     mq::register_game_tlos(m.registry);
     m.registry.set_denial_notice([&m](const std::string& t) { m.print(t); });
     m.ctx.window_open = [&m](std::string_view w) { return m.env.window_open && m.env.window_open(w); };
@@ -443,6 +448,7 @@ const mq::Registry& Automation::registry() const { return impl_->registry; }
 const mq::Context& Automation::context() { return impl_->context(); }
 mq::MapFilters& Automation::map_filters() { return impl_->map_filters; }
 const mq::MapFilters& Automation::map_filters() const { return impl_->map_filters; }
+mq::ChatTextFilters& Automation::chat_text_filters() { return impl_->chat_text_filters; }
 
 std::optional<plugin::ConsentPrompt> Automation::plugin_consent() const {
     const Impl& m = *impl_;

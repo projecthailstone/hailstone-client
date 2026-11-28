@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Spell and spell gem icons past stock RoF2's sheets now show, on servers whose UI adds more (Project Lazarus's Group Spirit of the Wolf Pack, for one, was blank). The icon sheets are the ones the UI's `EQUI_Animations.xml` lists, as in RoF2.
+- MacroQuest's `/filter name` hides chat lines by their text: `/filter name add *beams a smile at` hides every line with "beams a smile at" in it, and a text without the `*` hides lines that start with it. `/filter name remove`, `on` and `off` work as in MacroQuest, and the Options window's Chat page lists the texts to add or remove. Plugins and scripts still see the hidden lines, so E3's events keep working. The texts are shared by every character.
+- The chat Filters menu's Extended (server) → Damage Over Time items now work on a stock EQEmu server: your DoT ticks, others' and the ones you take go there instead of Other Messages, and keep their colour.
 - Sound is muted while another window has the focus, so a box set's background windows are quiet. Options, Audio, **Mute in Background** turns it off.
 - `/nav`, `/moveto`, `/stick` and `/afollow` work downhill while you levitate. The levitating body floats above the path, so the walk circled its corners and the destination and took the slow descent for being stuck; a point up to 20 below a levitating player now counts as reached when you are over it (a lower floor does not).
 - `/nav id`, `/nav target` and `/nav spawn` arrive at a levitating spawn: the walk may end up to 15 under or over a spawn (it was 8, so a spawn floating higher was never reached).

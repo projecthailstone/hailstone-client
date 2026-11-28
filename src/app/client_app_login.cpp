@@ -7,6 +7,8 @@
 #include "app/lua_ui.h"
 #include "app/addon_install.h"
 #include "core/asset_folder.h"
+#include "game/chat_windows.h"
+#include "mq/chat_text_filter.h"
 #include "net/server_files.h"
 #include "ui/ui_ini.h"
 #include "platform/open_folder.h"
@@ -1243,9 +1245,14 @@ void ClientApp::update_connection() {
     }
     if (auto z = conn_->take_zone_to_load()) load_zone(*z);
     while (auto c = conn_->poll_chat()) {
+        // Hailstone: MacroQuest's /filter name hides a game line by its text (not a plugin's or script's, which MQ's
+        // dsp_chat detour never sees). Hidden from the chat windows only, a deliberate difference: MQ drops it before
+        // plugins' OnIncomingChat and the EQ log too, so a filter could silently stop a plugin; here they had it.
+        if (!c->from_code && !c->unfiltered && c->group.empty() && automation_ && automation_->chat_text_filters().hides(c->text)) continue;
         if (c->group.empty())
             game_view_.chat.add(chat_channel(c->kind), std::move(c->text), c->rgb, c->color, std::move(c->peer),
-                                c->from_code);
+                                c->from_code,
+                                game::chat_channel_of_message(static_cast<std::int32_t>(c->color), c->string_id));
         else
             game_view_.chat.add_chat_group(std::move(c->text), std::move(c->group), c->from_code);
     }

@@ -492,6 +492,7 @@ struct ChatLine {
     std::vector<std::string> group_messages; // nonempty when text is the title of a collapsible chat group
     bool group_expanded = false;
     bool from_code = false; // Hailstone: a plugin's or script's own line (net::ChatEvent::from_code)
+    int route = -1;         // Hailstone: the chat channel it goes to instead of its colour's (net::ChatEvent::route)
 
     std::string group_label() const;
 };
@@ -509,7 +510,7 @@ struct ChatView {
     std::uint64_t group_revision = 0; // changes when an existing group is opened or closed
 
     void add(ChatChannel channel, std::string text, std::uint32_t rgb = 0, std::uint32_t color = 0, std::string peer = {},
-             bool from_code = false);
+             bool from_code = false, int route = -1);
     void add_chat_group(std::string title, std::vector<std::string> messages, bool from_code = false);
     void add_client_messages(std::vector<std::string> messages);
     void toggle_chat_group(ChatLine& line);

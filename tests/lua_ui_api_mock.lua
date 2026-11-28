@@ -39,6 +39,7 @@ local descriptors = {
   {"CharacterStats", "character", "Stats", "function", 0, false},
   {"WhoResults", "character", "WhoResults", "function", 0, false},
   {"ChatActivate", "chat", "Activate", "function", 2, false},
+  {"ChatAddTextFilter", "chat", "AddTextFilter", "function", 2, false},
   {"ChatClear", "chat", "Clear", "function", 2, false},
   {"ChatCloseTab", "chat", "CloseTab", "function", 2, false},
   {"ChatCloseWindow", "chat", "CloseWindow", "function", 2, false},
@@ -57,6 +58,7 @@ local descriptors = {
   {"ChatNewTab", "chat", "NewTab", "function", 2, false},
   {"ChatNewWindow", "chat", "NewWindow", "function", 2, false},
   {"ChatPage", "chat", "Page", "function", 0, false},
+  {"ChatRemoveTextFilter", "chat", "RemoveTextFilter", "function", 2, false},
   {"ChatReorderTab", "chat", "ReorderTab", "function", 2, false},
   {"ChatSelectTab", "chat", "SelectTab", "function", 2, false},
   {"ChatSetAlwaysHere", "chat", "SetAlwaysHere", "function", 2, false},
@@ -69,6 +71,7 @@ local descriptors = {
   {"ChatSetTabFlashColor", "chat", "SetTabFlashColor", "function", 2, false},
   {"ChatSetTabScrollbar", "chat", "SetTabScrollbar", "function", 2, false},
   {"ChatSetTellWindows", "chat", "SetTellWindows", "function", 2, false},
+  {"ChatSetTextFiltersOn", "chat", "SetTextFiltersOn", "function", 2, false},
   {"ChatSetTimestamps", "chat", "SetTimestamps", "function", 2, false},
   {"ChatSetTitle", "chat", "SetTitle", "function", 2, false},
   {"ChatSetWindowTitle", "chat", "SetWindowTitle", "function", 2, false},
@@ -77,6 +80,7 @@ local descriptors = {
   {"ChatTakeFocus", "chat", "TakeFocus", "function", 0, false},
   {"ChatTellWindows", "chat", "TellWindows", "function", 0, false},
   {"ChatText", "chat", "Text", "function", 0, false},
+  {"ChatTextFilters", "chat", "TextFilters", "function", 0, false},
   {"ChatTimestamps", "chat", "Timestamps", "function", 0, false},
   {"ChatWindows", "chat", "Windows", "function", 0, false},
   {"CompareBagSlotItem", "compare", "BagSlotItem", "function", 0, false},
@@ -385,7 +389,7 @@ return function(root)
     end
     return value
   end
-  local API, modules = {version={major=1,minor=13}}, {}
+  local API, modules = {version={major=1,minor=14}}, {}
   for _, row in ipairs(descriptors) do
     local module = modules[row[2]]
     if not module then module={};modules[row[2]]=module end
@@ -426,7 +430,7 @@ return function(root)
       if member~=nil then local row=modules[module][member];return row and describeMember(row) or nil end
       return describeModule(module)
     end
-    local names,result={}, {version={major=1,minor=13},modules={}}
+    local names,result={}, {version={major=1,minor=14},modules={}}
     for name in pairs(modules) do names[#names+1]=name end
     table.sort(names)
     for _, name in ipairs(names) do result.modules[#result.modules+1]=describeModule(name) end

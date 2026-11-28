@@ -178,6 +178,7 @@
 #include "app/navigator.h"
 #include "ui/asset_picker.h"
 #include "core/asset_folder_choice.h"
+#include "mq/chat_text_filter.h"
 #include "mq/popup.h"
 #include "mq/typed_escapes.h"
 
@@ -560,6 +561,8 @@ public:
         };
         automation_ = std::make_unique<Automation>(aenv);
         ui_host_.map_filters = &automation_->map_filters();
+        ui_host_.chat_text_filters = &automation_->chat_text_filters();
+        automation_->chat_text_filters().set_on_change([this] { config_.save(config_path_); });
         ui_host_.nameplates = &automation_->nameplates();
         lua_ui_->add_ui_api([this](lua_State* L) { register_ui_api(L); });
         automation_->hooks().add_command(plugin::Hooks::kClient, "/lighting",

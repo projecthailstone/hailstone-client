@@ -20,6 +20,7 @@
 #include "game/option_commands.h"
 #include "game/slash_commands.h"
 #include "game/xtarget.h"
+#include "mq/chat_text_filter.h"
 
 namespace hailstone::app {
 
@@ -240,6 +241,18 @@ bool ClientApp::client_command(std::string_view h, const std::string& args) {
         return true;
     }
     if (h == "Cmd_filter") {
+        // Hailstone: MacroQuest's /filter name (mq/chat_text_filter.h), the chat lines hidden by their text. MQ
+        // replaces /filter with its own, which takes other words too (skills, target, money ...); only name is here.
+        {
+            std::string_view rest = args;
+            std::string word = game::next_cmd_arg(rest);
+            for (char& ch : word) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            if (automation_ && word == "name") {
+                for (const std::string& line : mq::filter_name_command(automation_->chat_text_filters(), rest))
+                    c.show_chat_unfiltered(line, 15);
+                return true;
+            }
+        }
         // Cmd_filter @0x4e83a0: the options window shown on its chat filter page (4).
         if (ui_api_) {
             ui_api_->show("OptionsWindow", true);

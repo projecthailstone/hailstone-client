@@ -35,7 +35,7 @@
 
 namespace hailstone { class Config; }
 namespace hailstone::net { class GameConnection; }
-namespace hailstone::mq { class ScriptHost; class Registry; class MapFilters; struct Context; }
+namespace hailstone::mq { class ScriptHost; class Registry; class MapFilters; class ChatTextFilters; struct Context; }
 namespace hailstone::game { class ExtensionChain; class NameplateCanvasRegistry; struct SpellData; }
 namespace hailstone::plugin { class UiBridge; class WebAccess; }
 namespace hailstone::nav { class NavControl; }
@@ -116,6 +116,8 @@ public:
     const mq::Context& context(); // what the TLOs read now
     mq::MapFilters& map_filters();
     const mq::MapFilters& map_filters() const;
+    // MacroQuest's /filter name texts (mq/chat_text_filter.h), loaded from the shared settings.
+    mq::ChatTextFilters& chat_text_filters();
     // An owner's capabilities by its tag (plugin::UiBridge::owner_tag): "plugin:<name>" a compiled plugin's while it
     // is loaded, "script:<name>" a running Lua plugin's; 0 otherwise (a bare name too). Its windows in the UI pack act
     // with them (LuaUi::caller_tag).

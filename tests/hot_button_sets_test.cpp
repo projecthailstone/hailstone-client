@@ -241,6 +241,19 @@ TEST_CASE("icon selection: caches, the page, the clamp and the range label") {
 }
 
 TEST_CASE("icon grid cells: down each column first when vertical, across rows otherwise, frame by frame") {
+    // A server's UI with more spell icon sheets than stock RoF2's 7: Project Lazarus's A_SpellIcons lists 63, and
+    // Group Spirit of the Wolf Pack's icon 1176 is on the 33rd (UiTextures::spell_icon goes by the animation).
+    {
+        auto wolf = ui::grid_index_cell(1176, 63, 256, 256, 40, 40, false);
+        REQUIRE(wolf);
+        CHECK(wolf->sheet == 33); // 1176 / 36 = 32
+        CHECK(wolf->x == 0);      // cell 24: column 0
+        CHECK(wolf->y == 160);    // row 4
+        CHECK_FALSE(ui::grid_index_cell(1176, 7, 256, 256, 40, 40, false)); // past stock's 7 sheets
+        auto gem = ui::grid_index_cell(2205, 23, 256, 256, 24, 24, false); // and its 23 gem sheets
+        REQUIRE(gem);
+        CHECK(gem->sheet == 23);
+    }
     auto c = ui::grid_index_cell(7, 2, 256, 256, 40, 40, true); // 6 x 6 per frame
     REQUIRE(c);
     CHECK(c->sheet == 1);
