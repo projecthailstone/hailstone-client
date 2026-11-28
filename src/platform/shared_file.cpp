@@ -5,6 +5,7 @@
 #include <limits>
 #include <random>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -22,6 +23,8 @@
 #else
 #include <cerrno>
 #include <fcntl.h>
+#include <grp.h>
+#include <pwd.h>
 #include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -133,13 +136,35 @@ bool directory_at(const std::filesystem::path& path, bool private_leaf, UserSecu
     return ok;
 }
 #else
+// True when `gid` is the owner's own user-private group: named like the user, with no other members.
+// Most Linux distributions give every user such a group and default to umask 002, so a user's
+// own folders are group-writable even though nobody else can write to them.
+bool private_group_of_owner(uid_t uid, gid_t gid) {
+    std::vector<char> user_buffer(16384);
+    passwd user{};
+    passwd* user_found = nullptr;
+    if (::getpwuid_r(uid, &user, user_buffer.data(), user_buffer.size(), &user_found) != 0 || !user_found) return false;
+    std::vector<char> group_buffer(16384);
+    struct group entry{};
+    struct group* group_found = nullptr;
+    if (::getgrgid_r(gid, &entry, group_buffer.data(), group_buffer.size(), &group_found) != 0 || !group_found) return false;
+    if (std::string_view(entry.gr_name) != std::string_view(user.pw_name)) return false;
+    for (char** member = entry.gr_mem; member && *member; ++member)
+        if (std::string_view(*member) != std::string_view(user.pw_name)) return false;
+    return true;
+}
+
 bool directory_at(const std::filesystem::path& path, bool private_leaf) {
     struct stat info{};
     if (::lstat(path.c_str(), &info) != 0 || !S_ISDIR(info.st_mode)) return false;
     if (private_leaf) return info.st_uid == ::geteuid() && (info.st_mode & 0077) == 0;
     // Root-owned ancestors and sticky temp directories are normal. An arbitrary writable ancestor is not.
     if (info.st_uid != ::geteuid() && info.st_uid != 0) return false;
-    return (info.st_mode & 0022) == 0 || (info.st_mode & S_ISVTX) != 0;
+    if ((info.st_mode & S_ISVTX) != 0) return true;   // sticky, like /tmp
+    if ((info.st_mode & 0002) != 0) return false;     // anyone can write: never safe
+    if ((info.st_mode & 0020) == 0) return true;      // only the owner can write
+    // Group-writable is fine only when the group is the owner's own private group.
+    return private_group_of_owner(info.st_uid, info.st_gid);
 }
 #endif
 

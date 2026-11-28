@@ -228,6 +228,12 @@ shared `journal.txt`, nor removes `previous/` while another rolls back from it:
   install can run while this process does, see below);
 - `retire_old_release_files` waits for the next start.
 
+The lock is also not given when a folder on the path to the lock file could be changed by someone else, and the
+process then acts as if another one held it. A folder is accepted when it belongs to this user or to root and nobody
+else can write to it, when it is sticky (like `/tmp`), or when only its owner and the owner's own private group can
+write to it. That group is one named like the user with no other member, which is what the default umask 002 gives a
+new folder on Debian, Ubuntu and Fedora. A folder anyone can write to, or that a shared group can write to, is refused.
+
 **Every Hailstone running from the folder holds `update/running.lock` shared** (`claim_running`): from its start
 (`update_at_start` takes it before it lets go of the install lock, so no other start counts in between; a box set's
 window and a launcher's ticket launch take it in `main`) until its window, browser helper and plugins are gone. Whatever

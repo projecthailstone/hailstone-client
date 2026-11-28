@@ -24,6 +24,13 @@
 #include "platform/shared_file.h"
 #include "scratch_dir.h"
 
+#if !defined(_WIN32)
+#include <grp.h>
+#include <pwd.h>
+#include <string>
+#include <unistd.h>
+#endif
+
 using namespace hailstone;
 namespace fs = std::filesystem;
 
@@ -199,6 +206,51 @@ TEST_CASE("shared_file: an ordinary-folder lock works where a private one is ref
     CHECK(platform::ScopedFileLock::try_acquire(lock, platform::FileLockMode::Exclusive,
                                                 platform::LockFolder::Ordinary));
 }
+
+#if !defined(_WIN32)
+namespace {
+// True when this user's primary group is a user-private one: named like the user, with no other members.
+bool own_group_is_private() {
+    const passwd* user = ::getpwuid(::geteuid());
+    const struct group* group = ::getgrgid(::getegid());
+    if (!user || !group || std::string(group->gr_name) != user->pw_name) return false;
+    for (char** member = group->gr_mem; member && *member; ++member)
+        if (std::string(*member) != user->pw_name) return false;
+    return true;
+}
+}  // namespace
+
+TEST_CASE("shared_file: a group-writable folder in the user's own private group is accepted") {
+    if (!own_group_is_private()) {
+        MESSAGE("skipped: this user's primary group is shared with other users");
+        return;
+    }
+    test::ScratchDir scratch("shared_lock_private_group");
+    const fs::path dir = scratch.path() / "update";
+    fs::create_directories(dir);
+    // What the default umask 002 of Debian, Ubuntu and Fedora gives a new folder: rwxrwxr-x.
+    fs::permissions(dir, fs::perms::owner_all | fs::perms::group_all | fs::perms::others_read | fs::perms::others_exec,
+                    fs::perm_options::replace);
+    auto lock = platform::ScopedFileLock::try_acquire(dir / "install.lock", platform::FileLockMode::Exclusive,
+                                                      platform::LockFolder::Ordinary);
+    CHECK(lock);
+}
+
+TEST_CASE("shared_file: a world-writable folder is refused for a lock") {
+    test::ScratchDir scratch("shared_lock_world_writable");
+    const fs::path dir = scratch.path() / "update";
+    fs::create_directories(dir);
+    const fs::path lock = dir / "install.lock";
+    fs::permissions(dir, fs::perms::all, fs::perm_options::replace);  // rwxrwxrwx, anyone could swap the lock file
+    CHECK_FALSE(platform::ScopedFileLock::try_acquire(lock, platform::FileLockMode::Exclusive,
+                                                      platform::LockFolder::Ordinary));
+    fs::permissions(dir, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec |
+                             fs::perms::others_read | fs::perms::others_exec,
+                    fs::perm_options::replace);  // rwxr-xr-x
+    CHECK(platform::ScopedFileLock::try_acquire(lock, platform::FileLockMode::Exclusive,
+                                                platform::LockFolder::Ordinary));
+}
+#endif
 
 TEST_CASE("shared_file: shared and exclusive locks are scoped and stable") {
     test::ScratchDir scratch("shared_lock");
