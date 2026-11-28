@@ -24,6 +24,29 @@ template <typename F> bool eventually(F&& ready) {
     return ready();
 }
 
+// A loopback port that was free a moment ago: the listener is gone again.
+std::uint16_t freed_port() {
+    TcpListener l;
+    std::string error;
+    REQUIRE(l.listen(Endpoint::v4(127, 0, 0, 1, 0), error));
+    return l.local_endpoint()->port;
+}
+
+// Connects `s` to `to(port)` for a freed port until one is refused (at once, `at_once`, or closed later), up to 5
+// ports: true when it was. A freed port can be taken again before the connect (another test run's listener), and
+// Linux can connect a loopback socket to itself when its own port comes out as the freed one; either ends connected.
+template <typename To> bool refused_connect(TcpSocket& s, std::string& error, bool& at_once, To&& to) {
+    for (int tries = 0; tries < 5; ++tries) {
+        s = TcpSocket{};
+        error.clear();
+        at_once = !s.connect(to(freed_port()), error);
+        if (at_once) return true;
+        if (!eventually([&] { return s.state() != TcpSocket::State::Connecting; })) return true; // the CHECKs fail
+        if (s.state() != TcpSocket::State::Connected) return true;
+    }
+    return false;
+}
+
 std::span<const std::byte> as_bytes(const std::string& s) {
     return {reinterpret_cast<const std::byte*>(s.data()), s.size()};
 }
@@ -67,33 +90,20 @@ TEST_CASE("tcp socket: connects without waiting, carries bytes both ways and see
 }
 
 TEST_CASE("tcp socket: a connect nobody listens for ends closed") {
-    // A port that was free a moment ago: the listener is gone again.
-    std::uint16_t port = 0;
-    {
-        TcpListener l;
-        std::string error;
-        REQUIRE(l.listen(Endpoint::v4(127, 0, 0, 1, 0), error));
-        port = l.local_endpoint()->port;
-    }
     TcpSocket s;
     std::string error;
-    if (!s.connect(Endpoint::v4(127, 0, 0, 1, port), error)) {
-        CHECK_FALSE(error.empty()); // refused at once
+    bool at_once = false;
+    REQUIRE(refused_connect(s, error, at_once, [](std::uint16_t port) { return Endpoint::v4(127, 0, 0, 1, port); }));
+    if (at_once) {
+        CHECK_FALSE(error.empty());
         return;
     }
-    REQUIRE(eventually([&] { return s.state() != TcpSocket::State::Connecting; }));
     CHECK(s.state() == TcpSocket::State::Closed);
     CHECK_FALSE(s.last_error().empty());
 }
 
 TEST_CASE("tcp socket: an address that fails hands over to the next one") {
-    std::uint16_t closed = 0;
-    {
-        TcpListener l;
-        std::string error;
-        REQUIRE(l.listen(Endpoint::v4(127, 0, 0, 1, 0), error));
-        closed = l.local_endpoint()->port;
-    }
+    const std::uint16_t closed = freed_port();
     TcpListener listener;
     std::string error;
     REQUIRE(listener.listen(Endpoint::v4(127, 0, 0, 1, 0), error));
@@ -110,13 +120,16 @@ TEST_CASE("tcp socket: an address that fails hands over to the next one") {
 
     // None left: closed (at once or later), with the last one's reason.
     TcpSocket none;
-    if (none.connect(std::vector<Endpoint>{Endpoint::v4(127, 0, 0, 1, closed)}, error)) {
-        REQUIRE(eventually([&] { return none.state() != TcpSocket::State::Connecting; }));
-        CHECK(none.state() == TcpSocket::State::Closed);
-        CHECK_FALSE(none.last_error().empty());
-    } else {
+    bool at_once = false;
+    REQUIRE(refused_connect(none, error, at_once, [](std::uint16_t port) {
+        return std::vector<Endpoint>{Endpoint::v4(127, 0, 0, 1, port)};
+    }));
+    if (at_once) {
         CHECK_FALSE(error.empty());
+        return;
     }
+    CHECK(none.state() == TcpSocket::State::Closed);
+    CHECK_FALSE(none.last_error().empty());
 }
 
 TEST_CASE("tcp socket: a connect with no answer times out and tries the next address") {
