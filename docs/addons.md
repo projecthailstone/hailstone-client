@@ -542,7 +542,8 @@ ui-addons/<addon>/ an installed interface add-on (its ui/<pack>/ folders, UI pac
   `addons/install.lock` (`lock_addons`, released when the process ends). Two windows started on their own would
   otherwise undo each other's journal at start, empty each other's `new/`, or write `installed.txt` from an older read
   and lose a line (a lost line makes that add-on's files hand-installed ones, with every capability on a server
-  without `hailstone.cfg`). While another process holds it:
+  without `hailstone.cfg`). The lock is also not given when a folder on its path is writable by other users (see
+  Start and rollback in `docs/updater.md`). While another process holds it:
   - the start leaves the journal, `new/` and `previous/` alone (that install is under way, not cut off); a later
     start looks again;
   - what is downloaded stays staged, and the login screen installs it once the lock is free;
