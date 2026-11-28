@@ -425,6 +425,7 @@ local BY_TEXT = {
   ["Alarm"] = "alarm",
   ["Expeditions"] = "expedition", ["Quest Journal"] = "journal", ["Quests"] = "quests",
   ["Player Information"] = "card", ["Pet"] = "pet", ["Spell Gems"] = "gem", ["Spell Book"] = "spellbook",
+  ["Change Appearance"] = "person",
   ["Alternate Advancement"] = "aa", ["Buffs"] = "buffs", ["Short Duration Buffs"] = "shortbuffs",
   ["Leadership"] = "leadership", ["Skills"] = "skills", ["Blocked Buffs"] = "blocked",
   ["Blocked Pet Buffs"] = "blockedpet", ["Auras"] = "auras", ["Character"] = "character",

@@ -20,6 +20,7 @@ local pad = dofile("lib/pad.lua")
 local W = dofile("lib/window.lua")
 local I = dofile("lib/items.lua")
 local AS = dofile("lib/assign.lua")
+local icons = dofile("lib/menuicons.lua")
 local C = T.C
 
 local INV = "InventoryWindow"
@@ -32,7 +33,9 @@ local destroyQ = {} -- the question before LB destroys the held item with Fast I
 local openBag = nil -- the bag slot (23..32) whose contents are shown
 local CURRENCY_LIST = "AltCurr_PointList"
 local currencies = {} -- W.list state
-local currencyFocused = false -- last frame's focus was on a currency row (the hints)
+local currencyFocused, appearanceFocused = false, false -- last frame's focus (for the hints)
+local APPEARANCE = "Change Appearance"
+local APPEARANCE_BUTTON = { align = 0 }
 
 local function label(t) return API.character.Label(t) or "" end
 
@@ -186,10 +189,11 @@ ui.window("Inventory", function()
   local held = API.inventory.Item(API.inventory.CursorSlot or 33)
   local holding = held ~= nil
   if not holding then destroyQ.confirm = nil end -- (the question is about the held item)
+  local appearanceAction = appearanceFocused and "Select"
   local hints = destroyQ.confirm and { { "a", "Select" }, { "b", "Cancel" } }
-      or holding and { { "a", currencyFocused and "Reclaim" or "Place" }, { "x", "Put away" }, { "lb", "Destroy" }, { "rb", "Drop" }, { "y", "Details" }, { "b", "Close" } }
+      or holding and { { "a", appearanceAction or (currencyFocused and "Reclaim" or "Place") }, { "x", "Put away" }, { "lb", "Destroy" }, { "rb", "Drop" }, { "y", "Details" }, { "b", "Close" } }
       or currencyFocused and { { "a", "Claim" }, { "b", "Close" } }
-      or { { "a", "Pick up" }, { "x", "Use" }, { "y", "Details" }, { "lb", "Assign to slot" }, { "b", "Close" } }
+      or { { "a", appearanceAction or "Pick up" }, { "x", "Use" }, { "y", "Details" }, { "lb", "Assign to slot" }, { "b", "Close" } }
   if W.begin("Inventory", { w = 1700, h = 980, title = "Inventory", hints = hints }) then
     if not W.confirm(destroyQ) then
       local x0, y0, x1, y1 = W.area()
@@ -202,6 +206,12 @@ ui.window("Inventory", function()
         T.draw(x0, sheetY + T.px(8), shroud, C.accent)
         sheetY = sheetY + T.px(33)
       end
+      ui.SetCursorPos(x0 - wx, sheetY + T.px(8) - wy)
+      local clicked, focused, _, ay0, ax1, ay1 = T.button("##facepick", APPEARANCE, leftW, T.px(51), APPEARANCE_BUTTON, pad)
+      appearanceFocused = focused
+      icons.Draw(APPEARANCE, ax1 - T.px(28), (ay0 + ay1) / 2, T.px(24), C.text)
+      if clicked then API.windows.ClickChild(INV, "IW_FacePick", "left") end
+      sheetY = sheetY + T.px(58)
       if API.windows.ChildShown(INV, "ShroudProgressButton") == true then
         ui.SetCursorPos(x0 - wx, sheetY + T.px(8) - wy)
         if T.button("##shroudProgress", "Shroud Progress", leftW, T.px(51), {}, pad) then
