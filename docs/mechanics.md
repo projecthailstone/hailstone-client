@@ -2003,13 +2003,21 @@ last_cast_time).
   0..99; -1 has none). Setting it writes now + delay to both.
 - CastSpell refuses a clicky with 236 while now < that timer; it sets the timer at once for an instant item (cast time
   <= 100 ms).
-- OP_ItemRecastDelay (cast item valid, or the packet's ignore byte) sets the timer; OP_MemorizeSpell 3 sets the cast
-  item's timer = recast + the client time offset, in client-time ms.
+- OP_ItemRecastDelay sets the timer for a matching cast item, with the packet's ignore byte, or for a linked type
+  during zone departure. A server update also refreshes that type on carried items, so an older item timestamp
+  cannot keep the group cooling after the server shortens it.
+- On re-entry, a reported profile timer takes precedence. EQEmu sends zero for the RoF2 profile's item timers, so
+  a zero preserves a still-active linked timer received from the server for this character. Item headers can also
+  supply ready times. Entering from character select starts with a fresh timer cache.
+- A matching item completion in OP_MemorizeSpell 3 can supply a fallback in Unix seconds while the cast record
+  still exists and no timer is active. Spell gem timers continue to use client-time milliseconds.
 
 The inventory slot draw (every item slot: `hs.Item` / `hs.BagSlotItem` / `hs.SlotItem` give `cooldown`; inventory hot
 buttons) takes the time left (timer - now). When the button has no cool-down, or its cool-down differs from that time
-by 1000 ms or more, the draw restarts it (or stops it once the time is up).
-The potion belt starts a slot's only while its button has none and the timer is ahead.
+by 1000 ms or more, the draw restarts it (or stops it once the time is up). A shared cooldown can be longer than
+an item's listed delay, so the drawing interval is at least the time remaining. The potion belt starts a slot's
+only while its button has none and the timer is ahead. Modern inventory and bag tooltips show the remaining time
+for active slots through `cooldownLeftMs` on the item record.
 
 #### Item preview
 

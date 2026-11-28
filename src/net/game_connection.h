@@ -2322,12 +2322,13 @@ public:
     std::uint32_t item_recast_timer(const Item* item) const;
     // PcZoneClient_SetItemRecastTimer @0x5805b0: now + delay into the item's own (+0x30 marked changed) and, for a
     // type 0..99, the type's.
-    void set_item_recast_timer(Item* item, std::int32_t delay, std::int32_t type);
+    void set_item_recast_timer(Item* item, std::int32_t delay, std::int32_t type, bool from_server = false);
     // PcZoneClient_ResetAllItemRecastTimers @0x583640 (opcode 0x73ac, which EQEmu never sends): the own timers of
     // the 34 possessions slots' items and of the items directly in the bags there, then the 100 type timers.
     void reset_all_item_recast_timers();
     std::uint32_t item_recast_type_timer(std::int32_t type) const {
-        return static_cast<std::uint32_t>(type) < item_recast_timers_.size() ? item_recast_timers_[static_cast<std::size_t>(type)] : 0;
+        return static_cast<std::uint32_t>(type) < item_recast_timers_.size()
+                   ? item_recast_timers_[static_cast<std::size_t>(type)].ready : 0;
     }
     // CharacterBase vtable +0 GetGameFeature (PcClient::GetGameFeature_ @0x5784e0): the membership's entry
     // (OP_SendMembership; FreeToPlayClient +0xc + 4 x feature). Before OP_SendMembership the original reads
@@ -3276,7 +3277,7 @@ private:
     // PcClient_RefreshWornSlotVisual's instrument bit (0x5923f0): the local player's PlayerState bit 0x10, set when
     // the primary or secondary hand holds an instrument (item types 23..26).
     void refresh_instrument_state();
-    void init_spells_from_profile();
+    void init_spells_from_profile(bool zone_reentry = false);
     void update_spells();
     void update_spells_at(std::int64_t now); // one step of update_spells, at `now` (now_ms()'s clock)
     // DoPassageOfTime's 1 s and 6 s blocks (game/passage_of_time.h), once a frame in a zone.
@@ -3373,7 +3374,11 @@ private:
     void useitem_command(const std::string& args); // Cmd_useitem
     ItemPreview item_preview_;
     Marketplace marketplace_;
-    std::array<std::uint32_t, 100> item_recast_timers_{}; // PcBase +0x6a5c: the item recast timers by type (time(0))
+    struct ItemRecastTimer {
+        std::uint32_t ready = 0; // Unix seconds
+        bool from_server = false;
+    };
+    std::array<ItemRecastTimer, 100> item_recast_timers_{}; // PcBase +0x6a5c
     void system(std::uint32_t eqstr, std::vector<std::string> args = {}, std::uint32_t color = 0);
     void send_tell(const std::string& name, const std::string& text);
     void who_command(const std::string& args);

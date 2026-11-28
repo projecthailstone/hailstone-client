@@ -308,3 +308,22 @@ TEST_CASE("CPotionBeltWnd::PostDraw: a belt slot's recast cool-down") {
     update_potion_belt_cool_down(cd, std::nullopt, now, fast);
     CHECK(cd.duration == 30000);
 }
+
+TEST_CASE("Item overlays draw immediately when the shared cooldown exceeds the item's delay") {
+    constexpr std::uint32_t now = 100000, fast = 5000;
+    const HotButtonStateQueries::ItemRecast recast{fast + 45, 30};
+
+    ButtonCoolDown slot;
+    update_item_cool_down(slot, recast, now, fast);
+    CHECK(slot.left(now) == 45000);
+    CHECK(slot.overlay_fraction(now).has_value());
+    update_item_cool_down(slot, recast, now + 1000, fast + 1);
+    CHECK(slot.left(now + 1000) == 44000);
+    update_item_cool_down(slot, recast, now + 45000, fast + 45);
+    CHECK_FALSE(slot.overlay_fraction(now + 45000).has_value());
+
+    ButtonCoolDown potion;
+    update_potion_belt_cool_down(potion, recast, now, fast);
+    CHECK(potion.left(now) == 45000);
+    CHECK(potion.overlay_fraction(now).has_value());
+}

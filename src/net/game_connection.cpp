@@ -821,6 +821,7 @@ void GameConnection::handle_world(const AppPacket& p) {
         }
         auto info = decode_zone_server_info(p);
         if (!info) { fail("could not read the zone server address"); return; }
+        if (state_ == ConnectionState::Zoning) zone_reentry_ = true;
         zone_host_ = info->host.empty() ? ticket_.world_host : info->host;
         zone_port_ = info->port;
         log::info("zone server {}:{}", zone_host_, zone_port_);
@@ -1067,6 +1068,7 @@ void GameConnection::enter_world(const std::string& name, bool return_home) {
     shroud_bank_available_ = false;
     close_shroud_bank();
     recruiter_state_ = 0;
+    item_recast_timers_.fill({});
     character_ = name;
     {
         // The files an earlier build kept in characters/<name>/ of the profile, copied once to the world's folder.
@@ -1623,7 +1625,7 @@ void GameConnection::handle_zone(const AppPacket& p) {
             position_ = game::server_to_world({profile_->x, profile_->y, profile_->z});
             heading_ = profile_->heading;
             motion_known_ = true;
-            init_spells_from_profile();
+            init_spells_from_profile(zone_reentry_);
             coins_ = {profile_->platinum, profile_->gold, profile_->silver, profile_->copper};
             bank_coins_ = {profile_->platinum_bank, profile_->gold_bank, profile_->silver_bank, profile_->copper_bank,
                            profile_->platinum_shared};
@@ -2251,13 +2253,14 @@ void GameConnection::handle_zone(const AppPacket& p) {
         handle_item_preview(p);
         break;
     case Op::ItemRecastDelay:
-        // The case @0x4c70e8: with a local PC and player, when LaunchSpellData_IsCastItemValid (the cast's item is
-        // at its location, Type 0, with the cast's item id) or the packet's ignore_casting_requirement byte is set,
-        // PcZoneClient_SetItemRecastTimer(the cast item when LaunchSpellData_IsItemCast, else none, delay, type).
         if (auto d = decode_item_recast_delay(p); d && profile_) {
-            if (valid_cast_item() || d->ignore_casting) {
-                set_item_recast_timer(cast_item(), static_cast<std::int32_t>(d->delay_s), static_cast<std::int32_t>(d->type));
-            }
+            Item* item = valid_cast_item();
+            if (item && static_cast<std::uint32_t>(item->effects[kEffectClick].recast_type()) != d->type) item = nullptr;
+            // A teleport click can queue a zone change ahead of its recast packet. The linked type still
+            // identifies the server's cooldown if the cast record has already been cleared during departure.
+            const bool leaving = zone_change_pending_ || state_ == ConnectionState::Zoning;
+            if (item || d->ignore_casting || (leaving && d->type < item_recast_timers_.size()))
+                set_item_recast_timer(item, static_cast<std::int32_t>(d->delay_s), static_cast<std::int32_t>(d->type), true);
         }
         break;
     case Op::SharedTaskInvite:
