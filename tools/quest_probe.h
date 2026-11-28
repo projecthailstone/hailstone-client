@@ -37,7 +37,8 @@
 //   memorize SPELLID GEM   memorizes SPELLID from the book into gem GEM (1-based), forgetting it first where it is
 //                       already memorized, so the memorize always runs: checks that the gem holds it
 //   cast GEM [NAME]     casts gem GEM on NAME (near it first) or, without one, on ourselves: checks that the server
-//                       landed the spell (OP_Action from us with its id) without an interrupt or fizzle
+//                       landed the spell (OP_Action from us with its id) without an interrupt; a fizzle is cast
+//                       again, up to 5 casts in all
 //   expect-buff SPELLID / expect-no-buff SPELLID   our buff slots hold (or do not hold) SPELLID
 //   fade SPELLID SECONDS   waits up to SECONDS for our buff SPELLID to wear off: checks that the server's OP_Buff
 //                       fade for it came and the buff is gone
@@ -98,8 +99,12 @@ public:
     void chat(const std::string& text) {
         if (!active_) return;
         chat_.push_back(lower(text));
-        // A cast step's failures (the client's own lines for OP_InterruptCast and a fizzle).
-        const std::string l = lower(text);
+        // A cast step's failures (the client's own lines for OP_InterruptCast and a fizzle). Runs of spaces count as
+        // one: a game folder whose string 173 is "Your %1 spell fizzles!" shows "Your  spell fizzles!", since the
+        // server sends it without the spell's name.
+        std::string l;
+        for (char c : lower(text))
+            if (c != ' ' || l.empty() || l.back() != ' ') l += c;
         if (l.rfind("your spell", 0) == 0 && (l.find("interrupted") != std::string::npos || l.find("fizzle") != std::string::npos))
             cast_trouble_ = text;
     }
@@ -748,6 +753,7 @@ private:
                 target_ = conn.world().player_id;
                 moved_ = true;
             }
+            cast_fizzles_ = 0;
             phase_ = 1;
         } else if (phase_ == 1) {
             if (!moved_) return;
@@ -767,6 +773,13 @@ private:
             conn.cast_gem(gem);
             mem_started_ = now;
             phase_ = 3;
+        } else if (!cast_trouble_.empty() && lower(cast_trouble_).find("fizzle") != std::string::npos &&
+                   ++cast_fizzles_ < kCastTries) {
+            // A fizzle is the server's dice (a low-level caster's skill), not a fault: cast again, as a player does.
+            std::printf("  QUEST: %s fizzled, casting again (try %d of %d)\n", spell_name(conn, id).c_str(),
+                        cast_fizzles_ + 1, kCastTries);
+            phase_ = 2;
+            wait_until_ = now + std::chrono::milliseconds(600);
         } else if (!cast_trouble_.empty()) {
             check(false, "cast " + spell_name(conn, id) + ": " + cast_trouble_);
             cast_spell_ = game::kNoSpell;
@@ -814,6 +827,7 @@ private:
         if (cmd == "zone" || cmd == "memorize") return 60;
         if (cmd == "kill") return 30 * std::max(1, count_arg(rest));
         if (cmd == "melee") return 120;
+        if (cmd == "cast") return 60;  // room for a fizzle's recasts
         if (cmd == "fade") return count_arg(rest) + 5;
         return 20;
     }
@@ -974,6 +988,8 @@ private:
     std::uint32_t fade_spell_ = game::kNoSpell;    // fade: the buff whose OP_Buff fade we wait for
     bool server_faded_ = false, dropped_early_ = false;
     std::string cast_trouble_;                     // cast: an interrupt or fizzle line
+    static constexpr int kCastTries = 5;           // cast: casts before a fizzle fails the step
+    int cast_fizzles_ = 0;
     Clock::time_point mem_started_{};
     glm::vec3 pos_{0.0f};
     Clock::time_point wait_until_{}, started_{}, since_{};
