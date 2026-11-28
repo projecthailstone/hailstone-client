@@ -158,7 +158,8 @@ struct UiApi::Impl {
 
     // CInvSlotWnd_Draw @0x69a080's recast cool-down for the slot `key` holding `item` (game::update_item_cool_down),
     // as the item table's `cooldown`: DrawCooldown's fraction (the shaded part runs from the slot's top + fraction x
-    // its height down to its bottom), absent while idle. The table is at the top of the stack.
+    // its height down to its bottom), with `cooldownLeftMs` on live inventory items, both absent while idle.
+    // The table is at the top of the stack.
     // The key is formatted only for an item that is there.
     template <class... Args>
     void set_item_cool_down(lua_State* L, const net::Item* item, std::format_string<Args...> key, Args&&... args) {
@@ -167,10 +168,15 @@ struct UiApi::Impl {
         std::format_to(std::back_inserter(cool_down_key), key, std::forward<Args>(args)...);
         HostButtonQueries q(host);
         game::ButtonCoolDown& cd = map_entry(slot_cool_downs, cool_down_key);
-        game::update_item_cool_down(cd, item_recast_of(*host.conn, item), q.now(), q.fast_now());
-        if (auto f = cd.overlay_fraction(q.now())) {
+        const auto now = q.now();
+        game::update_item_cool_down(cd, item_recast_of(*host.conn, item), now, q.fast_now());
+        if (auto f = cd.overlay_fraction(now)) {
             lua_pushnumber(L, *f);
             lua_setfield(L, -2, "cooldown");
+            if (host.conn->inventory().at(item->slot) == item) {
+                lua_pushinteger(L, cd.left(now));
+                lua_setfield(L, -2, "cooldownLeftMs");
+            }
         }
     }
 
@@ -714,8 +720,8 @@ int SlotName(lua_State* L) {
 }
 
 // hs.Item(slot [, bagSlot]) -> nil or { name, id, icon, count, charges, stackSize, stackable, bagSlots, weight,
-// magic, lore, type, size, ac, hp, mana, cooldown }; cooldown: the slot's recast cool-down fraction (CInvSlotWnd_Draw:
-// shaded from the slot's top + cooldown x its height to its bottom in hs.CoolDownColor()), absent while idle
+// magic, lore, type, size, ac, hp, mana, cooldown, cooldownLeftMs }; cooldown is the slot's recast shading fraction.
+// cooldownLeftMs is the remaining milliseconds. Both fields are absent while idle.
 int Item(lua_State* L) {
     auto& h = Impl::of(L).host;
     if (!h.conn || !h.in_game) return push_item(L, nullptr);
@@ -1842,6 +1848,7 @@ int SpellGemClick(lua_State* L) {
 }
 
 // item = hs.SlotItem(name, child)   -- the item in an item slot of a window (loot, bank, trade, give, ...)
+// Active live inventory items include cooldownLeftMs (remaining recast milliseconds), as in hs.Item.
 int SlotItem(lua_State* L) {
     auto& m = Impl::of(L);
     const char* name = luaL_checkstring(L, 1);
@@ -2251,6 +2258,7 @@ int PlaceClick(lua_State* L) {
 }
 
 // item = hs.BagSlotItem(bagWindow, index)   -- index from 0
+// Active live inventory items include cooldownLeftMs (remaining recast milliseconds), as in hs.Item.
 int BagSlotItem(lua_State* L) {
     auto& m = Impl::of(L);
     const char* name = luaL_checkstring(L, 1);

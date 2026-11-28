@@ -135,6 +135,12 @@ function items.Tooltip(item, where, compare)
   ui.TextDisabled(string.format("Weight %.1f", item.weight or 0))
   if item.stackable then ui.TextDisabled(string.format("Stack %d / %d", item.count, item.stackSize)) end
   if item.bagSlots and item.bagSlots > 0 then ui.TextDisabled(item.bagSlots .. " slot container") end
+  local left = item.cooldownLeftMs
+  if left and left > 0 then
+    local seconds = (left + 999) // 1000
+    if seconds >= 60 then ui.Text(string.format("Ready in %dm %ds", seconds // 60, seconds % 60))
+    else ui.Text(string.format("Ready in %ds", seconds)) end
+  end
   if p then comparisonBody(compare, p, index) end
   ui.TextDisabled("Hold right-click for details")
   ui.EndTooltip()

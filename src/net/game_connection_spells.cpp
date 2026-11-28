@@ -120,7 +120,7 @@ void GameConnection::spell_message(std::uint32_t eqstr, std::vector<std::string>
     chat(ChatEvent::Kind::Spell, strings_.format(eqstr, args), 0, color);
 }
 
-void GameConnection::init_spells_from_profile() {
+void GameConnection::init_spells_from_profile(bool zone_reentry) {
     if (!profile_) return;
     const auto now = now_ms();
     const std::uint32_t eq_now = eq_time();
@@ -138,9 +138,15 @@ void GameConnection::init_spells_from_profile() {
         if (i < profile_->gem_refresh.size()) spells_.gems[i].ready = profile_->gem_refresh[i] + eq_now;
     }
     spells_.recovery_ready = 0;
-    item_recast_timers_.fill(0);
-    for (std::size_t i = 0; i < profile_->item_recast_timers.size() && i < item_recast_timers_.size(); ++i)
-        item_recast_timers_[i] = profile_->item_recast_timers[i];
+    const auto now_unix = static_cast<std::uint32_t>(std::time(nullptr));
+    for (std::size_t i = 0; i < item_recast_timers_.size(); ++i) {
+        auto& timer = item_recast_timers_[i];
+        const auto reported = i < profile_->item_recast_timers.size() ? profile_->item_recast_timers[i] : 0u;
+        // EQEmu zeros the RoF2 profile's linked item timers. Keep active server timers across a zone
+        // handoff if the new profile has no value for them, and discard locally estimated timers.
+        if (reported != 0 || !zone_reentry || !timer.from_server || timer.ready <= now_unix)
+            timer = {reported, reported != 0};
+    }
     // PcClient_ApplyBaseProfileData @0x5789b0: the discipline and linked spell timers 0..19 as they are.
     spells_.discipline_ready.fill(0);
     for (std::size_t i = 0; i < profile_->combat_ability_timers.size() && i < spells_.discipline_ready.size(); ++i)
@@ -719,15 +725,16 @@ void GameConnection::update_usable_gems() {
 
 namespace {
 
-// Handle_OP_MemorizeSpell's callees on the connection's state. The cast item's recast is not kept by the client (no
-// cast item is ever valid here) and the cast window always exists. A bard's twist goes on through `twist`.
+// Handle_OP_MemorizeSpell's callees on the connection's state. The cast window always exists. A bard's twist goes
+// on through `twist`.
 class MemorizeHandler final : public game::mechanics::gems::MemorizeHandlerQueries {
 public:
     using Fn = std::function<void(std::int32_t, std::int32_t)>;
     MemorizeHandler(game::SpellState& st, const game::SpellTable& spells, std::uint8_t class_id, Fn scribed, Fn memorized,
-                    Fn forgotten, std::function<std::int32_t(std::int32_t)> total, GameConnection& twist)
+                    Fn forgotten, std::function<std::int32_t(std::int32_t)> total, GameConnection& twist,
+                    const MemorizeSpell& message, std::uint32_t eq_now)
         : st_(st), spells_(spells), class_id_(class_id), scribed_(std::move(scribed)), memorized_(std::move(memorized)),
-          forgotten_(std::move(forgotten)), total_(std::move(total)), twist_(twist) {}
+          forgotten_(std::move(forgotten)), total_(std::move(total)), twist_(twist), message_(message), eq_now_(eq_now) {}
     void pop_pending_reason() override {}
     bool book_window() override { return true; }
     bool cast_window() override { return true; }
@@ -737,9 +744,9 @@ public:
     bool local_pc() override { return true; }
     bool local_player() override { return true; }
     void set_memorized_spell(std::int32_t gem, std::int32_t spell) override { forgotten_(gem, spell); }
-    // The cast item's own recast timer (+0x34): the original adds the recast seconds to CDisplay +0x154 (EQ time,
-    // ms) here, not to Util::FastTime as everywhere else; ported as it is (docs/unknowns.md).
-    bool is_cast_item_valid() override { return twist_.valid_cast_item() != nullptr; }
+    bool is_cast_item_valid() override {
+        return message_.slot == game::kItemGem && message_.spell_id == st_.casting.spell && twist_.valid_cast_item();
+    }
     void get_cast_item() override {
         item_ = twist_.cast_item();
     }
@@ -749,7 +756,12 @@ public:
     }
     std::uint32_t item_ready_time() override { return item_ ? item_->last_cast_time : 0; }
     void set_item_ready_time(std::uint32_t ready, bool) override {
-        if (item_) item_->last_cast_time = ready;
+        const auto now_unix = static_cast<std::uint32_t>(std::time(nullptr));
+        if (item_ && twist_.item_recast_timer(item_) <= now_unix) {
+            // The spell handler adds recast seconds to its EQ-time argument. Keep that offset on the
+            // inventory's Unix clock and leave an already active server cooldown alone.
+            item_->last_cast_time = now_unix + (ready - eq_now_);
+        }
     }
     bool is_valid_spell_id(std::int32_t id) override { return game::is_spell_id(static_cast<std::uint32_t>(id)); }
     std::optional<std::pair<std::int32_t, std::int32_t>> spell_times(std::int32_t id) override {
@@ -775,6 +787,8 @@ private:
     Fn scribed_, memorized_, forgotten_;
     std::function<std::int32_t(std::int32_t)> total_;
     GameConnection& twist_;
+    const MemorizeSpell& message_;
+    std::uint32_t eq_now_;
     Item* item_ = nullptr; // LaunchSpellData_GetCastItem's
 };
 
@@ -855,7 +869,7 @@ void GameConnection::handle_memorize_spell(const MemorizeSpell& m) {
         return v;
     };
     MemorizeHandler q(spells_, *spell_table_, profile_ ? profile_->class_ : 0, scribed, memorized, forgotten, total,
-                      *this);
+                      *this, m, now);
     const auto scribing = static_cast<std::int32_t>(m.scribing);
     gems::handle_op_memorize_spell(scribing, static_cast<std::int32_t>(m.slot), static_cast<std::int32_t>(m.spell_id),
                                    static_cast<std::int32_t>(m.reduction), now, spells_.pending, q);

@@ -11,6 +11,7 @@
 #include "mock_server/harness.h"
 #include "net/ability_packets.h"
 #include "net/item_packets.h"
+#include "net/spell_packets.h"
 
 using namespace hailstone;
 using namespace hailstone::net;
@@ -380,6 +381,71 @@ TEST_CASE("item recast timers: the item's own and the type's (GetItemRecastTimer
     CHECK(conn.item_recast_timer(o) == now + 40); // type -1 keeps only its own
 }
 
+TEST_CASE("item recast timers: a linked bag clicky's server timer survives a zone handoff") {
+    constexpr std::uint32_t recast_type = 14;
+    constexpr std::uint32_t recast_delay = 900;
+    const auto slot = ItemSlot::possessions(24, 2);
+    Item insignia = make_item(1100, "Fellowship Registration Insignia", 24);
+    insignia.effects[kEffectClick].effect = 7618;
+    insignia.effects[kEffectClick].extra[2] = recast_delay;
+    insignia.effects[kEffectClick].extra[3] = recast_type;
+    Item bag = make_item(1101, "Backpack", 24);
+    bag.item_class = 1;
+    bag.bag_slots = 4;
+    bag.contents.push_back({2, insignia});
+
+    Rig rig(with_items({bag}));
+    auto& conn = rig.conn;
+    auto& server = rig.server;
+    REQUIRE(rig.to_zone());
+    REQUIRE(conn.inventory().at(slot));
+    CHECK(conn.item_recast_timer(conn.inventory().at(slot)) == 0);
+    REQUIRE_FALSE(conn.spell_state().casting.casting());
+
+    const auto before = static_cast<std::uint32_t>(std::time(nullptr));
+    ByteWriter recast;
+    recast.le<std::uint32_t>(recast_delay);
+    recast.le<std::uint32_t>(recast_type);
+    recast.zeros(4); // Ordinary cooldown packet, with ignore_casting_requirement clear.
+    server.request_zone_change(1, 0.0f, 0.0f, 0.0f);
+    server.zone.send_reliable(AppPacket(to_wire(Op::ItemRecastDelay), recast.take()));
+
+    REQUIRE(rig.until([&] { return conn.zone_change_pending(); }));
+    REQUIRE(rig.until([&] { return conn.item_recast_type_timer(recast_type) != 0; }));
+    REQUIRE(server.zone_entries == 1);
+    const auto ready_at = conn.item_recast_type_timer(recast_type);
+    CHECK(ready_at >= before + recast_delay);
+    CHECK(ready_at <= static_cast<std::uint32_t>(std::time(nullptr)) + recast_delay);
+
+    REQUIRE(rig.until([&] { return server.zone_entries == 2 && conn.state() == ConnectionState::InZone; }));
+    CHECK(conn.zone_id() == 1);
+    REQUIRE(conn.profile());
+    CHECK(conn.profile()->name == "Gennro");
+    REQUIRE(conn.profile()->item_recast_timers.size() > recast_type);
+    CHECK(conn.profile()->item_recast_timers[recast_type] == 0);
+    const Item* arrived = conn.inventory().at(slot);
+    REQUIRE(arrived);
+    CHECK(arrived->id == insignia.id);
+    CHECK(conn.item_recast_type_timer(recast_type) == ready_at);
+    CHECK(conn.item_recast_timer(arrived) == ready_at);
+
+    // An inventory refresh can also carry the group timer on the item itself.
+    insignia.last_cast_time = ready_at;
+    bag.contents[0].item = insignia;
+    conn.receive_zone_packet_for_test(encode_char_inventory({bag}));
+    REQUIRE(conn.inventory().at(slot));
+    CHECK(conn.inventory().at(slot)->last_cast_time == ready_at);
+
+    ByteWriter reset;
+    reset.le<std::uint32_t>(1);
+    reset.le<std::uint32_t>(recast_type);
+    reset.le<std::uint32_t>(1); // Server-forced cooldown reset without a cast.
+    conn.receive_zone_packet_for_test(AppPacket(to_wire(Op::ItemRecastDelay), reset.take()));
+    const auto reset_at = conn.item_recast_type_timer(recast_type);
+    CHECK(reset_at < ready_at);
+    CHECK(conn.item_recast_timer(conn.inventory().at(slot)) == reset_at);
+}
+
 TEST_CASE("item clicks: CastSpell's attune and CanUseItem checks refuse quietly (@0x43b088, @0x43b0b6)") {
     // A self-only instant spell, castable in and out of combat (Sympathetic Strike II's shape).
     std::vector<std::string> f(237, "0");
@@ -469,6 +535,8 @@ TEST_CASE("item clicks: the reply casts without OP_CastSpell; the server cast it
     slow.name = "Slow Clicky";
     slow.slot = ItemSlot::possessions(28);
     slow.effects[kEffectClick].extra[1] = 3000; // a 3 s item cast time
+    slow.effects[kEffectClick].extra[2] = 90;   // an unlinked recast
+    slow.effects[kEffectClick].extra[3] = 0xffffffffu;
     Rig rig(with_items({instant, slow}));
     auto& conn = rig.conn;
     REQUIRE(rig.to_zone());
@@ -495,6 +563,17 @@ TEST_CASE("item clicks: the reply casts without OP_CastSpell; the server cast it
     CHECK(conn.spell_state().casting.casting());
     CHECK(conn.spell_state().casting.spell == 500);
     CHECK(conn.spell_state().casting.cast_time == 3000);
+
+    const Item* timed = conn.inventory().at(slow.slot);
+    REQUIRE(timed);
+    // A spell-bar refresh for a regular gem does not finish this item's cast.
+    conn.receive_zone_packet_for_test(encode(MemorizeSpell{0, 500, kMemSpellBar}));
+    CHECK(conn.item_recast_timer(timed) == 0);
+    const auto before = static_cast<std::uint32_t>(std::time(nullptr));
+    conn.receive_zone_packet_for_test(encode(MemorizeSpell{game::kItemGem, 500, kMemSpellBar}));
+    const auto ready_at = conn.item_recast_timer(timed);
+    CHECK(ready_at >= before + 90);
+    CHECK(ready_at <= static_cast<std::uint32_t>(std::time(nullptr)) + 90);
 }
 
 TEST_CASE("auto inventory: worn stacks first, then a worn slot by the class check alone (AutoInventoryCursorItem)") {

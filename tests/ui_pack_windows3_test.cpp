@@ -2078,6 +2078,73 @@ TEST_CASE("UI packs (modern): an item display draws the shown item's stats, and 
     ImGui::DestroyContext(ctx);
 }
 
+TEST_CASE("Modern bag tooltip shows the carried item's remaining recast") {
+    test::ScratchDir scratch("ui_pack_item_recast_test");
+    const auto dir = scratch.path();
+    fs::create_directories(dir / "game");
+    fs::copy(fs::path(__FILE__).parent_path().parent_path() / "ui" / "modern", dir / "modern",
+             fs::copy_options::recursive);
+
+    net::Item clicky;
+    clicky.id = 1002;
+    clicky.name = "Test Clicky";
+    clicky.effects[net::kEffectClick].effect = 123;
+    clicky.effects[net::kEffectClick].extra[2] = 900;
+    clicky.effects[net::kEffectClick].extra[3] = 14;
+    net::Item bag;
+    bag.id = 1001;
+    bag.name = "Test Bag";
+    bag.slot = net::ItemSlot::possessions(net::kSlotGeneral1);
+    bag.item_class = 1;
+    bag.bag_slots = 4;
+    bag.contents.push_back({0, clicky});
+    auto config = test::MockConfig::standard();
+    config.characters[0].inventory.push_back(std::move(bag));
+    test::Rig rig(std::move(config));
+    REQUIRE(rig.to_zone());
+
+    ImGuiContext* ctx = ImGui::CreateContext();
+    ImGui::GetIO().IniFilename = nullptr;
+    ImGui::GetIO().BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
+    {
+        Session s(dir, "modern");
+        s.host.conn = &rig.conn;
+        lua_State* L = s.lua.state();
+        REQUIRE(luaL_dostring(L, R"(
+            assert(hs.ClickSlot(23, nil, "right"))
+            assert(hs.BagSlotItem("Bag1", 0).name == "Test Clicky")
+            local items = dofile("lib/items.lua")
+            local text = ui.Text
+            ui.Text = function(t, ...)
+              if type(t) == "string" and t:match("^Ready in ") then test_ready = t end
+              return text(t, ...)
+            end
+            ui.window("Bag tooltip test", function()
+              test_ready = nil
+              items.Tooltip(hs.BagSlotItem("Bag1", 0), "Bag")
+            end))") == LUA_OK);
+        auto seen = [&](const char* check) {
+            REQUIRE(luaL_dostring(L, check) == LUA_OK);
+            const bool result = lua_toboolean(L, -1);
+            lua_settop(L, 0);
+            return result;
+        };
+
+        rig.conn.set_item_recast_timer(nullptr, 150, 14);
+        s.frames(2);
+        CHECK(seen("return test_ready and test_ready:match('^Ready in 2m %d+s$')"));
+        CHECK(seen("return hs.BagSlotItem('Bag1', 0).cooldownLeftMs > 0"));
+        rig.conn.set_item_recast_timer(nullptr, 40, 14);
+        s.frames(2);
+        CHECK(seen("return test_ready and test_ready:match('^Ready in %d+s$')"));
+        rig.conn.reset_all_item_recast_timers();
+        s.frames(2);
+        CHECK(seen("return test_ready == nil and hs.BagSlotItem('Bag1', 0).cooldownLeftMs == nil"));
+        CHECK(ImGui::FindWindowByName("UI errors") == nullptr);
+    }
+    ImGui::DestroyContext(ctx);
+}
+
 // Hailstone's item comparison (docs/item-compare.md): a linked item's display says what wearing it would change,
 // in both packs, and the Options switch turns it off.
 TEST_CASE("UI packs: the item display compares the item with what you wear") {

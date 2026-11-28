@@ -14,30 +14,28 @@ bool is_item(HotButtonType t) {
     return t == HotButtonType::InventorySlot || t == HotButtonType::ItemLink || t == HotButtonType::KronoSlot;
 }
 
+std::uint32_t recast_milliseconds(std::uint32_t seconds) {
+    return std::min(seconds, std::numeric_limits<std::uint32_t>::max() / 1000u) * 1000u;
+}
+
 } // namespace
 
 void update_item_cool_down(ButtonCoolDown& cd, const std::optional<HotButtonStateQueries::ItemRecast>& r,
                            std::uint32_t now, std::uint32_t fast_now) {
-    if (!r) {
+    if (!r || r->timer <= fast_now) {
         cd.stop(); // vtable +0x194
         return;
     }
-    const auto left = static_cast<std::int32_t>(r->timer - fast_now);
-    const bool done = r->timer == 0 || left <= 0;
-    const std::int32_t diff = left * 1000 - static_cast<std::int32_t>(cd.left(now));
-    if (cd.duration == 0 || std::abs(diff) >= 1000) {
-        if (done) cd.stop();
-        else cd.set_ending(fast_time_to_eq_time(r->timer, fast_now, now), r->recast * 1000u);
-    } else if (done) {
-        cd.stop();
-    }
+    const auto left = recast_milliseconds(r->timer - fast_now);
+    const auto diff = static_cast<std::int64_t>(left) - cd.left(now);
+    // Shared recast groups can have a longer timer than this item's listed delay.
+    if (cd.duration == 0 || std::abs(diff) >= 1000)
+        cd.set_ending(now + left, std::max(left, recast_milliseconds(r->recast)));
 }
 
 void update_potion_belt_cool_down(ButtonCoolDown& cd, const std::optional<HotButtonStateQueries::ItemRecast>& r,
                                   std::uint32_t now, std::uint32_t fast_now) {
-    if (!r || cd.duration != 0) return;
-    if (static_cast<std::int32_t>(r->timer) <= static_cast<std::int32_t>(fast_now)) return;
-    cd.set_ending(fast_time_to_eq_time(r->timer, fast_now, now), r->recast * 1000u);
+    if (cd.duration == 0) update_item_cool_down(cd, r, now, fast_now);
 }
 
 void update_skill_button(ButtonCoolDown& cd, bool& checked, std::uint32_t skill, HotButtonStateQueries& q) {

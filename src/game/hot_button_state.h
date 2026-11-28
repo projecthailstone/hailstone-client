@@ -94,9 +94,8 @@ struct HotButtonDisplay {
 // An item slot's recast cool-down as CInvSlotWnd_Draw @0x69a080 keeps it, each draw, for an item with a recast
 // clicky (`r`; none: stopped): with left = the timer - Util::FastTime (seconds), done when there is no timer or
 // left <= 0; when the button has no cool-down (GetCoolDownTotalDuration 0) or left x 1000 differs from what the
-// cool-down has left by 1000 ms or more, it is stopped when done, else restarted by vf94
-// SetCoolDownCompletionFastTime(timer, recast x 1000) (@0x897930: ending at FastTimeToEQTime(timer)); otherwise it
-// is stopped when done.
+// cool-down has left by 1000 ms or more, it ends at the item timer. The bar spans at least the remaining
+// time so a longer shared cooldown can be drawn immediately.
 void update_item_cool_down(ButtonCoolDown& cd, const std::optional<HotButtonStateQueries::ItemRecast>& r,
                            std::uint32_t now, std::uint32_t fast_now);
 // CPotionBeltWnd::PostDraw @0x71ee90 for one belt slot holding an item with a recast clicky (`r`): while its button

@@ -390,10 +390,25 @@ std::uint32_t GameConnection::item_recast_timer(const Item* item) const {
     return own > type ? own : type;
 }
 
-void GameConnection::set_item_recast_timer(Item* item, std::int32_t delay, std::int32_t type) {
+void GameConnection::set_item_recast_timer(Item* item, std::int32_t delay, std::int32_t type, bool from_server) {
     const auto at = static_cast<std::uint32_t>(std::time(nullptr)) + static_cast<std::uint32_t>(delay);
     if (item) item->last_cast_time = at; // +0x30 (changed) is the original's update mark; nothing reads it here
-    if (static_cast<std::uint32_t>(type) < item_recast_timers_.size()) item_recast_timers_[static_cast<std::size_t>(type)] = at;
+    if (static_cast<std::uint32_t>(type) >= item_recast_timers_.size()) return;
+    item_recast_timers_[static_cast<std::size_t>(type)] = {at, from_server};
+    if (!from_server) return;
+
+    // Carried items can have the previous shared timestamp in their inventory headers. Refresh those too
+    // so a server update that shortens the group timer can take effect.
+    auto update_shared = [&](Item& carried) {
+        const auto& click = carried.effects[kEffectClick];
+        if (click.recast_delay() > 0 && click.recast_type() == type) carried.last_cast_time = at;
+    };
+    for (std::int16_t slot = 0; slot <= kSlotCursor; ++slot) {
+        if (Item* carried = inventory_.at(ItemSlot::possessions(slot))) {
+            update_shared(*carried);
+            for (auto& child : carried->contents) update_shared(child.item);
+        }
+    }
 }
 
 void GameConnection::reset_all_item_recast_timers() {
@@ -404,7 +419,7 @@ void GameConnection::reset_all_item_recast_timers() {
         if (!item->is_bag()) continue;
         for (auto& c : item->contents) c.item.last_cast_time = 0;
     }
-    item_recast_timers_.fill(0);
+    item_recast_timers_.fill({});
 }
 
 ItemSlot GameConnection::cast_item_slot() const {
